@@ -1,0 +1,25 @@
+## Workspace: {{project-name}}
+
+This is a claude-workspace. All conventions are defined in .claude/rules/.
+
+## Quick Reference
+- Repos live in `repos/`, worktrees use `___wt-` suffix
+- Scratch files go in `.claude-scratchpad/`
+- Shared memory lives in `shared-context/`
+- No files outside `repos/`, `shared-context/`, or `.claude-scratchpad/`
+
+## Workspace Config
+@workspace.json
+
+## Team Knowledge (always loaded)
+@shared-context/locked/
+
+## Skills
+- `/setup` — first-time workspace setup (clone repos, activate rules)
+- `/start-work [handoff|blank]` — begin a work session
+- `/handoff [name]` — save workstream state
+- `/braindump [name]` — capture discussion/reasoning
+- `/pause-work` — suspend work, push, draft PR
+- `/complete-work` — finalize branch, release notes, real PR
+- `/promote` — move personal memory to shared context
+- `/release [version]` — combine unreleased notes into versioned doc

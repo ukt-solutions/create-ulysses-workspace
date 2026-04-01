@@ -1,0 +1,19 @@
+{
+  "name": "create-claude-workspace",
+  "version": "0.1.0",
+  "description": "Scaffold a convention-over-configuration workspace for Claude Code",
+  "type": "module",
+  "bin": {
+    "create-claude-workspace": "./bin/create.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "template/"
+  ],
+  "dependencies": {
+    "prompts": "^2.4.2"
+  },
+  "keywords": ["claude", "claude-code", "workspace", "scaffolder"],
+  "license": "MIT"
+}
