@@ -1,0 +1,13 @@
+# Documentation
+
+Activate this rule if the project maintains documentation that must stay in sync with code.
+
+## Doc-Code Consistency
+
+- When a code change fixes a bug, corrects an API, or replaces a deprecated pattern, check whether any documentation references the old behavior
+- If it does, update the documentation in the same session — code and docs must never contradict each other
+
+## No Unsolicited Docs
+
+- Do not create documentation files (README.md, CONTRIBUTING.md, etc.) unless explicitly asked
+- Never create documentation files (*.md) unless the user requests it

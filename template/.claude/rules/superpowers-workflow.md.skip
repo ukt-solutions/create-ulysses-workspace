@@ -1,0 +1,22 @@
+# Superpowers Workflow
+
+Activate this rule if the superpowers plugin is installed.
+
+## Research Phase (mandatory before implementation)
+
+- Review existing codebase for relevant patterns and prior art
+- Search official documentation for the technologies involved
+- Research best practices, production hardening, and known pitfalls via web search
+- Summarize findings for the user before proceeding to design
+
+## Specs and Plans
+
+- Specs and plans live in the active worktree during development
+- They are ephemeral — consumed by /complete-work into release notes, then removed
+- If a spec/plan already exists for the current branch, version it: `-v2`, `-v3`, etc.
+
+## Execution
+
+- Use subagent-driven development for executing plans
+- One subagent per task, sequential implementation, parallel review
+- Never dispatch parallel implementation subagents on the same codebase

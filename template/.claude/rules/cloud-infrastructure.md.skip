@@ -1,0 +1,15 @@
+# Cloud Infrastructure
+
+Activate this rule if the project uses cloud resources (AWS, GCP, Azure, etc.).
+
+## Code-First Rule
+
+- All changes to cloud resources go through code and CI/CD
+- Never recommend or execute direct cloud provider changes — no console edits, no CLI commands against live resources
+- If the user asks to do something directly in the cloud provider, warn about drift and recommend the code-first path
+
+## Environment Portability
+
+- Never hardcode account IDs, resource ARNs/URIs, bucket names, distribution IDs, or environment-specific values
+- All environment-specific values come from environment config files or runtime CI/CD variables
+- This applies to infrastructure code, configuration files, workflow files, and function code
