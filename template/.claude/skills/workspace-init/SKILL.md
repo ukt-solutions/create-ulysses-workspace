@@ -124,7 +124,7 @@ For each non-template item at root:
 
 Report explicitly: "Moved {N} items to .claude-scratchpad/unmigrated/: {list}. Review these and promote anything worth keeping."
 
-The .gitignore should only contain entries relevant to the template structure. Remove entries for items that have been moved to unmigrated — they don't need ignoring if they're not at root anymore.
+Nothing should be silently ignored. If it exists, it gets triaged or moved here. Audit .gitignore for entries that only exist to suppress pre-migration content — move those items to unmigrated and remove the entries. The gitignore should only contain template-standard patterns, not workarounds for leftover files.
 
 **Commit:** `git commit -m "chore: clean root — move non-template items to unmigrated"`
 
