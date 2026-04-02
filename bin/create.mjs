@@ -3,9 +3,20 @@
 import { runPrompts } from '../lib/prompts.mjs';
 import { scaffold } from '../lib/scaffold.mjs';
 import { initGit, cloneRepos } from '../lib/git.mjs';
+import { migrate } from '../lib/migrate.mjs';
+import { resolve } from 'path';
 
 async function main() {
   console.log('\n  create-claude-workspace\n');
+
+  // Check for --migrate flag
+  const migrateFlag = process.argv.includes('--migrate');
+
+  if (migrateFlag) {
+    const targetDir = resolve(process.argv[process.argv.indexOf('--migrate') + 1] || '.');
+    await migrate(targetDir);
+    return;
+  }
 
   const answers = await runPrompts();
 
