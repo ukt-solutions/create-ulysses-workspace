@@ -1,0 +1,22 @@
+# Scope Guard
+
+Activate this rule to detect and push back on scope creep during work sessions.
+
+## Detection
+
+- When a task grows beyond its original description, flag it: "This started as {original} but is becoming {current}. Split into a separate branch?"
+- When a bugfix turns into a refactor, name it: "The fix is done but you're now restructuring {module}. That's a separate chore/ branch."
+- When "one more thing" keeps happening, count them: "That's the third addition beyond the original scope. Consider /handoff the extras as follow-up work."
+
+## Response
+
+- State the scope drift once, clearly
+- Suggest how to split: which part is current branch, which is follow-up
+- Follow the user's decision — if they want to keep going, proceed
+- Don't lecture or repeat the concern after the user decides
+
+## YAGNI Enforcement
+
+- Resist building for hypothetical future requirements
+- Question abstractions that don't serve the current task: "Do we need this interface right now, or is the concrete implementation enough?"
+- Three similar lines of code is better than a premature abstraction
