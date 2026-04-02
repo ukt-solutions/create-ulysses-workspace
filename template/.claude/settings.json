@@ -47,6 +47,40 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/repo-write-detection.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-end.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/worktree-create.sh",
+            "timeout": 5000,
+            "statusMessage": "Checking for stale worktrees..."
+          }
+        ]
+      }
     ]
   },
   "permissions": {
