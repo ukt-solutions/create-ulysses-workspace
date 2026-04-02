@@ -20,90 +20,97 @@ If `workspace.json` has `"initialized": true`, report: "Workspace already initia
 
 ## Flow
 
-**Step 1: Read what's here**
+### Step 1: Inventory
 
-Scan the workspace for existing content that needs to be organized:
-
-```
-Look for:
-- CLAUDE.md.bak — the pre-migration CLAUDE.md (contains old config, rules, preferences)
+Scan the workspace for existing content that needs organizing:
+- CLAUDE.md.bak — pre-migration CLAUDE.md (old config, rules, preferences)
 - .mcp.json — external service configs (MCP servers with content to extract)
-- workspace-artifacts/ — old scratch directory with files to triage
-- Non-standard directories at root — anything not in the template structure
+- workspace-artifacts/ — old scratch directory
+- Non-standard directories at root
 - Existing auto-memory files
-- Any .md files at the workspace root
+- Any files at workspace root that aren't part of the template
+
+Present the inventory as a table. Then immediately present the full plan:
+
+### Step 2: Present the plan
+
+Based on the inventory, formulate a numbered plan covering ALL steps. Present it to the user before executing anything:
+
+```
+"Here's what I found and my proposed plan:
+
+Step 1: ✓ Inventory (done — {N} items found)
+Step 2: ✓ Plan (this step)
+Step 3: Extract content from Notion/MCP (if .mcp.json found)
+   - Fetch rules page → create .claude/rules/ files
+   - Fetch memory/context page → create shared-context/locked/ files
+   - Fetch handoffs page → create shared-context/{user}/ files
+Step 4: Preserve local preferences from CLAUDE.md.bak
+Step 5: Create locked team knowledge (from extracted content + auto-memory)
+Step 6: Triage non-standard content ({list of dirs/files})
+Step 7: Clean up external dependencies (.mcp.json, CLAUDE.md.bak)
+Step 8: Set up workspace remote
+Step 9: Mark initialized and commit
+
+Adjust this plan, reorder, skip steps, or add things?"
 ```
 
-Report what you find: "I found {N} items that need organizing."
+Adapt the plan to what was actually found. If there's no MCP to extract from, skip that step. If there are no non-standard dirs, skip triage. Only include steps that are relevant.
 
-**Step 2: Extract rules**
+Wait for user confirmation before proceeding. Execute steps in order, reporting progress after each.
 
-If CLAUDE.md.bak or MCP sources contain rules/conventions:
-- Read the content (use MCP tools if available and needed)
-- For each rule or convention found:
-  - Ask: "I found a rule about {topic}. Create as mandatory (.md) or optional (.md.skip)?"
-  - Write to `.claude/rules/{rule-name}.md`
-- If recipes exist in `.claude/recipes/`, read them for guidance on extraction
+### Step 3: Extract content from external sources
 
-**Step 3: Create locked team knowledge**
+If .mcp.json exists with MCP servers that hold content (Notion, etc.):
+- Check .claude/recipes/ for relevant migration recipes — read them for guidance
+- Use the MCP tools to fetch content from each source
+- For rules/conventions found: write to `.claude/rules/{rule-name}.md`
+- For project context/decisions: stage for Step 5 (locked knowledge)
+- For handoffs/active work: write to `shared-context/{user}/` as ephemeral
 
-For project context, architecture decisions, tech stack info:
-- Read from CLAUDE.md.bak, MCP sources, or ask the user
-- For each piece of stable knowledge:
-  - Ask: "Is this still current? Should it be locked (loaded every session)?"
-  - If yes: write to `shared-context/locked/{topic}.md` with proper frontmatter
-  - If no: skip or write as ephemeral
+If no MCP or no content to extract, skip.
 
-Keep locked context lean — target <10KB total.
+### Step 4: Preserve local preferences
 
-**Step 4: Create user context**
+Read CLAUDE.md.bak for non-MCP content worth keeping:
+- Local coding conventions → `.claude/rules/` (new rule files)
+- Project-specific notes → `shared-context/locked/` or `shared-context/{user}/`
+- Repo paths → verify they match workspace.json
 
-For handoffs, active work state, personal notes:
-- Extract from MCP sources or CLAUDE.md.bak
-- Only recent/active content — skip stale items
-- Write to `shared-context/{user}/` with proper frontmatter
+### Step 5: Create locked team knowledge
 
-**Step 5: Triage non-standard content**
+Combine content from Step 3, Step 4, and existing auto-memory into locked context:
+- For each piece of stable knowledge: write to `shared-context/locked/{topic}.md`
+- Keep locked context lean — target <10KB total
+- One topic per file, proper frontmatter
+- Only lock what the team needs every session. Everything else is ephemeral.
+
+### Step 6: Triage non-standard content
 
 For each non-standard directory or file at root:
 - Describe what it contains
-- Ask: "Move to repos/ (project code), .claude-scratchpad/ (disposable), shared-context/ (worth keeping), or leave as-is?"
-- Execute the user's decision
+- Decide: move to repos/ (project code), .claude-scratchpad/ (disposable), shared-context/ (worth keeping), delete, or leave as-is
+- Execute
 
-For workspace-artifacts/:
-- List contents
-- Ask about each: keep (move to scratchpad), preserve (move to shared-context), or delete
+### Step 7: Clean up external dependencies
 
-**Step 6: Clean up external dependencies**
+After content has been extracted:
+- .mcp.json → back up to .mcp.json.bak and remove
+- CLAUDE.md.bak → remove (content extracted)
+- Any other pre-migration artifacts → clean up
 
-If .mcp.json exists and content has been extracted:
-- Ask: "All content extracted from {service}. Remove .mcp.json? [y/N]"
-- If yes: back up to .mcp.json.bak and remove
-
-If CLAUDE.md.bak exists and content has been extracted:
-- Ask: "Remove CLAUDE.md.bak? [y/N]"
-
-**Step 7: Set up workspace remote**
+### Step 8: Set up workspace remote
 
 If the workspace git repo has no remote:
-- Detect the org from project repo remotes (e.g., if `repos/codeapy` uses `sirmyron`, suggest `sirmyron`)
+- Detect the org from project repo remotes in workspace.json
 - Naming convention: `workspace-{project}` (e.g., `workspace-codeapy`)
-- Ask: "Create workspace repo as `{org}/workspace-{project}`? Or provide a different name/URL."
+- Suggest: "Create workspace repo as `{org}/workspace-{project}`?"
 - Create via `gh repo create {org}/{name} --private` and add as remote
-- Push the initial commit
+- Push
 
-If remote already exists, skip.
+### Step 9: Mark initialized
 
-**Step 8: Mark initialized**
-
-Update workspace.json:
-```json
-{
-  "workspace": {
-    "initialized": true
-  }
-}
-```
+Update workspace.json: set `initialized: true`
 
 Commit and push:
 ```bash
@@ -112,8 +119,8 @@ git commit -m "chore: workspace initialization complete"
 git push origin main
 ```
 
-**Step 9: Report**
-
+Report:
+```
 "Workspace initialized:
 - {N} rules created
 - {M} locked context files
@@ -122,10 +129,18 @@ git push origin main
 - Remote: {org}/{name}
 
 Run /start-work to begin your first work session."
+```
+
+## Execution Style
+
+- Present the plan upfront. Don't ask permission at every micro-step.
+- Execute confidently. Report after each major step completes.
+- Ask the user only for decisions that require judgment (what to keep, where to put things).
+- If something is clearly disposable (empty dirs, stale logs), just clean it up and report.
+- Recipes in .claude/recipes/ are guidance, not scripts. Adapt to what you find.
+- The user knows their project. Follow their lead on content decisions.
 
 ## Notes
-- This is a brainstorming session, not a mechanical process. Ask questions, explore the existing content, help the user decide what matters.
-- Recipes in .claude/recipes/ are optional guidance — read them if relevant, but adapt to what you find.
-- Don't try to extract everything — only active, relevant content. Stale is dead.
-- The user knows their project better than any recipe. Follow their lead.
-- One topic per file, proper frontmatter, coherent content.
+- One topic per file, proper frontmatter, coherent content
+- Don't extract everything — only active, relevant content. Stale is dead.
+- Keep locked context under 10KB — it's loaded every session
