@@ -83,7 +83,18 @@ If .mcp.json exists and content has been extracted:
 If CLAUDE.md.bak exists and content has been extracted:
 - Ask: "Remove CLAUDE.md.bak? [y/N]"
 
-**Step 7: Mark initialized**
+**Step 7: Set up workspace remote**
+
+If the workspace git repo has no remote:
+- Detect the org from project repo remotes (e.g., if `repos/codeapy` uses `sirmyron`, suggest `sirmyron`)
+- Naming convention: `workspace-{project}` (e.g., `workspace-codeapy`)
+- Ask: "Create workspace repo as `{org}/workspace-{project}`? Or provide a different name/URL."
+- Create via `gh repo create {org}/{name} --private` and add as remote
+- Push the initial commit
+
+If remote already exists, skip.
+
+**Step 8: Mark initialized**
 
 Update workspace.json:
 ```json
@@ -94,19 +105,21 @@ Update workspace.json:
 }
 ```
 
-Commit:
+Commit and push:
 ```bash
 git add -A
 git commit -m "chore: workspace initialization complete"
+git push origin main
 ```
 
-**Step 8: Report**
+**Step 9: Report**
 
 "Workspace initialized:
 - {N} rules created
 - {M} locked context files
 - {K} user context files
 - {J} items triaged
+- Remote: {org}/{name}
 
 Run /start-work to begin your first work session."
 
