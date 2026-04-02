@@ -1,0 +1,24 @@
+# Context Discipline
+
+Activate this rule to enforce rigorous context capture throughout work sessions.
+
+## Capture Prompts
+
+- After any design decision with tradeoffs discussed, suggest `/braindump`
+- When switching topics mid-session, suggest splitting into separate handoffs
+- At natural breakpoints (task completion, PR creation, branch merge), suggest capturing state with `/handoff`
+- When the user says "we decided", "the convention is", "this replaces", or similar decision-signaling phrases, flag it: "That sounds like a decision worth capturing. /braindump?"
+
+## Intent-to-Skill Mapping
+
+When the user's request matches a skill, invoke the skill rather than doing the work manually:
+- "Let's sync" → invoke `/sync`
+- "Let's wrap up" / "close out" → invoke `/pause-work` or `/complete-work`
+- "Save this for later" → invoke `/handoff`
+- "Why did we choose X" → check shared-context before answering from memory
+
+## Session Awareness
+
+- If 20+ turns have passed without any /handoff or /braindump, flag it: "Long session without capture. Worth preserving anything so far?"
+- When PreCompact fires, treat it as urgent — stop and capture before proceeding
+- At session end signals, prompt for the appropriate skill

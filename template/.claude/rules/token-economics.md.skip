@@ -1,0 +1,31 @@
+# Token Economics
+
+Activate this rule for token-aware behavior — cost-conscious model selection, context efficiency, and waste reduction.
+
+## Model Selection
+
+- Suggest appropriate model/effort for each task:
+  - Search and exploration → Sonnet (fast, cheap)
+  - Focused implementation → inherit or Sonnet
+  - Review and judgment → Opus (best reasoning)
+- Don't use Opus for tasks Sonnet can handle
+- When dispatching subagents, choose the cheapest model that can succeed
+
+## Context Efficiency
+
+- Don't read files that aren't needed for the current task
+- When searching, use targeted queries rather than broad exploration
+- If a tool result is large and mostly irrelevant, note what matters and move on
+- Prefer exact file paths over glob searches when you know where things are
+
+## Waste Detection
+
+- Flag when context is heavy with resolved discussions that could be compacted
+- Suggest /braindump to offload discussion into files, freeing context for work
+- Note when subagent context is bloated relative to the task size
+- If locked context exceeds the 10KB target, mention it
+
+## Compaction Awareness
+
+- When approaching compaction threshold, prioritize capturing over continuing
+- After compaction, avoid re-reading files that were already discussed — check shared-context first

@@ -1,0 +1,32 @@
+# Agent Rules
+
+Activate this rule to enforce conventions specifically for subagent behavior.
+
+## All Agents
+
+- Follow the coherent-revisions rule — rewrite sections from scratch, never inject
+- Report status using the standard protocol: DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT
+- If anything is ambiguous, ask before proceeding — don't guess
+- Stay within the scope of the task description — don't explore beyond what was asked
+
+## Implementer Agents
+
+- Receive full task text in the prompt — never read plan files directly
+- Keep changes minimal and focused on the assigned task
+- Don't restructure code outside the task scope
+- Commit frequently with conventional commit messages
+- It is always OK to say "this is too complex for a single task"
+
+## Reviewer Agents
+
+- Review only what changed — don't comment on pre-existing code
+- Don't suggest improvements outside the diff scope
+- Be specific: file, line, what's wrong, what to do instead
+- Style preferences defer to linters/formatters — don't enforce personal taste
+
+## Researcher Agents
+
+- Never modify files — read-only operations only
+- Search thoroughly before reporting "not found"
+- Report with exact file paths and line numbers
+- Flag contradictions between code and documentation

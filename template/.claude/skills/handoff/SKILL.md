@@ -5,7 +5,7 @@ description: Save workstream state as shared context. Use anytime during work to
 
 # Handoff
 
-Save structured workstream state to shared context. Usable anytime, any number of times.
+Save structured workstream state to shared context. Usable anytime, any number of times. User-scoped by default.
 
 ## Parameters
 - `/handoff {name}` — create or update a named handoff
@@ -14,14 +14,14 @@ Save structured workstream state to shared context. Usable anytime, any number o
 ## Flow: Named
 
 1. Read workspace user identity from `.claude/settings.local.json` (`workspace.user`)
-2. Check if `shared-context/{name}.md` or `shared-context/{user}/{name}.md` exists
+2. Check if handoff already exists in `shared-context/{user}/`, `shared-context/{user}/inflight/`, or `shared-context/` root
 3. If exists: read it, prepare to update with current session state
 4. If new: prepare to create
-5. Ask: "Should this be team-visible, user-scoped ({user}/), or local-only?"
+5. Ask: "Should this be user-scoped (default), team-visible, or local-only?"
+   - User-scoped (default): `shared-context/{user}/{name}.md` or `shared-context/{user}/inflight/{name}.md` if part of active work session
    - Team-visible: `shared-context/{name}.md`
-   - User-scoped: `shared-context/{user}/{name}.md`
    - Local-only: `shared-context/local-only-{name}.md`
-6. Write the handoff file with this format:
+6. Write the handoff file:
 
 ```yaml
 ---
@@ -65,9 +65,21 @@ updated: {YYYY-MM-DD}
 
 ## Updating Existing Handoffs
 
-When updating an existing handoff:
-- Preserve the existing Key Decisions and Open Questions (append, don't replace)
-- Update the Status section with new progress
-- Update the Next Steps with current state
-- Update the `updated` date in frontmatter
-- Keep the `lifecycle` as-is unless the user indicates a change
+When updating an existing handoff, rewrite it as a fresh snapshot of current understanding (coherent-revisions rule). Don't append below the old content. The updated handoff should read as if written in one pass reflecting the current state.
+
+Update the `updated` date in frontmatter. Keep the `lifecycle` as-is unless the user indicates a change.
+
+## Capture-Time Cross-Check
+
+After writing a new or updated handoff, scan existing shared-context files for:
+- **Stale references** — paths, counts, or status that changed ("create-claude-workspace.md still says 2 mandatory rules but you now have 4")
+- **Contradictions** — old info conflicts with what was just captured
+- **Overlap** — same topic partially covered in another file
+
+Surface findings: "Found stale reference in {file}. Update? [y/N]"
+
+## Notes
+- User-scoped is the default — root is only for content deliberately made team-visible
+- Handoffs are always committed individually — never bundled with code commits
+- One topic, one file — don't let handoffs become grab-bags
+- Name before writing — the name forces you to identify the single topic
