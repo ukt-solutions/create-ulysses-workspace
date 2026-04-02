@@ -11,10 +11,13 @@ async function main() {
 
   // Check for --migrate flag
   const migrateFlag = process.argv.includes('--migrate');
+  const updateFlag = process.argv.includes('--update');
 
   if (migrateFlag) {
-    const targetDir = resolve(process.argv[process.argv.indexOf('--migrate') + 1] || '.');
-    await migrate(targetDir);
+    // Find the target directory (first arg after --migrate that isn't --update)
+    const args = process.argv.slice(process.argv.indexOf('--migrate') + 1);
+    const targetDir = resolve(args.find(a => !a.startsWith('--')) || '.');
+    await migrate(targetDir, { update: updateFlag });
     return;
   }
 
