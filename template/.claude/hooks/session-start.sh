@@ -85,7 +85,7 @@ if [[ -d "$CONTEXT_DIR" ]]; then
     relpath="${file#$CONTEXT_DIR/}"
 
     active_entries+=("- $topic ($lifecycle, updated $mtime) — $relpath")
-  done < <(find "$CONTEXT_DIR" -maxdepth 2 -name "*.md" -not -path "*/locked/*" -print0 2>/dev/null | sort -z)
+  done < <(find "$CONTEXT_DIR" -maxdepth 3 -name "*.md" -not -path "*/locked/*" -print0 2>/dev/null | sort -z)
 
   if [[ ${#active_entries[@]} -gt 0 ]]; then
     context_lines+=("")
