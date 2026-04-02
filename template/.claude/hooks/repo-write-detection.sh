@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # PreToolUse hook for claude-workspace
-# Detects writes to repos/ without an active work session (worktree/branch)
-# Reads tool name and input from stdin as JSON
+# Detects writes to repos/ worktrees without an active work session
+# An active work session is indicated by .claude-scratchpad/.work-session-* files
 
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-REPOS_DIR="$WORKSPACE_ROOT/repos"
+SCRATCHPAD="$WORKSPACE_ROOT/.claude-scratchpad"
 
 # Read hook input from stdin
 input=$(cat)
@@ -20,12 +20,11 @@ case "$tool_name" in
   *) echo '{}'; exit 0 ;;
 esac
 
-# Extract the input/arguments to find file paths
+# Extract file paths from tool input
 tool_input=$(echo "$input" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 inp = d.get('tool_input', {})
-# Check common path fields
 paths = []
 if isinstance(inp, dict):
     for key in ['file_path', 'command', 'path']:
@@ -34,36 +33,19 @@ if isinstance(inp, dict):
 print(' '.join(paths))
 " 2>/dev/null || echo "")
 
-# Check if any path references repos/
-if ! echo "$tool_input" | grep -q "repos/"; then
+# Only care about writes to repos/ worktrees
+if ! echo "$tool_input" | grep -q "___wt-"; then
   echo '{}'
   exit 0
 fi
 
-# Extract which repo is being written to
-repo_match=$(echo "$tool_input" | grep -oE "repos/[^/___]+" | head -1 | sed 's|repos/||')
-if [[ -z "$repo_match" ]]; then
+# Check if any work session is active
+if ls "$SCRATCHPAD"/.work-session-* 1>/dev/null 2>&1; then
   echo '{}'
   exit 0
 fi
 
-# Check if this is a worktree (has ___wt- in the path) — that's fine
-if echo "$tool_input" | grep -q "___wt-"; then
-  echo '{}'
-  exit 0
-fi
-
-# Check if we're on the default branch of that repo
-if [[ -d "$REPOS_DIR/$repo_match" ]]; then
-  current_branch=$(git -C "$REPOS_DIR/$repo_match" branch --show-current 2>/dev/null || echo "")
-  default_branch=$(git -C "$REPOS_DIR/$repo_match" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")
-
-  if [[ "$current_branch" == "$default_branch" || "$current_branch" == "main" || "$current_branch" == "master" ]]; then
-    message="You're writing to repos/$repo_match on its default branch ($current_branch). Changes should go through a worktree on a feature branch. Consider running /start-work to formalize this as a work session."
-    output=$(echo "$message" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))')
-    echo "{\"additionalContext\": $output}"
-    exit 0
-  fi
-fi
-
-echo '{}'
+# No work session active but writing to a worktree
+message="You're making changes to a worktree but no work session is active. Run /start-work to formalize this work session."
+output=$(echo "$message" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))')
+echo "{\"additionalContext\": $output}"

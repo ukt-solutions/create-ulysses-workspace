@@ -182,6 +182,11 @@ gh pr create --title "context: {branch-name} work session" --body "Workspace con
 
 ### Step 11: Offer cleanup
 
+Remove work session marker:
+```bash
+rm -f .claude-scratchpad/.work-session-{branch-slug}
+```
+
 Ask: "PRs created. Clean up worktree and local branch? [Y/n]"
 If yes:
 ```bash
