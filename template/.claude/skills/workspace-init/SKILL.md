@@ -32,63 +32,75 @@ All commits go on this branch. After completion, the user reviews and squash-mer
 
 Scan the workspace for existing content that needs organizing:
 - CLAUDE.md.bak — pre-migration CLAUDE.md (old config, rules, preferences)
-- .mcp.json — external service configs (MCP servers with content to extract)
-- workspace-artifacts/ — old scratch directory
-- Non-standard directories at root
+- .mcp.json or .mcp.json.bak — external service configs (MCP servers with content to extract)
+- Non-standard directories and files at root — ANYTHING not part of the template structure, including gitignored items
 - Existing auto-memory files
-- Any files at workspace root that aren't part of the template
+- Any files at workspace root that aren't: CLAUDE.md, workspace.json, .gitignore
 
-Present the inventory as a table. Then immediately present the full plan:
+Present the inventory as a table.
 
-### Step 2: Present the plan
+### Step 2: Identify documentation sources
 
-Based on the inventory, formulate a numbered plan covering ALL steps. Present it to the user before executing anything:
+Before presenting the plan, ask the user explicitly:
+
+"Where does your project documentation live? (Select all that apply)"
+- Notion pages (will need MCP access to extract)
+- Confluence / wiki
+- Markdown files in the repo
+- Google Docs
+- Other: ___
+- No external documentation
+
+This determines whether documentation extraction is part of the plan and sets expectations for what access is needed. If external sources are identified, confirm they're accessible before including extraction in the plan.
+
+### Step 3: Present the plan
+
+Based on inventory and documentation sources, formulate a numbered plan. Present it to the user before executing anything:
 
 ```
 "Here's what I found and my proposed plan:
 
 Step 1: ✓ Inventory (done — {N} items found)
-Step 2: ✓ Plan (this step)
-Step 3: Extract content from Notion/MCP
-Step 4: Preserve local preferences from CLAUDE.md.bak
-Step 5: Create locked team knowledge
-Step 6: Triage non-standard content
-Step 7: Move unmigrated leftovers to .claude-scratchpad/unmigrated/
-Step 8: Clean up external dependencies
-Step 9: Verify — check for self-contradictions
+Step 2: ✓ Documentation sources identified
+Step 3: ✓ Plan (this step)
+Step 4: Extract content from documentation sources
+Step 5: Preserve local preferences from CLAUDE.md.bak
+Step 6: Create locked team knowledge
+Step 7: Clean root directory — move everything non-template to unmigrated
+Step 8: Clean up pre-migration artifacts
+Step 9: Verify — self-contradiction check
 Step 10: Set up workspace remote
-Step 11: Mark initialized, push, report
+Step 11: Mark initialized, report
 
 Adjust this plan, reorder, skip steps, or add things?"
 ```
 
 Adapt the plan to what was actually found. Only include relevant steps. Wait for user confirmation before proceeding.
 
-### Step 3: Extract content from external sources
+### Step 4: Extract content from documentation sources
 
-If .mcp.json exists with MCP servers that hold content (Notion, etc.):
-- Check .claude/recipes/ for relevant migration recipes — read them for guidance
-- Use the MCP tools to fetch content from each source
+For each documentation source identified in Step 2:
+- Check .claude/recipes/ for relevant migration recipes
+- Attempt to access the source (MCP tools, file reads, etc.)
+- **Track access failures** — if a source is unreachable, note it but don't stop. Continue with other sources.
 - For rules/conventions found: write to `.claude/rules/{rule-name}.md`
-- For project context/decisions: stage for Step 5 (locked knowledge)
+- For project context/decisions: stage for Step 6 (locked knowledge)
 - For handoffs/active work: write to `shared-context/{user}/` as ephemeral
 
-If no MCP or no content to extract, skip.
+**Commit:** `git commit -m "feat: extract rules and context from documentation sources"`
 
-**Commit:** `git commit -m "feat: extract rules and context from external sources"`
+### Step 5: Preserve local preferences
 
-### Step 4: Preserve local preferences
-
-Read CLAUDE.md.bak for non-MCP content worth keeping:
+Read CLAUDE.md.bak for non-documentation content worth keeping:
 - Local coding conventions → `.claude/rules/` (new rule files)
 - Project-specific notes → `shared-context/locked/` or `shared-context/{user}/`
 - Repo paths → verify they match workspace.json
 
 **Commit:** `git commit -m "feat: preserve local preferences as rules and context"`
 
-### Step 5: Create locked team knowledge
+### Step 6: Create locked team knowledge
 
-Combine content from Step 3, Step 4, and existing auto-memory into locked context:
+Combine content from Step 4, Step 5, and existing auto-memory into locked context:
 - For each piece of stable knowledge: write to `shared-context/locked/{topic}.md`
 - Keep locked context lean — target <10KB total
 - One topic per file, proper frontmatter
@@ -96,52 +108,53 @@ Combine content from Step 3, Step 4, and existing auto-memory into locked contex
 
 **Commit:** `git commit -m "feat: create locked team knowledge"`
 
-### Step 6: Triage non-standard content
+### Step 7: Clean root directory
 
-For each non-standard directory or file at root:
-- Describe what it contains
-- Decide: move to repos/ (project code), .claude-scratchpad/ (disposable), shared-context/ (worth keeping), delete, or leave as-is
-- Execute
+The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (.claude/, shared-context/, repos/, .claude-scratchpad/).
 
-**Commit:** `git commit -m "chore: triage non-standard content"`
+**Aggressively move everything else to `.claude-scratchpad/unmigrated/`** — including gitignored items. The root must be clean.
 
-### Step 7: Move unmigrated leftovers
-
-Anything still at root that isn't part of the template structure:
 ```bash
 mkdir -p .claude-scratchpad/unmigrated
-mv {remaining-items} .claude-scratchpad/unmigrated/
 ```
 
-Report explicitly: "Moved {N} items to .claude-scratchpad/unmigrated/. Review these and promote anything worth keeping to shared-context/."
+For each non-template item at root:
+- Move to `.claude-scratchpad/unmigrated/{name}`
+- This includes: workspace-artifacts/, old directories, stray files, MCP data directories, IDE configs that leaked into root
 
-Nothing should be silently ignored. If it exists, it gets triaged (Step 6) or moved here.
+Report explicitly: "Moved {N} items to .claude-scratchpad/unmigrated/: {list}. Review these and promote anything worth keeping."
 
-**Commit:** `git commit -m "chore: move unmigrated leftovers to scratchpad"`
+The .gitignore should only contain entries relevant to the template structure. Remove entries for items that have been moved to unmigrated — they don't need ignoring if they're not at root anymore.
 
-### Step 8: Clean up external dependencies
+**Commit:** `git commit -m "chore: clean root — move non-template items to unmigrated"`
+
+### Step 8: Clean up pre-migration artifacts
 
 After content has been extracted:
-- .mcp.json → back up to .mcp.json.bak and remove
+- .mcp.json → back up to .mcp.json.bak if not already, move both to unmigrated
 - CLAUDE.md.bak → remove (content extracted)
-- Any other pre-migration artifacts → clean up
+- Any other pre-migration artifacts → clean up or move to unmigrated
 
 **Commit:** `git commit -m "chore: clean up pre-migration artifacts"`
 
 ### Step 9: Verify — self-contradiction check
 
-Read ALL created and activated files:
+Read EVERY created and activated file. This is mandatory and must be thorough:
+
+**Files to check:**
 - Every `.claude/rules/*.md` (not .skip)
 - Every `shared-context/locked/*.md`
 - Every `shared-context/{user}/*.md`
 
-Check for:
-- References to removed services (MCP servers that were just deleted)
-- References to removed files (CLAUDE.md.bak, .mcp.json, old paths)
+**Check for:**
+- References to removed services (MCP servers, APIs that were just deleted or backed up)
+- References to removed files (CLAUDE.md.bak, .mcp.json, old paths, moved directories)
+- References to external sources as if they're still the primary source of truth (e.g., "Use the Notion MCP tools" after Notion MCP was removed)
 - Contradictions between rules (one says X, another says not-X)
-- References to Notion pages or other external sources that are no longer the source of truth
+- Stale template preamble text left in activated rules (e.g., "Activate this rule if...")
+- Provenance notes that could mislead ("Extracted from Notion doc 06" — fine as attribution, but should not imply Notion is still authoritative)
 
-Fix any issues found. Report: "Verification found {N} issues, all fixed."
+Fix ALL issues found. This step must not be rushed.
 
 **Commit:** `git commit -m "fix: resolve self-contradictions from init"`
 
@@ -154,23 +167,34 @@ If the workspace git repo has no remote:
 - Create via `gh repo create {org}/{name} --private` and add as remote
 - Do NOT push yet — user merges the branch first
 
-### Step 11: Mark initialized
+### Step 11: Mark initialized and report
 
 Update workspace.json: set `initialized: true`
 
 **Commit:** `git commit -m "chore: mark workspace as initialized"`
 
-Report the branch for review:
+**Final report must include ALL of the following:**
+
 ```
 "Workspace init complete on branch chore/workspace-init.
 
 Summary:
 - {N} rules created/activated
-- {M} locked context files
+- {M} locked context files ({size}KB / 10KB target)
 - {K} user context files
-- {J} items triaged, {L} moved to unmigrated
+- {L} items moved to .claude-scratchpad/unmigrated/
 - {V} self-contradictions found and fixed
 - Remote: {org}/{name} (ready to push after merge)
+
+Issues encountered:
+- {list every expected behavior that failed — documentation sources that were
+  unreachable, MCP pages that returned errors, files that couldn't be read,
+  permissions issues, anything that didn't work as planned}
+
+If no issues: "No issues encountered."
+
+Items in .claude-scratchpad/unmigrated/:
+- {list each item with a one-line description}
 
 Review the branch:
   git log --oneline chore/workspace-init
@@ -182,22 +206,26 @@ Then merge:
   git commit -m 'chore: workspace initialization'
   git push origin main
 
-Run /start-work to begin your first work session."
+This session is done. Start a fresh Claude Code session for your first
+/start-work. Do not begin new work in this session."
 ```
 
-## Execution Style
+## Execution Rules
 
 - Present the plan upfront. Don't ask permission at every micro-step.
 - Execute confidently. Report after each major step completes.
 - Commit after each major step — granular history on the branch.
 - Ask the user only for decisions that require judgment (what to keep, where to put things).
-- If something is clearly disposable (empty dirs, stale logs), just clean it up and report.
+- **Root directory cleanliness is non-negotiable.** If something isn't part of the template structure, it goes to unmigrated. Don't leave items because they're gitignored — move them.
+- **Every expected behavior that fails must be reported.** If the plan said "extract from Notion" and Notion returned 404, that's an issue to report — not silently skip.
+- **Don't suggest starting work at the end.** Tell the user to close this session and start fresh. Init is its own session.
+- The verification step (Step 9) is mandatory — read every file, check thoroughly. Don't rush it.
 - Recipes in .claude/recipes/ are guidance, not scripts. Adapt to what you find.
 - The user knows their project. Follow their lead on content decisions.
-- The verification step (Step 9) is mandatory — never skip it.
 
 ## Notes
 - One topic per file, proper frontmatter, coherent content
 - Don't extract everything — only active, relevant content. Stale is dead.
 - Keep locked context under 10KB — it's loaded every session
 - The branch allows the user to review, adjust, or redo individual steps before merging
+- Documentation sources are first-class — always ask, always confirm access, always report failures
