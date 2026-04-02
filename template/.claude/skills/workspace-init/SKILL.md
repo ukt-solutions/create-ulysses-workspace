@@ -18,6 +18,14 @@ This skill runs once. After completion, it sets `workspace.initialized: true` in
 
 If `workspace.json` has `"initialized": true`, report: "Workspace already initialized. Use /migrate --update for template updates, or /audit to check integrity."
 
+## Branching
+
+Workspace-init creates a branch for all its work:
+```bash
+git checkout -b chore/workspace-init
+```
+All commits go on this branch. After completion, the user reviews and squash-merges to main. This allows easy replay, adjustment via interactive rebase, or reverting individual changes.
+
 ## Flow
 
 ### Step 1: Inventory
@@ -41,23 +49,20 @@ Based on the inventory, formulate a numbered plan covering ALL steps. Present it
 
 Step 1: ✓ Inventory (done — {N} items found)
 Step 2: ✓ Plan (this step)
-Step 3: Extract content from Notion/MCP (if .mcp.json found)
-   - Fetch rules page → create .claude/rules/ files
-   - Fetch memory/context page → create shared-context/locked/ files
-   - Fetch handoffs page → create shared-context/{user}/ files
+Step 3: Extract content from Notion/MCP
 Step 4: Preserve local preferences from CLAUDE.md.bak
-Step 5: Create locked team knowledge (from extracted content + auto-memory)
-Step 6: Triage non-standard content ({list of dirs/files})
-Step 7: Clean up external dependencies (.mcp.json, CLAUDE.md.bak)
-Step 8: Set up workspace remote
-Step 9: Mark initialized and commit
+Step 5: Create locked team knowledge
+Step 6: Triage non-standard content
+Step 7: Move unmigrated leftovers to .claude-scratchpad/unmigrated/
+Step 8: Clean up external dependencies
+Step 9: Verify — check for self-contradictions
+Step 10: Set up workspace remote
+Step 11: Mark initialized, push, report
 
 Adjust this plan, reorder, skip steps, or add things?"
 ```
 
-Adapt the plan to what was actually found. If there's no MCP to extract from, skip that step. If there are no non-standard dirs, skip triage. Only include steps that are relevant.
-
-Wait for user confirmation before proceeding. Execute steps in order, reporting progress after each.
+Adapt the plan to what was actually found. Only include relevant steps. Wait for user confirmation before proceeding.
 
 ### Step 3: Extract content from external sources
 
@@ -70,12 +75,16 @@ If .mcp.json exists with MCP servers that hold content (Notion, etc.):
 
 If no MCP or no content to extract, skip.
 
+**Commit:** `git commit -m "feat: extract rules and context from external sources"`
+
 ### Step 4: Preserve local preferences
 
 Read CLAUDE.md.bak for non-MCP content worth keeping:
 - Local coding conventions → `.claude/rules/` (new rule files)
 - Project-specific notes → `shared-context/locked/` or `shared-context/{user}/`
 - Repo paths → verify they match workspace.json
+
+**Commit:** `git commit -m "feat: preserve local preferences as rules and context"`
 
 ### Step 5: Create locked team knowledge
 
@@ -85,6 +94,8 @@ Combine content from Step 3, Step 4, and existing auto-memory into locked contex
 - One topic per file, proper frontmatter
 - Only lock what the team needs every session. Everything else is ephemeral.
 
+**Commit:** `git commit -m "feat: create locked team knowledge"`
+
 ### Step 6: Triage non-standard content
 
 For each non-standard directory or file at root:
@@ -92,41 +103,84 @@ For each non-standard directory or file at root:
 - Decide: move to repos/ (project code), .claude-scratchpad/ (disposable), shared-context/ (worth keeping), delete, or leave as-is
 - Execute
 
-### Step 7: Clean up external dependencies
+**Commit:** `git commit -m "chore: triage non-standard content"`
+
+### Step 7: Move unmigrated leftovers
+
+Anything still at root that isn't part of the template structure:
+```bash
+mkdir -p .claude-scratchpad/unmigrated
+mv {remaining-items} .claude-scratchpad/unmigrated/
+```
+
+Report explicitly: "Moved {N} items to .claude-scratchpad/unmigrated/. Review these and promote anything worth keeping to shared-context/."
+
+Nothing should be silently ignored. If it exists, it gets triaged (Step 6) or moved here.
+
+**Commit:** `git commit -m "chore: move unmigrated leftovers to scratchpad"`
+
+### Step 8: Clean up external dependencies
 
 After content has been extracted:
 - .mcp.json → back up to .mcp.json.bak and remove
 - CLAUDE.md.bak → remove (content extracted)
 - Any other pre-migration artifacts → clean up
 
-### Step 8: Set up workspace remote
+**Commit:** `git commit -m "chore: clean up pre-migration artifacts"`
+
+### Step 9: Verify — self-contradiction check
+
+Read ALL created and activated files:
+- Every `.claude/rules/*.md` (not .skip)
+- Every `shared-context/locked/*.md`
+- Every `shared-context/{user}/*.md`
+
+Check for:
+- References to removed services (MCP servers that were just deleted)
+- References to removed files (CLAUDE.md.bak, .mcp.json, old paths)
+- Contradictions between rules (one says X, another says not-X)
+- References to Notion pages or other external sources that are no longer the source of truth
+
+Fix any issues found. Report: "Verification found {N} issues, all fixed."
+
+**Commit:** `git commit -m "fix: resolve self-contradictions from init"`
+
+### Step 10: Set up workspace remote
 
 If the workspace git repo has no remote:
 - Detect the org from project repo remotes in workspace.json
 - Naming convention: `workspace-{project}` (e.g., `workspace-codeapy`)
-- Suggest: "Create workspace repo as `{org}/workspace-{project}`?"
+- Ask: "Create workspace repo as `{org}/workspace-{project}`? Or provide a different name/URL."
 - Create via `gh repo create {org}/{name} --private` and add as remote
-- Push
+- Do NOT push yet — user merges the branch first
 
-### Step 9: Mark initialized
+### Step 11: Mark initialized
 
 Update workspace.json: set `initialized: true`
 
-Commit and push:
-```bash
-git add -A
-git commit -m "chore: workspace initialization complete"
-git push origin main
-```
+**Commit:** `git commit -m "chore: mark workspace as initialized"`
 
-Report:
+Report the branch for review:
 ```
-"Workspace initialized:
-- {N} rules created
+"Workspace init complete on branch chore/workspace-init.
+
+Summary:
+- {N} rules created/activated
 - {M} locked context files
 - {K} user context files
-- {J} items triaged
-- Remote: {org}/{name}
+- {J} items triaged, {L} moved to unmigrated
+- {V} self-contradictions found and fixed
+- Remote: {org}/{name} (ready to push after merge)
+
+Review the branch:
+  git log --oneline chore/workspace-init
+  git diff main..chore/workspace-init
+
+Then merge:
+  git checkout main
+  git merge --squash chore/workspace-init
+  git commit -m 'chore: workspace initialization'
+  git push origin main
 
 Run /start-work to begin your first work session."
 ```
@@ -135,12 +189,15 @@ Run /start-work to begin your first work session."
 
 - Present the plan upfront. Don't ask permission at every micro-step.
 - Execute confidently. Report after each major step completes.
+- Commit after each major step — granular history on the branch.
 - Ask the user only for decisions that require judgment (what to keep, where to put things).
 - If something is clearly disposable (empty dirs, stale logs), just clean it up and report.
 - Recipes in .claude/recipes/ are guidance, not scripts. Adapt to what you find.
 - The user knows their project. Follow their lead on content decisions.
+- The verification step (Step 9) is mandatory — never skip it.
 
 ## Notes
 - One topic per file, proper frontmatter, coherent content
 - Don't extract everything — only active, relevant content. Stale is dead.
 - Keep locked context under 10KB — it's loaded every session
+- The branch allows the user to review, adjust, or redo individual steps before merging
