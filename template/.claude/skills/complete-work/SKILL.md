@@ -152,13 +152,23 @@ EOF
 
 ### Step 9: Process workspace inflight context
 
-Process `shared-context/{user}/inflight/` files:
+Every file in `shared-context/{user}/inflight/` must be resolved — nothing stays in inflight after /complete-work. For each file, determine its disposition:
 
-| File type | Action |
-|-----------|--------|
-| Branch handoffs (reference this branch) | Mark `lifecycle: resolved` |
-| Session braindumps (created during this work session) | Move to `{user}/` ongoing if still valuable, or discard if consumed |
-| Branch-scoped specs/plans | Already removed in Step 6 |
+**Branch handoffs** (frontmatter references this branch):
+- Extract any content not already captured in release notes
+- If useful content remains (decisions, patterns worth keeping) → move to `{user}/` ongoing
+- If fully consumed by release notes → delete
+- Never leave as `lifecycle: resolved` in inflight — that's a dead state
+
+**Session braindumps** (created during this work session):
+- If the braindump covers a topic broader than this branch (future ideas, platform vision) → move to `{user}/` ongoing
+- If the braindump was specific to this branch's work → content should already be in release notes, delete
+- If unsure → ask the user: "Keep {topic} as ongoing context, or discard?"
+
+**Branch-scoped specs/plans** (`design-*`, `plan-*` in inflight/):
+- Already removed in Step 6
+
+**Rule: inflight/ should be empty after /complete-work.** If any files remain, something was missed. List them and ask the user what to do.
 
 ### Step 10: Push and create PR — workspace repo
 
