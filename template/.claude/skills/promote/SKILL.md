@@ -5,51 +5,73 @@ description: Move personal auto-memory or local-only files into shared context. 
 
 # Promote
 
-Promote personal knowledge into shared context.
+Promote personal knowledge into shared context. Assess all candidates, recommend actions, let the user decide with coded references.
 
 ## Sources
 
-This skill can promote from two sources:
-1. **Auto-memory** — files in `~/.claude/projects/*/memory/`
-2. **Local-only files** — `shared-context/local-only-*.md` or `.claude/rules/local-only-*.md`
+This skill can promote from three sources:
+1. **Auto-memory (AM)** — files in `~/.claude/projects/*/memory/`
+2. **Local-only context (LOC)** — `shared-context/local-only-*.md`
+3. **Local-only rules (LOR)** — `.claude/rules/local-only-*.md`
 
 ## Flow
 
-**Step 1: Choose source**
-Ask: "What would you like to promote?"
-- "Show my auto-memory files"
-- "Show my local-only context files"
-- "Show my local-only rules"
+**Step 1: List all candidates**
 
-**Step 2: List candidates**
-List files from the chosen source with their names, descriptions (from frontmatter), and a preview of content.
+Show ALL candidates from all sources in a single coded table. The user should see everything at once to make informed decisions.
 
-**Step 3: Select**
-User picks which file(s) to promote.
-
-**Step 4: Configure destination**
-For each selected file, ask:
-- "Name for this shared context?" (suggest based on source filename)
-- "Team-visible, user-scoped, or keep as local-only?" (for promoting local-only to shared)
-- "Locked (team truth, always loaded) or ephemeral (working knowledge)?"
-
-**Step 5: Rewrite and save**
-- Auto-memory files are terse notes — rewrite into the shared-context format with proper frontmatter, sections, and enough context to be useful to someone who wasn't in the original session.
-- Local-only files: rename (drop `local-only-` prefix) or copy to new location.
-- Set `type: promoted` in frontmatter.
-
-**Step 6: Commit**
-```bash
-git add shared-context/{path-to-file}
-git commit -m "promote: {name}"
+```
+| Code | File                          | Assessment                              | Recommendation    |
+|------|-------------------------------|-----------------------------------------|-------------------|
+| AM1  | feedback_no_injection_rev...  | Redundant — coherent-revisions rule     | Drop from memory  |
+| AM2  | project_create_claude_work... | Stale — references deleted spec         | Drop or update    |
+| AM3  | feedback_subagent_perms...    | Personal setup quirk                    | Keep as memory    |
+| LOC1 | local-only-naming-ideas.md    | Team should see naming options          | Promote to myron/ |
+| LOC2 | local-only-release-checkli... | Personal task tracker                   | Keep local        |
+| LOR1 | local-only-dogfood-sync.md    | Dogfood-specific, not for template      | Keep local        |
 ```
 
-**Step 7: Optionally remove source**
-Ask: "Remove the original {source-type} file? [y/N]"
-If auto-memory: delete the file from `~/.claude/projects/*/memory/`
-If local-only: delete the local-only file
+For each candidate, assess:
+- Is it redundant with an existing rule or context file? → recommend drop
+- Is it stale or outdated? → recommend drop or update
+- Is it personal/setup-specific? → recommend keep as-is
+- Would the team benefit from seeing it? → recommend promote
+
+**Step 2: User decides**
+
+The user responds using codes:
+- "Promote: LOC1, LOC2. Drop: AM1, AM2. Keep the rest."
+- "Promote all LOC. Drop AM1-AM3."
+- Or any combination.
+
+**Step 3: Execute decisions**
+
+For each **promote** action:
+- Ask: "Team-visible, user-scoped (default), or locked?"
+- Copy to destination, set `type: promoted` in frontmatter
+- Remove the local-only original
+- Commit individually: `git commit -m "promote: {name}"`
+
+For each **drop** action:
+- Delete the file (auto-memory from `~/.claude/projects/*/memory/`, local-only from workspace)
+- Update MEMORY.md index if auto-memory was removed
+
+For each **keep** action:
+- No changes
+
+**Step 4: Report**
+
+"Promoted {N} files. Dropped {M} files. {K} files unchanged."
+
+## Rewrite on Promote
+
+Auto-memory files are terse notes written for Claude's internal use. When promoting to shared context, rewrite into proper format with:
+- Frontmatter (state, lifecycle, type: promoted, topic, author, updated)
+- Sections with enough context to be useful to someone who wasn't in the original session
+- Local-only files may already be well-formatted — copy as-is if so, just update frontmatter
 
 ## Notes
 - Promotion is one-way: shared context should not be demoted back to local-only
 - Use this when you discover a pattern, convention, or decision that would benefit the team
-- The rewrite step is important — auto-memory is written for Claude's internal use; shared context is written for humans and Claude
+- The coded table makes bulk decisions fast — no need to type full filenames
+- Assess everything upfront so the user sees the full picture before deciding
