@@ -1,5 +1,5 @@
 ---
-name: sync
+name: sync-work
 description: Push branches without ceremony — both project and workspace repos. No PR, no status change, no forced capture. Use for backing up work in progress.
 ---
 
@@ -44,7 +44,7 @@ Report: "Synced: {repo} ({branch-name}) pushed to origin."
 
 **Step 5: Optionally offer capture**
 "Want to /braindump or /handoff while syncing? [n/Y]"
-Default is no — /sync is about backing up, not capturing. But the offer is there.
+Default is no — /sync-work is about backing up, not capturing. But the offer is there.
 
 ## Three Intents, Three Skills
 
@@ -52,7 +52,7 @@ Default is no — /sync is about backing up, not capturing. But the offer is the
 |---|---|---|
 | /pause-work | Stopping, someone else might pick up | Capture + push + draft PR + mark paused |
 | /complete-work | Done with this branch | Synthesize + push + real PR + resolve context |
-| /sync | Still working, just backing up | Push + no PR + no status change |
+| /sync-work | Still working, just backing up | Push + no PR + no status change |
 
 ## Notes
 - No PRs created — this is a checkpoint, not a milestone
