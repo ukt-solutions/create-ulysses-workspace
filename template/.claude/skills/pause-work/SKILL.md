@@ -59,6 +59,7 @@ git push -u origin {branch-name}
 
 ## Notes
 - This does NOT clean up the worktree — the user may resume later
+- The work session marker (`.claude-scratchpad/.work-session-{branch-slug}`) is kept — the session is paused, not ended
 - Related shared-context entries get `lifecycle: paused`
 - Both repos get pushed (project repo + workspace repo)
 - To resume: `/start-work handoff`

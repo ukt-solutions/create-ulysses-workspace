@@ -51,11 +51,11 @@ Begin a work session by resuming from shared context or starting fresh. Creates 
 
 ### Create branches in both repos
 
-**Project repo** — branch + worktree:
+**Project repo** — branch + worktree (never checkout on the main clone):
 ```bash
 cd repos/{repo}
 git fetch origin
-git checkout -b {branch-name} origin/{default-branch}
+git branch {branch-name} origin/{default-branch}
 ```
 ```bash
 cd repos/
@@ -69,7 +69,12 @@ git checkout -b {branch-name}
 ```
 
 6. Create `shared-context/{user}/inflight/` directory if it doesn't exist
-7. Confirm: "Work session started. Worktree at repos/{repo}___wt-{branch-slug}/. Workspace on branch {branch-name}."
+7. Create work session marker:
+   ```bash
+   mkdir -p .claude-scratchpad
+   echo '{"branch":"{branch-name}","repo":"{repo}","started":"{ISO8601}","user":"{user}"}' > .claude-scratchpad/.work-session-{branch-slug}
+   ```
+8. Confirm: "Work session started. Worktree at repos/{repo}___wt-{branch-slug}/. Workspace on branch {branch-name}."
 
 ### Stale worktree check
 
