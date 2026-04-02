@@ -51,11 +51,11 @@ Begin a work session by resuming from shared context or starting fresh. Creates 
 
 ### Create branches in both repos
 
-**Project repo** — branch + worktree:
+**Project repo** — branch + worktree (never checkout on the main clone):
 ```bash
 cd repos/{repo}
 git fetch origin
-git checkout -b {branch-name} origin/{default-branch}
+git branch {branch-name} origin/{default-branch}
 ```
 ```bash
 cd repos/
