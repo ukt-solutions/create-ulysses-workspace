@@ -3,7 +3,6 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
@@ -22,6 +21,29 @@
             "command": ".claude/hooks/subagent-start.sh",
             "timeout": 5000,
             "statusMessage": "Loading shared context..."
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-compact.sh",
+            "timeout": 5000,
+            "statusMessage": "Checking for uncaptured context..."
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-compact.sh",
+            "timeout": 5000
           }
         ]
       }
