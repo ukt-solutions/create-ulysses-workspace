@@ -85,7 +85,7 @@ Cleanup suggestions (2):
   ⊕ workspace-branching.md and persistent-work-sessions.md overlap
     significantly — merge into one?
   ⊕ migration-recipes.md still says "/sync handles dogfood" but
-    /sync was replaced by /migrate — update?
+    /sync was replaced by /sync-work — update?
 
 OK (4):
   ✓ All CLAUDE.md skill references valid
