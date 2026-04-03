@@ -11,10 +11,10 @@ repos/
 
 # Local-only convention (rules, context)
 .claude/rules/local-only-*
-shared-context/local-only-*
+shared-context/**/local-only-*
 
-# Claude Code internals
-.superpowers/
+# IDE
+.idea/
 
 # OS
 .DS_Store
