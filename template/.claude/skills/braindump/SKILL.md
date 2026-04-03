@@ -60,10 +60,6 @@ Example: you're deep in implementing auth but an idea about the deployment pipel
 
 When updating, rewrite as a fresh snapshot (coherent-revisions rule). The updated braindump should read as if written in one pass.
 
-## Capture-Time Cross-Check
-
-Same as /handoff: after writing, scan existing shared-context for stale references, contradictions, and overlap. Surface findings.
-
 ## Key Differences from /handoff
 - `/handoff` is structured around work state (branch, status, next steps)
 - `/braindump` is structured around reasoning (context, exploration, decisions, implications)

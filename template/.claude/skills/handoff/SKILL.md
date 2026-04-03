@@ -69,15 +69,6 @@ When updating an existing handoff, rewrite it as a fresh snapshot of current und
 
 Update the `updated` date in frontmatter. Keep the `lifecycle` as-is unless the user indicates a change.
 
-## Capture-Time Cross-Check
-
-After writing a new or updated handoff, scan existing shared-context files for:
-- **Stale references** — paths, counts, or status that changed ("create-claude-workspace.md still says 2 mandatory rules but you now have 4")
-- **Contradictions** — old info conflicts with what was just captured
-- **Overlap** — same topic partially covered in another file
-
-Surface findings: "Found stale reference in {file}. Update? [y/N]"
-
 ## Notes
 - User-scoped is the default — root is only for content deliberately made team-visible
 - Handoffs are always committed individually — never bundled with code commits
