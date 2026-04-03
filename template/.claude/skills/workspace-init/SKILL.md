@@ -16,7 +16,7 @@ This skill runs once. After completion, it sets `workspace.initialized: true` in
 
 ## Gate
 
-If `workspace.json` has `"initialized": true`, report: "Workspace already initialized. Use /migrate --update for template updates, or /audit to check integrity."
+If `workspace.json` has `"initialized": true`, report: "Workspace already initialized. Use /workspace-update for template updates, or /maintenance to check integrity."
 
 ## Branching
 
