@@ -1,6 +1,6 @@
 {
   "name": "create-claude-workspace",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Scaffold a convention-over-configuration workspace for Claude Code",
   "type": "module",
   "bin": {
