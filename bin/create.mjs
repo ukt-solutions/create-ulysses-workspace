@@ -3,24 +3,42 @@
 import { runPrompts } from '../lib/prompts.mjs';
 import { scaffold } from '../lib/scaffold.mjs';
 import { initGit, cloneRepos } from '../lib/git.mjs';
-import { migrate } from '../lib/migrate.mjs';
 import { resolve } from 'path';
 
 async function main() {
   console.log('\n  create-claude-workspace\n');
 
-  // Check for --migrate flag
+  const initFlag = process.argv.includes('--init');
+  const upgradeFlag = process.argv.includes('--upgrade');
   const migrateFlag = process.argv.includes('--migrate');
-  const updateFlag = process.argv.includes('--update');
 
+  // Deprecated --migrate
   if (migrateFlag) {
-    // Find the target directory (first arg after --migrate that isn't --update)
-    const args = process.argv.slice(process.argv.indexOf('--migrate') + 1);
+    console.error('  --migrate is deprecated. Use --init (fresh install) or --upgrade (template update).');
+    console.error('');
+    console.error('  Fresh install:    npx create-claude-workspace --init [target-dir]');
+    console.error('  Template update:  npx create-claude-workspace --upgrade [target-dir]');
+    console.error('');
+    process.exit(1);
+  }
+
+  if (initFlag) {
+    const { initWorkspace } = await import('../lib/init.mjs');
+    const args = process.argv.slice(process.argv.indexOf('--init') + 1);
     const targetDir = resolve(args.find(a => !a.startsWith('--')) || '.');
-    await migrate(targetDir, { update: updateFlag });
+    await initWorkspace(targetDir);
     return;
   }
 
+  if (upgradeFlag) {
+    const { upgradeWorkspace } = await import('../lib/upgrade.mjs');
+    const args = process.argv.slice(process.argv.indexOf('--upgrade') + 1);
+    const targetDir = resolve(args.find(a => !a.startsWith('--')) || '.');
+    await upgradeWorkspace(targetDir);
+    return;
+  }
+
+  // Default: interactive scaffold
   const answers = await runPrompts();
 
   if (!answers) {
