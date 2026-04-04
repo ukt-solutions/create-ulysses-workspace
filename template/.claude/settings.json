@@ -6,7 +6,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workspace-update-check.mjs",
+            "timeout": 5000,
+            "statusMessage": "Checking for workspace updates..."
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.mjs",
             "timeout": 30000,
             "statusMessage": "Syncing workspace..."
           }
@@ -18,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-start.sh",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-start.mjs",
             "timeout": 5000,
             "statusMessage": "Loading shared context..."
           }
@@ -30,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-compact.sh",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-compact.mjs",
             "timeout": 5000,
             "statusMessage": "Checking for uncaptured context..."
           }
@@ -42,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.sh",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.mjs",
             "timeout": 5000
           }
         ]
@@ -53,7 +59,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/repo-write-detection.sh",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workspace-update-check.mjs",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/repo-write-detection.mjs",
             "timeout": 5000
           }
         ]
@@ -64,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end.sh",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end.mjs",
             "timeout": 5000
           }
         ]
@@ -75,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/worktree-create.sh",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/worktree-create.mjs",
             "timeout": 5000,
             "statusMessage": "Checking for stale worktrees..."
           }
