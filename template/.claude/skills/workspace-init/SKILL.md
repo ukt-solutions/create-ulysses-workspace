@@ -5,18 +5,21 @@ description: One-time workspace initialization session. Guides you through popul
 
 # Workspace Init
 
-Guided initialization session for a newly migrated or scaffolded workspace. Populates shared context, creates locked team knowledge, and cleans up pre-template content.
+Guided initialization session for a newly migrated or scaffolded workspace. Reads template components from the `.workspace-update/` payload directory (staged by `npx create-claude-workspace --init`), installs them with user approval, populates shared context, creates locked team knowledge, and cleans up.
 
 This skill runs once. After completion, it sets `workspace.initialized: true` in workspace.json.
 
 ## Prerequisites
 
-- Template structure must be installed (via `npx create-claude-workspace` or `--migrate`)
+- `.workspace-update/` payload directory must exist (staged by `npx create-claude-workspace --init`)
+- If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx create-claude-workspace --init` to stage the template."
 - `workspace.json` must exist with `initialized: false` (or field missing)
 
 ## Gate
 
-If `workspace.json` has `"initialized": true`, report: "Workspace already initialized. Use /workspace-update for template updates, or /maintenance to check integrity."
+If `workspace.json` has `"initialized": true` AND `.workspace-update/` exists with `"action": "init"` in `.workspace-update/.manifest.json`, warn: "Workspace is already initialized. Did you mean to run `npx create-claude-workspace --upgrade` instead?" Do not proceed unless the user explicitly confirms they want to re-initialize.
+
+If `workspace.json` has `"initialized": true` and no `.workspace-update/` payload exists, report: "Workspace already initialized. Use /workspace-update for template updates, or /maintenance to check integrity."
 
 ## Branching
 
@@ -63,33 +66,56 @@ Based on inventory and documentation sources, formulate a numbered plan. Present
 Step 1: ✓ Inventory (done — {N} items found)
 Step 2: ✓ Documentation sources identified
 Step 3: ✓ Plan (this step)
-Step 4: Extract content from documentation sources
-Step 5: Preserve local preferences from CLAUDE.md.bak
-Step 6: Create locked team knowledge
-Step 7: Clean root directory — move everything non-template to unmigrated
-Step 8: Clean up pre-migration artifacts
-Step 9: Verify — self-contradiction check
-Step 10: Set up workspace remote
-Step 11: Mark initialized, report
+Step 4: Install template components from payload
+Step 5: Extract content from documentation sources
+Step 6: Preserve local preferences from CLAUDE.md.bak
+Step 7: Create locked team knowledge
+Step 8: Clean root directory — move everything non-template to unmigrated
+Step 9: Clean up payload and pre-migration artifacts
+Step 10: Verify — self-contradiction check
+Step 11: Set up workspace remote
+Step 12: Mark initialized, report
 
 Adjust this plan, reorder, skip steps, or add things?"
 ```
 
 Adapt the plan to what was actually found. Only include relevant steps. Wait for user confirmation before proceeding.
 
-### Step 4: Extract content from documentation sources
+### Step 4: Install template components from payload
+
+Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload.
+
+Install components from `.workspace-update/.claude/` to their final locations in `.claude/`. For each component directory — skills, hooks, agents, rules, recipes:
+
+1. List files in `.workspace-update/.claude/{component}/`
+2. For each file:
+   - If the file does not exist locally in `.claude/{component}/`: "Install {file}? [Y/n]"
+   - If the file exists locally and differs from the payload version: "Template has {file} but you have a local version. Show diff? [y/N]" — let the user decide whether to overwrite, keep theirs, or merge
+   - If the file exists locally and matches: skip silently
+
+For hooks specifically: note that all hooks are Node.js (.mjs) files and require Node.js runtime. The bootstrap hook (`workspace-update-check.mjs` and `_utils.mjs`) was already installed by the CLI — confirm it matches the payload version and update if needed.
+
+Also install these top-level files from the payload:
+
+- **`.claude/settings.json`** — Read from `.workspace-update/.claude/settings.json`. If `.claude/settings.json` already exists locally, merge the payload settings into the existing file (preserve any user-added settings, add missing entries from the payload). Never overwrite the entire file.
+- **`.gitignore`** — Read from `.workspace-update/_gitignore`. If `.gitignore` already exists locally, merge: add any lines from the payload that aren't already present. Preserve all existing entries.
+- **`CLAUDE.md`** — Read from `.workspace-update/CLAUDE.md.tmpl`. This replaces the bootstrap CLAUDE.md. Substitute `{{workspace_name}}` (or similar template variables) with the workspace name from `workspace.json`. If the existing CLAUDE.md has user-added content beyond the bootstrap template, preserve it.
+
+**Commit:** `git commit -m "feat: install template components from payload"`
+
+### Step 5: Extract content from documentation sources
 
 For each documentation source identified in Step 2:
 - Check .claude/recipes/ for relevant migration recipes
 - Attempt to access the source (MCP tools, file reads, etc.)
 - **Track access failures** — if a source is unreachable, note it but don't stop. Continue with other sources.
 - For rules/conventions found: write to `.claude/rules/{rule-name}.md`
-- For project context/decisions: stage for Step 6 (locked knowledge)
+- For project context/decisions: stage for Step 7 (locked knowledge)
 - For handoffs/active work: write to `shared-context/{user}/` as ephemeral
 
 **Commit:** `git commit -m "feat: extract rules and context from documentation sources"`
 
-### Step 5: Preserve local preferences
+### Step 6: Preserve local preferences
 
 Read CLAUDE.md.bak for non-documentation content worth keeping:
 - Local coding conventions → `.claude/rules/` (new rule files)
@@ -98,9 +124,9 @@ Read CLAUDE.md.bak for non-documentation content worth keeping:
 
 **Commit:** `git commit -m "feat: preserve local preferences as rules and context"`
 
-### Step 6: Create locked team knowledge
+### Step 7: Create locked team knowledge
 
-Combine content from Step 4, Step 5, and existing auto-memory into locked context:
+Combine content from Step 5, Step 6, and existing auto-memory into locked context:
 - For each piece of stable knowledge: write to `shared-context/locked/{topic}.md`
 - Keep locked context lean — target <10KB total
 - One topic per file, proper frontmatter
@@ -108,7 +134,7 @@ Combine content from Step 4, Step 5, and existing auto-memory into locked contex
 
 **Commit:** `git commit -m "feat: create locked team knowledge"`
 
-### Step 7: Clean root directory
+### Step 8: Clean root directory
 
 The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (.claude/, shared-context/, repos/, .claude-scratchpad/).
 
@@ -128,16 +154,18 @@ Nothing should be silently ignored. If it exists, it gets triaged or moved here.
 
 **Commit:** `git commit -m "chore: clean root — move non-template items to unmigrated"`
 
-### Step 8: Clean up pre-migration artifacts
+### Step 9: Clean up payload and pre-migration artifacts
 
-After content has been extracted:
+After content has been extracted and template components installed:
+- **Delete `.workspace-update/` directory entirely** — the payload has been fully consumed
+- **Remove any `@.workspace-update/` lines from CLAUDE.md** — these were temporary bootstrap imports that pointed at the payload; the rules are now installed in `.claude/rules/`
 - .mcp.json → back up to .mcp.json.bak if not already, move both to unmigrated
 - CLAUDE.md.bak → remove (content extracted)
 - Any other pre-migration artifacts → clean up or move to unmigrated
 
-**Commit:** `git commit -m "chore: clean up pre-migration artifacts"`
+**Commit:** `git commit -m "chore: clean up payload and pre-migration artifacts"`
 
-### Step 9: Verify — self-contradiction check
+### Step 10: Verify — self-contradiction check
 
 Read EVERY created and activated file. This is mandatory and must be thorough:
 
@@ -149,6 +177,7 @@ Read EVERY created and activated file. This is mandatory and must be thorough:
 **Check for:**
 - References to removed services (MCP servers, APIs that were just deleted or backed up)
 - References to removed files (CLAUDE.md.bak, .mcp.json, old paths, moved directories)
+- References to `.workspace-update/` (should be gone — all payload references must be cleaned up)
 - References to external sources as if they're still the primary source of truth (e.g., "Use the Notion MCP tools" after Notion MCP was removed)
 - Contradictions between rules (one says X, another says not-X)
 - Stale template preamble text left in activated rules (e.g., "Activate this rule if...")
@@ -158,7 +187,7 @@ Fix ALL issues found. This step must not be rushed.
 
 **Commit:** `git commit -m "fix: resolve self-contradictions from init"`
 
-### Step 10: Set up workspace remote
+### Step 11: Set up workspace remote
 
 If the workspace git repo has no remote:
 - Detect the org from project repo remotes in workspace.json
@@ -167,23 +196,29 @@ If the workspace git repo has no remote:
 - Create via `gh repo create {org}/{name} --private` and add as remote
 - Do NOT push yet — user merges the branch first
 
-### Step 11: Mark initialized and report
+### Step 12: Mark initialized and report
 
-Update workspace.json: set `initialized: true`
+Update workspace.json:
+- Set `initialized: true`
+- Set `templateVersion` to the version from `.workspace-update/.manifest.json` (read this before the payload was deleted in Step 9 — if not already captured, check the commit history or the manifest value noted during Step 4)
 
 **Commit:** `git commit -m "chore: mark workspace as initialized"`
 
 **Final report must include ALL of the following:**
 
 ```
-"Workspace init complete on branch chore/workspace-init.
+"Workspace initialized. Restart Claude Code for all rules and hooks to take effect. Then run /start-work to begin.
+
+Branch: chore/workspace-init
 
 Summary:
 - {N} rules created/activated
+- {P} template components installed (skills, hooks, agents, recipes)
 - {M} locked context files ({size}KB / 10KB target)
 - {K} user context files
 - {L} items moved to .claude-scratchpad/unmigrated/
 - {V} self-contradictions found and fixed
+- Template version: {version}
 - Remote: {org}/{name} (ready to push after merge)
 
 Issues encountered:
@@ -206,8 +241,8 @@ Then merge:
   git commit -m 'chore: workspace initialization'
   git push origin main
 
-This session is done. Start a fresh Claude Code session for your first
-/start-work. Do not begin new work in this session."
+This session is done. Start a fresh Claude Code session and say 'Hi' —
+the init is complete, no hook will fire. Then run /start-work to begin."
 ```
 
 ## Execution Rules
@@ -216,10 +251,11 @@ This session is done. Start a fresh Claude Code session for your first
 - Execute confidently. Report after each major step completes.
 - Commit after each major step — granular history on the branch.
 - Ask the user only for decisions that require judgment (what to keep, where to put things).
+- **Capture the `templateVersion` from `.manifest.json` early** (during Step 4) before the payload is deleted in Step 9. You'll need it for Step 12.
 - **Root directory cleanliness is non-negotiable.** If something isn't part of the template structure, it goes to unmigrated. Don't leave items because they're gitignored — move them.
 - **Every expected behavior that fails must be reported.** If the plan said "extract from Notion" and Notion returned 404, that's an issue to report — not silently skip.
-- **Don't suggest starting work at the end.** Tell the user to close this session and start fresh. Init is its own session.
-- The verification step (Step 9) is mandatory — read every file, check thoroughly. Don't rush it.
+- **Don't suggest starting work at the end.** Tell the user to restart Claude Code and then run /start-work in a fresh session. Init is its own session.
+- The verification step (Step 10) is mandatory — read every file, check thoroughly. Don't rush it.
 - Recipes in .claude/recipes/ are guidance, not scripts. Adapt to what you find.
 - The user knows their project. Follow their lead on content decisions.
 
