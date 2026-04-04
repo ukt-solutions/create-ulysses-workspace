@@ -20,7 +20,7 @@ Apply a staged template update to an initialized workspace. The CLI (`npx create
 
 ### Step 1: Pre-update health check
 
-Run `/maintenance audit` (read-only) to surface existing issues before applying changes. If critical issues are found (broken references, contradictions), report them and ask whether to proceed or fix first.
+Run `/maintenance audit` (read-only) to surface existing issues. Report findings briefly but **always continue to Step 2 immediately** — do not stop to ask about audit results. The audit is informational, not a gate. Any issues found will be included in the post-update report (Step 5) alongside the update results.
 
 ### Step 2: Compare current vs payload
 
