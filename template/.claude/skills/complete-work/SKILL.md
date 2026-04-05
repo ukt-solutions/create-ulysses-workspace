@@ -216,3 +216,4 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 - Branch-scoped specs/plans are consumed and removed; project-scoped ones stay in ongoing
 - Both repos get PRed — project repo for code, workspace repo for context
 - The coherent-revisions rule applies to release notes — synthesize from scratch, don't concatenate sources
+- Context consumption, cleanup, and auto-committing release notes are intentional workflow behavior — these bypass normal commit conventions by design
