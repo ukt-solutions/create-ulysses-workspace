@@ -39,4 +39,3 @@ User-scoped is the default. Root is only for content deliberately made team-visi
 - The main repo clone stays on its default branch — never checkout a feature branch there
 - Never make changes to a repo's default branch directly — all changes go through worktrees
 - `.claude-scratchpad/` is for truly disposable files only — anything worth keeping goes in `shared-context/`
-- Specs and plans start in `shared-context/{user}/inflight/` and move to the worktree when a branch is created
