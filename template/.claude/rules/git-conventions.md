@@ -24,7 +24,5 @@
 ## Commits
 
 - Conventional commit format: `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`
-- Do not commit unless the user explicitly asks
 - Never amend commits unless explicitly asked
 - Never force push unless explicitly asked
-- Shared-context files (handoffs, braindumps) are always committed individually — never bundled with code commits

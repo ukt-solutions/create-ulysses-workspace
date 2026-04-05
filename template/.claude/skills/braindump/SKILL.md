@@ -77,3 +77,4 @@ git commit -m "braindump: {name}"
 - User-scoped is the default
 - One topic, one file — don't mix unrelated ideas in one braindump
 - The "side" variant is for drive-by ideas that shouldn't interrupt flow
+- Auto-committing context files without user request is a workflow artifact — this intentionally bypasses the "do not commit unless asked" convention
