@@ -1,36 +1,31 @@
 ---
 name: complete-work
-description: Finalize a branch — rebase, synthesize release notes from specs/plans/handoffs/commits, create PR. Handles both project repo and workspace repo. Use when work on a branch is done.
+description: Finalize a work session — rebase, synthesize release notes from specs/plans/tracker/commits, create PRs with unified presentation. Handles both project repo and workspace repo. Use when work on a session is done.
 ---
 
 # Complete Work
 
-Finalize the current branch. Handles both the project repo (code changes, release notes, PR) and the workspace repo (context processing, push, PR).
+Finalize the active work session. Handles both the project repo (code changes, release notes, PR) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval.
 
 ## Flow
 
 ### Step 1: Detect context
 
-Determine the current state across both repos:
+Read the active-session pointer from `.claude-scratchpad/.active-session.json`.
+If no active session: "No active work session. Nothing to complete."
 
-**Project repo:**
-```bash
-# Find the active worktree and branch
-git -C repos/{repo} worktree list
-```
-If not in a worktree, ask which branch to complete.
+Read the full session marker from the main root's `.claude-scratchpad/`.
 
-**Workspace repo:**
-```bash
-git branch --show-current
-```
-Check if the workspace is on a feature branch matching the project branch.
+Determine paths:
+- Workspace worktree: `repos/{session-name}___wt-workspace/`
+- Project worktree: `repos/{session-name}___wt-{repo}/`
+- Read the repo's branch from workspace.json (`repos.{repo}.branch`)
 
 ### Step 2: Rebase project repo
 
 ```bash
 # {repo-branch} = repos.{repo}.branch from workspace.json
-cd repos/{repo}___wt-{branch-slug}
+cd repos/{session-name}___wt-{repo}
 git fetch origin
 git rebase origin/{repo-branch}
 ```
@@ -38,32 +33,34 @@ If conflicts arise, STOP and present them to the user. Do not auto-resolve.
 
 ### Step 3: Capture final discussion state
 
-Run `/braindump` to capture any final discussion/reasoning from this session.
+Run `/braindump` to capture any final discussion/reasoning to the inflight tracker.
 If the user declines or there's nothing to capture, skip.
 
 ### Step 4: Gather source material
 
-Formally read ALL three sources before synthesizing — do not write release notes from memory alone:
+Formally read ALL sources before synthesizing — do not write release notes from memory alone:
 
-1. **Branch-scoped specs/plans** in the worktree or `shared-context/{user}/inflight/`:
+1. **Inflight tracker** at `shared-context/{user}/inflight/session-{session-name}.md`
+
+2. **Branch-scoped specs/plans** in the project worktree or inflight/:
    - `design-*.md` files
    - `plan-*.md` files
    - Read each one fully
 
-2. **Handoffs touched** — all shared-context entries referencing this branch:
+3. **Handoffs** — any shared-context entries referencing this branch:
    ```bash
-   grep -rl "branch: {branch-name}" shared-context/
+   grep -rl "branch: {branch}" shared-context/
    ```
-   Read each matching file. Extract key decisions and open questions.
+   Read each matching file.
 
-3. **Branch commit log:**
+4. **Branch commit log:**
    ```bash
    git log origin/{repo-branch}..HEAD --oneline
    ```
 
 ### Step 5: Synthesize release notes
 
-Using the gathered material, create two files in the **project repo** (never the workspace repo):
+Using the gathered material, create two files in the **project repo** worktree:
 
 ```bash
 COMMIT_ID=$(git rev-parse --short HEAD)
@@ -73,7 +70,7 @@ mkdir -p release-notes/unreleased
 **File 1: `release-notes/unreleased/branch-release-notes-{COMMIT_ID}.md`**
 ```markdown
 ---
-branch: {branch-name}
+branch: {branch}
 type: {feature|fix|chore}
 author: {user}
 date: {YYYY-MM-DD}
@@ -81,49 +78,39 @@ date: {YYYY-MM-DD}
 
 ## {Human-readable title}
 
-{Coherent narrative synthesized from spec + plan + handoffs + commits.
-Not a copy-paste — a distilled summary of what was actually implemented.
-Include key decisions that differ from the original spec.
+{Coherent narrative synthesized from tracker + spec + plan + commits.
 Written from scratch per coherent-revisions rule.}
 ```
 
 **File 2: `release-notes/unreleased/branch-release-questions-{COMMIT_ID}.md`**
 ```markdown
 ---
-branch: {branch-name}
+branch: {branch}
 author: {user}
 date: {YYYY-MM-DD}
 ---
 
 ## Open Questions
 
-{Collected from:
-- Handoff "Open Questions" sections
-- Braindump "Implications" sections
-- Spec open questions
-- Anything unresolved from the plan
-Only genuinely open questions — not things resolved during implementation.}
+{Only genuinely open questions — not things resolved during implementation.}
 ```
 
-Commit to the project repo:
+Commit to the project repo worktree:
 ```bash
 git add release-notes/unreleased/
-git commit -m "docs: add release notes for {branch-name}"
+git commit -m "docs: add release notes for {branch}"
 ```
 
 ### Step 6: Consume branch-scoped sources
 
-Remove branch-scoped specs and plans from the worktree and inflight/:
+Remove branch-scoped specs and plans from the project worktree:
 ```bash
-# Worktree sources
+cd repos/{session-name}___wt-{repo}
 rm -f design-*.md plan-*.md
-# Inflight sources (only branch-scoped, not project-scoped)
-```
-Only consume files that are branch-scoped (in inflight/ or the worktree). Leave project-scoped specs in `{user}/` ongoing — those are consumed by /release, not /complete-work.
-
-```bash
 git add -u && git commit -m "chore: remove consumed branch-scoped specs and plans"
 ```
+
+Only consume files that are branch-scoped (in the worktree or inflight/). Leave project-scoped specs in `{user}/` ongoing.
 
 ### Step 7: Check for no-remote
 
@@ -134,87 +121,94 @@ git remote -v
 If no remote: "No remote configured for {repo}. Want me to create one on GitHub, or provide a URL?"
 Create via `gh repo create` or add the provided URL. Never silently skip push.
 
-### Step 8: Push and create PR — project repo
+### Step 8: Push both repos
 
 ```bash
-git push -u origin {branch-name}
-gh pr create --title "{type}: {description}" --body "$(cat <<'EOF'
-## Summary
-{2-3 bullet points from the release notes}
+# Project repo
+cd repos/{session-name}___wt-{repo}
+git push -u origin {branch}
 
-## Release Notes
-See `release-notes/unreleased/branch-release-notes-{COMMIT_ID}.md`
-
-## Test Plan
-{Checklist from the plan, or manual testing steps}
-EOF
-)"
-```
-
-### Step 9: Process workspace inflight context
-
-Every file in `shared-context/{user}/inflight/` must be resolved — nothing stays in inflight after /complete-work. For each file, determine its disposition:
-
-**Branch handoffs** (frontmatter references this branch):
-- Extract any content not already captured in release notes
-- If useful content remains (decisions, patterns worth keeping) → move to `{user}/` ongoing
-- If fully consumed by release notes → delete
-- Never leave as `lifecycle: resolved` in inflight — that's a dead state
-
-**Session braindumps** (created during this work session):
-- If the braindump covers a topic broader than this branch (future ideas, platform vision) → move to `{user}/` ongoing
-- If the braindump was specific to this branch's work → content should already be in release notes, delete
-- If unsure → ask the user: "Keep {topic} as ongoing context, or discard?"
-
-**Branch-scoped specs/plans** (`design-*`, `plan-*` in inflight/):
-- Already removed in Step 6
-
-**Rule: inflight/ should be empty after /complete-work.** If any files remain, something was missed. List them and ask the user what to do.
-
-### Step 10: Push and create PR — workspace repo
-
-```bash
-# From workspace root
+# Workspace repo
+cd repos/{session-name}___wt-workspace
 git add shared-context/
-git commit -m "chore: process inflight context for {branch-name}"
-git push -u origin {branch-name}
-gh pr create --title "context: {branch-name} work session" --body "Workspace context changes from {branch-name} work session."
+git commit -m "chore: finalize context for {session-name}"
+git push -u origin {branch}
 ```
 
-### Step 11: Offer cleanup
+### Step 9: Create PRs and present unified summary
 
-Remove work session marker:
+Create both PRs, then present a single unified summary:
+
 ```bash
-rm -f .claude-scratchpad/.work-session-{branch-slug}
+# Project PR
+cd repos/{session-name}___wt-{repo}
+gh pr create --title "{type}: {description}" --body "..."
+
+# Workspace PR
+cd repos/{session-name}___wt-workspace
+gh pr create --title "context: {session-name} work session" --body "..."
 ```
 
-Ask: "PRs created. Clean up worktree and local branch? [Y/n]"
+Present unified summary:
+```
+Work session complete:
+
+PROJECT: {repo}
+  PR #{n}: {type}: {description}
+  Branch: {branch} → {repo-branch}
+  Changes:
+    - {bullet points from release notes}
+  Release notes: branch-release-notes-{COMMIT_ID}.md
+
+WORKSPACE: {workspace-name}
+  PR #{m}: context: {session-name} work session
+  Branch: {branch} → main
+  Changes:
+    - {summary of shared-context changes}
+
+Merge both? [Y/n]
+```
+
 If yes:
 ```bash
-cd repos/
-git -C {repo} worktree remove {repo}___wt-{branch-slug}
-git -C {repo} branch -d {branch-name}
+gh pr merge {project-pr-number} --merge
+gh pr merge {workspace-pr-number} --merge
+
+# Pull both repos to their default branches
+cd repos/{repo} && git pull origin {repo-branch}
+cd {main-workspace-root} && git pull origin main
 ```
 
-Also scan for other stale worktrees:
+### Step 10: Cleanup
+
+Run the cleanup helper script from the main workspace root:
 ```bash
-git -C repos/{repo} worktree list
+node .claude/scripts/cleanup-work-session.mjs --session-name "{session-name}"
 ```
-If stale worktrees found: "Also found `___wt-{old}` with no recent activity. Clean up? [y/N]"
+
+This removes:
+- Workspace worktree
+- Project worktree
+- Local branches in both repos
+- Session marker
+
+Verify workspace root is still on main:
+```bash
+git branch --show-current  # should be "main"
+```
 
 ## Handling Unformal Work Sessions
 
 If /complete-work is called but changes were made without a formal work session (no branch, changes on default branch):
 
 Ask: "These changes weren't part of a formal work session. What do you want to do?"
-- **Accept as work** — create a branch retroactively, proceed with normal completion
+- **Accept as work** — create a session retroactively, proceed with normal completion
 - **Stash for later** — create a user-scoped handoff describing what was done, stash the changes
 - **Hand off to someone** — create a team-visible handoff at root shared-context/ for another member to pick up
 - **Revert** — undo the changes (with confirmation)
 
 ## Notes
-- Release notes live in the PROJECT repo, not the workspace repo
-- Branch-scoped specs/plans are consumed and removed; project-scoped ones stay in ongoing
-- Both repos get PRed — project repo for code, workspace repo for context
-- The coherent-revisions rule applies to release notes — synthesize from scratch, don't concatenate sources
+- Release notes live in the PROJECT repo worktree — never the workspace
+- The inflight tracker is the primary source for release note synthesis — it captures the full session history
+- Both repos get PRed and merged together — one approval for both
 - Context consumption, cleanup, and auto-committing release notes are intentional workflow behavior — these bypass normal commit conventions by design
