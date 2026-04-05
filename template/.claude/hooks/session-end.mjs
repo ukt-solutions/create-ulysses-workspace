@@ -43,7 +43,7 @@ if (pointer) {
     // Auto-commit the tracker update to the workspace branch
     try {
       execSync(`git add "shared-context/${user}/inflight/session-${pointer.name}.md"`, { cwd: root, stdio: 'pipe' });
-      execSync(`git commit -m "chore: session-end safety capture for ${pointer.name}" --allow-empty`, { cwd: root, stdio: 'pipe' });
+      execSync(`git commit -m "chore: session-end safety capture for ${pointer.name}"`, { cwd: root, stdio: 'pipe' });
     } catch {
       // Commit may fail if nothing changed or hooks block — not fatal
     }

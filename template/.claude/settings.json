@@ -76,7 +76,8 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end.mjs",
-            "timeout": 5000
+            "timeout": 15000,
+            "statusMessage": "Saving session state..."
           }
         ]
       }

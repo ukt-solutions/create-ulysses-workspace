@@ -53,6 +53,11 @@ if (toolName === 'Bash') {
     respond();
     process.exit(0);
   }
+  // Allow helper script invocations from the workspace root
+  if (/node\s+.*\.claude\/scripts\//.test(cmd)) {
+    respond();
+    process.exit(0);
+  }
 }
 
 // Check if this write targets repos/, shared-context/, or template files
@@ -62,6 +67,7 @@ const isTemplateWrite = paths.includes('.claude/') && !paths.includes('.claude-s
 
 if (isRepoWrite || isContextWrite || isTemplateWrite) {
   respond("You're on main. All work should happen in a workspace worktree. Run /start-work to create or resume a work session.");
+  process.exit(0);
 }
 
 respond();
