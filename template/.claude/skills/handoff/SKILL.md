@@ -74,4 +74,4 @@ Update the `updated` date in frontmatter. Keep the `lifecycle` as-is unless the 
 - Handoffs are always committed individually — never bundled with code commits
 - One topic, one file — don't let handoffs become grab-bags
 - Name before writing — the name forces you to identify the single topic
-- Auto-committing context files is a workflow artifact, not a code commit — this intentionally bypasses normal commit conventions
+- Auto-committing context files without user request is a workflow artifact — this intentionally bypasses the "do not commit unless asked" convention, not the "committed individually" constraint above
