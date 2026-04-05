@@ -10,11 +10,12 @@
 
 ## Worktrees
 
-- Feature branches get their own worktree, not a checkout in the main repo
-- Worktree naming: `{repo-name}___wt-{branch-slug}`
-- Example: `repos/codeapy___wt-ble-provisioning/`
-- The main repo clone stays on its default branch
-- Remove worktrees when the branch is merged
+- Work sessions get two worktrees: one for the workspace, one for the project repo
+- Worktree naming: `{session-name}___wt-{type}` where type is `workspace` or `{repo-name}`
+- Examples: `repos/migrate-tool___wt-workspace/`, `repos/migrate-tool___wt-create-claude-workspace/`
+- All worktrees for a session are adjacent in directory listings
+- The main repo clone and workspace root stay on their default branches
+- Remove worktrees when the work session is completed
 
 ## Branch Maintenance
 
