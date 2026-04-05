@@ -1,65 +1,74 @@
 ---
 name: pause-work
-description: Suspend current work — captures state, pushes both repos, creates a draft PR. Use when stepping away from work that isn't finished.
+description: Suspend current work — updates session marker, captures state to inflight tracker, pushes both repos, creates draft PRs. Use when stepping away from work that isn't finished.
 ---
 
 # Pause Work
 
-Suspend the current branch — save context, push both repos, create a draft PR.
+Suspend the active work session. Captures state, pushes work, and marks the session as paused for later resumption.
 
 ## Flow
 
-**Step 1: Detect context**
-Determine the current worktree, branch, and repo:
-```bash
-git -C repos/{repo}___wt-{branch-slug} branch --show-current
-```
-Check workspace repo branch:
-```bash
-git branch --show-current
-```
-If not on a feature branch in either repo, ask which work session to pause.
+### Step 1: Detect active session
 
-**Step 2: Capture discussion state**
-Run `/braindump` to capture any discussion/reasoning from this session.
-If the user declines or there's nothing to capture, skip.
+Read the active-session pointer from `.claude-scratchpad/.active-session.json`.
+If no active session: "No active work session. Nothing to pause."
 
-**Step 3: Capture workstream state**
-Run `/handoff` to capture the current work state.
-If the user declines, skip.
-If a handoff is created/updated, set its `lifecycle` to `paused`.
+Read the full session marker from the main root's `.claude-scratchpad/`.
 
-**Step 4: Check for no-remote**
-Before pushing, verify remotes exist for both repos:
+### Step 2: Update inflight tracker
+
+Write a status summary to the inflight tracker at `shared-context/{user}/inflight/session-{session-name}.md`:
+
+Update the Progress section with:
+- What was accomplished in this chat session
+- Key decisions made
+- Current state of the work
+- Specific next steps for whoever resumes
+
+This is a coherent rewrite of the Progress section, not an append (coherent-revisions rule).
+
+### Step 3: Update session marker
+
+Set `status: "paused"` and record this chat's `ended` timestamp in the marker.
+
+### Step 4: Commit and push workspace
+
 ```bash
-git -C repos/{repo} remote -v
-git remote -v
-```
-If no remote on either: "No remote configured for {repo}. Want me to create one on GitHub, or provide a URL?"
-Create via `gh repo create` or add the provided URL. Never silently skip push.
-
-**Step 5: Push and create draft PR — project repo**
-```bash
-cd repos/{repo}___wt-{branch-slug}
-git push -u origin {branch-name}
-gh pr create --draft --title "[DRAFT] {branch-description}" --body "Work in progress. See shared-context for handoff details."
-```
-If a PR already exists, update it to draft status if needed.
-
-**Step 6: Push workspace repo**
-```bash
-# From workspace root
+# From the workspace worktree
 git add shared-context/
-git commit -m "handoff: pause {branch-name}"
-git push -u origin {branch-name}
+git commit -m "handoff: pause {session-name}"
+git push -u origin {branch}
 ```
 
-**Step 7: Report**
-"Work paused. Draft PR: {url}. Context saved to shared-context/{user}/{handoff-name}.md."
+### Step 5: Push project repo
+
+```bash
+cd repos/{session-name}___wt-{repo}
+git push -u origin {branch}
+```
+
+### Step 6: Create draft PRs
+
+```bash
+# Project repo
+cd repos/{session-name}___wt-{repo}
+gh pr create --draft --title "WIP: {description}" --body "Work in progress. Session paused."
+
+# Workspace repo — from workspace worktree
+gh pr create --draft --title "context: {session-name} (paused)" --body "Workspace context for paused session."
+```
+
+If PRs already exist, update them to draft status if needed.
+
+### Step 7: Confirm
+
+"Session '{session-name}' paused. Resume anytime with /start-work."
+
+No worktree cleanup — the session is meant to be resumed.
 
 ## Notes
-- This does NOT clean up the worktree — the user may resume later
-- The work session marker (`.claude-scratchpad/.work-session-{branch-slug}`) is kept — the session is paused, not ended
-- Related shared-context entries get `lifecycle: paused`
-- Both repos get pushed (project repo + workspace repo)
-- To resume: `/start-work handoff`
+- Pause writes ONLY to `{user}/inflight/` — never to ongoing or root shared-context
+- The session marker stays in `.claude-scratchpad/` — it's the resume mechanism
+- Draft PRs signal work-in-progress without implying merge readiness
+- Auto-committing the pause capture is a workflow artifact — this intentionally bypasses normal commit conventions

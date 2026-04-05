@@ -3,10 +3,11 @@
 This is a claude-workspace. All conventions are defined in .claude/rules/.
 
 ## Quick Reference
-- Repos live in `repos/`, worktrees use `___wt-` suffix
-- Scratch files go in `.claude-scratchpad/`
+- This root is the launcher — all work happens in workspace worktrees
+- `/start-work` to create or resume a work session
+- Worktrees: `repos/{session}___wt-workspace/` and `repos/{session}___wt-{repo}/`
+- From root: only `local-only-*` and `.claude-scratchpad/` are writable
 - Shared memory lives in `shared-context/`
-- No files outside `repos/`, `shared-context/`, or `.claude-scratchpad/`
 
 ## Workspace Config
 @workspace.json

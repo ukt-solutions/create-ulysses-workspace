@@ -17,3 +17,10 @@ When working in this workspace, pay attention to and save memories about:
 - File contents (re-read them instead)
 - Anything already captured in a shared-context file
 - Anything documented in .claude/rules/
+
+## Session-Scoped vs Cross-Session
+
+When a work session is active:
+- Decisions and progress from this session → update the inflight tracker (consumed by /complete-work)
+- Patterns, corrections, and insights that apply beyond this session → auto-memory (persists across all sessions)
+- Don't duplicate: if something is already in the inflight tracker, don't also save it to auto-memory

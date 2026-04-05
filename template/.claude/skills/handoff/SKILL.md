@@ -11,6 +11,25 @@ Save structured workstream state to shared context. Usable anytime, any number o
 - `/handoff {name}` — create or update a named handoff
 - `/handoff` (no param) — analyze session and suggest name(s)
 
+## Session-Aware Behavior
+
+When called within an active work session (`.claude-scratchpad/.active-session.json` exists):
+
+- Default behavior: update the inflight tracker at `shared-context/{user}/inflight/session-{session-name}.md`
+- Rewrite the tracker's Progress section with current state (coherent-revisions rule)
+- Skip the naming and scoping questions — the tracker is already scoped to this session
+- Auto-commit the update:
+  ```bash
+  git add shared-context/{user}/inflight/session-{session-name}.md
+  git commit -m "handoff: update {session-name} tracker"
+  ```
+
+When called from the workspace root (no active session):
+- Only `local-only-*` files are writable from the root
+- Suggest starting a work session first, or create a `local-only-{name}.md` file
+
+The flows below apply when NOT in an active work session, or when the user explicitly asks for a standalone handoff file.
+
 ## Flow: Named
 
 1. Read workspace user identity from `.claude/settings.local.json` (`workspace.user`)
