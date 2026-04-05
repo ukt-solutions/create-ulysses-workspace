@@ -321,4 +321,4 @@ Update worktree naming section:
 - #12 — Side braindump as subagent
 - #19 — Directory restructure
 - Multi-repo work sessions (future, requires schema change)
-- Claude Squad session ID integration (platform dependency, works if available)
+- Session ID integration for third-party multi-agent tools (works if IDs are available, degrades gracefully if not)
