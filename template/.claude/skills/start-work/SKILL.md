@@ -53,9 +53,10 @@ Begin a work session by resuming from shared context or starting fresh. Creates 
 
 **Project repo** — branch + worktree (never checkout on the main clone):
 ```bash
+# Read the repo's branch from workspace.json (repos.{repo}.branch)
 cd repos/{repo}
 git fetch origin
-git branch {branch-name} origin/{default-branch}
+git branch {branch-name} origin/{repo-branch}
 ```
 ```bash
 cd repos/

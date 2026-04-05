@@ -29,9 +29,10 @@ Check if the workspace is on a feature branch matching the project branch.
 ### Step 2: Rebase project repo
 
 ```bash
+# {repo-branch} = repos.{repo}.branch from workspace.json
 cd repos/{repo}___wt-{branch-slug}
 git fetch origin
-git rebase origin/{default-branch}
+git rebase origin/{repo-branch}
 ```
 If conflicts arise, STOP and present them to the user. Do not auto-resolve.
 
@@ -57,7 +58,7 @@ Formally read ALL three sources before synthesizing — do not write release not
 
 3. **Branch commit log:**
    ```bash
-   git log origin/{default-branch}..HEAD --oneline
+   git log origin/{repo-branch}..HEAD --oneline
    ```
 
 ### Step 5: Synthesize release notes
