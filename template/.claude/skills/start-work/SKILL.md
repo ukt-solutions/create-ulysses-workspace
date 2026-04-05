@@ -1,117 +1,126 @@
 ---
 name: start-work
-description: Begin a work session. Use at the start of any work — either resuming from a handoff or starting fresh. Accepts optional parameter "handoff" or "blank".
+description: Begin or resume a work session. Creates workspace + project worktrees for parallel session support. Accepts optional parameter "handoff" or "blank".
 ---
 
 # Start Work
 
-Begin a work session by resuming from shared context or starting fresh. Creates branches in both the project repo (with worktree) and the workspace repo for traceability.
+Begin or resume a persistent work session. Each session gets its own workspace worktree and project worktree, enabling parallel sessions in separate terminal windows.
 
 ## Parameters
-- `/start-work handoff` — resume from an existing handoff
+- `/start-work` (no param) — check for active sessions, then resume or start new
 - `/start-work blank` — start new work from scratch
-- `/start-work` (no param) — smart default: check for active context first
+- `/start-work handoff` — list shared context to resume from
 
 ## Flow: No Parameter
 
-1. Check `shared-context/` for ephemeral `.md` files (scan to depth 3, exclude `locked/`, `local-only-*`, `.keep`)
-2. If active entries exist: "Found {N} active context items. Resume one, or start fresh?"
-   - List entries with topic, lifecycle status, last updated, first line of Status section
-   - Group by: inflight (current work sessions) vs ongoing (persistent context)
-   - Wait for user choice
-3. If no entries: proceed as `blank`
+1. Read session markers from `.claude-scratchpad/` (all `.work-session-*.json` files)
+2. If active sessions exist, present them:
+   ```
+   Active work sessions:
+     1. migrate-tool (active, last chat ended 2h ago)
+        "Rewriting the migration module"
+        Branch: bugfix/migrate-rewrite | Repo: create-claude-workspace
+     
+     [N] Start something new
+   
+   Which one?
+   ```
+3. User picks one → resume flow
+4. User picks "new" → blank flow
+5. If no sessions exist: proceed as `blank`
 
-## Flow: Handoff
+## Flow: Resume
 
-1. List all ephemeral shared-context entries with:
-   - Topic name
-   - Lifecycle status (active/paused)
-   - Last updated timestamp
-   - Author (if user-scoped)
-   - Branch reference (if present)
-   - Location: inflight/ vs ongoing
-2. User selects one or more entries to resume
-3. Read selected entries fully into context
-4. If a selected entry has a `branch` field:
-   - Check if the worktree exists at `repos/{repo}___wt-{branch-slug}/`
-   - If yes: confirm it's checked out to the right branch
-   - If no: offer to create the worktree from the existing branch
-   - Check if a workspace branch with the same name exists, switch to it if so
-5. Summarize loaded state: "Resuming {topic}. Branch: {branch}. Last session: {status summary}. Next: {next steps}."
-6. Mark resumed entries as `lifecycle: active` if they were `paused`
+1. Read the selected session marker
+2. Verify worktrees exist:
+   - Workspace: `repos/{session-name}___wt-workspace/`
+   - Project: `repos/{session-name}___wt-{repo}/`
+   - If missing, recreate from the branch
+3. Register this chat in the session marker:
+   ```bash
+   # Read the marker, append this chat's session ID to chatSessions with ended: null
+   ```
+4. Update marker status to `active` if it was `paused`
+5. Run history reconstruction (see below)
+6. Tell user: "Resuming {name}. Work from `repos/{session-name}___wt-workspace/`."
 
-## Flow: Blank
+### History Reconstruction
+
+On resume, check for uncaptured work from previous chats:
+
+1. Read the session marker's `chatSessions` array
+2. For the most recent ended chat, check if the inflight tracker was updated after it ended
+3. Look in `~/.claude/projects/{project-path}/` for message history matching the chat session ID
+4. If there's a gap (history is newer than tracker): scan those messages and generate a summary
+5. Append the summary to the inflight tracker
+6. Tell user: "Found uncaptured work from your last chat. Updated the session tracker."
+
+If no gap is found, skip silently.
+
+## Flow: Blank (new session)
 
 1. Ask: "What are you working on?"
-2. Wait for response. Determine if this is a feature, bugfix, or chore.
-3. Ask which repo this work targets (if multiple repos in workspace.json)
-4. Propose branch name following git-conventions rule:
-   - "How about `{prefix}/{suggested-slug}`? Or would you prefer something different?"
-5. Wait for confirmation or adjustment
+2. Wait for response
+3. Generate session name from description (kebab-case slug)
+4. Determine type: feature, bugfix, or chore
+5. Ask which repo (if multiple repos in workspace.json)
+6. Propose branch: "How about `{prefix}/{session-name}`?"
+7. Wait for confirmation
 
-### Create branches in both repos
+### Create work session
 
-**Project repo** — branch + worktree (never checkout on the main clone):
+Run the helper script:
 ```bash
-# Read the repo's branch from workspace.json (repos.{repo}.branch)
-cd repos/{repo}
-git fetch origin
-git branch {branch-name} origin/{repo-branch}
-```
-```bash
-cd repos/
-git -C {repo} worktree add ../{repo}___wt-{branch-slug} {branch-name}
-```
-
-**Workspace repo** — branch (same name for traceability):
-```bash
-# From workspace root
-git checkout -b {branch-name}
+node .claude/scripts/create-work-session.mjs \
+  --session-name "{session-name}" \
+  --branch "{branch}" \
+  --repo "{repo}" \
+  --user "{user}" \
+  --description "{description}"
 ```
 
-6. Create `shared-context/{user}/inflight/` directory if it doesn't exist
-7. Create work session marker:
-   ```bash
-   mkdir -p .claude-scratchpad
-   echo '{"branch":"{branch-name}","repo":"{repo}","started":"{ISO8601}","user":"{user}"}' > .claude-scratchpad/.work-session-{branch-slug}
-   ```
-8. Confirm: "Work session started. Worktree at repos/{repo}___wt-{branch-slug}/. Workspace on branch {branch-name}."
+The script creates:
+- Workspace worktree at `repos/{session-name}___wt-workspace/`
+- Project worktree at `repos/{session-name}___wt-{repo}/`
+- Symlinks `repos/` into the workspace worktree
+- Copies `settings.local.json` into the worktree
+- Session marker in `.claude-scratchpad/`
+- Active-session pointer in the worktree's `.claude-scratchpad/`
+- Inflight tracker in `shared-context/{user}/inflight/`
+
+Register this chat's session ID in the marker.
+
+Tell user: "Work session started. Work from `repos/{session-name}___wt-workspace/`."
 
 ### Stale worktree check
 
-Before creating a new worktree, scan for existing worktrees:
+Before creating a new session, scan for existing worktrees:
 ```bash
-git -C repos/{repo} worktree list
+ls repos/ | grep '___wt-'
 ```
 If stale worktrees exist (no recent commits, no open PR):
-- "You have {N} existing worktrees. `___wt-{old-branch}` has no commits in {days} days. Clean up? [y/N]"
-- If yes: remove worktree and delete local branch
-- If no: proceed with new worktree
+- "You have existing worktrees for {sessions}. Clean up? [y/N]"
+- If yes: run cleanup script for each
 
 ### Next steps
 
-8. If superpowers-workflow rule is active: run mandatory research phase, then invoke brainstorming skill
-9. If not: ask "Ready to start implementing, or want to brainstorm first?"
+If superpowers-workflow rule is active: run mandatory research phase, then invoke brainstorming skill.
+If not: ask "Ready to start implementing, or want to brainstorm first?"
 
 ## Flow: Retroactive (called mid-session)
 
-When /start-work is called after work has already begun (files changed, commits made):
+When /start-work is called after work has already begun:
 
-1. Detect what's already happened:
-   - Check for uncommitted changes in repos/
-   - Check for recent commits on non-default branches
-   - Check for shared-context files created this session
+1. Detect uncommitted changes in repos/ or shared-context/
 2. "It looks like you've already been working. Let me formalize this."
-3. If changes are on a default branch:
-   - Offer to create a branch retroactively: stash → create branch → pop stash
-4. If changes are already on a feature branch:
-   - Create the workspace branch to match
-   - Create inflight/ directory
-5. Link existing session braindumps/handoffs to the work session
-6. Summarize: "Formalized as work session: {branch-name}. {N} files changed, {M} context files linked."
+3. If changes are on a default branch: stash → create session → pop stash
+4. If changes are already on a feature branch: create workspace worktree to match
+5. Summarize: "Formalized as work session: {name}. Work from `repos/{name}___wt-workspace/`."
 
 ## Notes
 - Both repos get the same branch name for traceability
-- The workspace repo doesn't get a worktree — it stays as the working directory with a branch checkout
+- Each session gets its own workspace worktree — the root stays on main
+- The workspace worktree has a `repos/` symlink for project worktree access
 - inflight/ is created per work session, consumed by /complete-work
-- Stale worktree detection prevents accumulation of forgotten worktrees
+- Auto-committing session markers is a workflow artifact — this intentionally bypasses normal commit conventions
