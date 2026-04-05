@@ -12,6 +12,26 @@ Capture discussion reasoning, exploration results, and design rationale into sha
 - `/braindump side {name}` — capture an idea unrelated to current work
 - `/braindump` (no param) — analyze session and suggest name(s)
 
+## Session-Aware Behavior
+
+When called within an active work session (`.claude-scratchpad/.active-session.json` exists):
+
+- Default behavior: append reasoning and decisions to the inflight tracker at `shared-context/{user}/inflight/session-{session-name}.md`
+- Add a new section to the tracker with the braindump content (Context, Exploration, Decisions, Implications)
+- Auto-commit the update:
+  ```bash
+  git add shared-context/{user}/inflight/session-{session-name}.md
+  git commit -m "braindump: update {session-name} tracker"
+  ```
+
+When called from the workspace root (no active session):
+- Create a `local-only-{name}.md` file (root only allows local-only writes)
+- Suggest starting a work session if the braindump is about actionable work
+
+`/braindump side {name}` always creates a separate `local-only-{name}.md` file regardless of session state — it's for unrelated ideas.
+
+The flows below apply when NOT in an active work session, or when the user explicitly asks for a standalone braindump file.
+
 ## Flow: Named
 
 Follows the same naming, scoping (user/team/local-only), and commit flow as `/handoff` but with a different file format:
