@@ -43,10 +43,10 @@ try {
   execSync(`git branch "${branch}" "origin/${repoBranch}"`, { cwd: repoDir, stdio: 'pipe' });
   execSync(`git worktree add "${projWorktree}" "${branch}"`, { cwd: repoDir, stdio: 'pipe' });
 
-  // Symlink repos/ into workspace worktree
+  // Symlink repos/ into workspace worktree (relative for portability)
   const reposLink = join(wsWorktree, 'repos');
   if (!existsSync(reposLink)) {
-    symlinkSync(resolve(reposDir), reposLink);
+    symlinkSync('../..', reposLink);
   }
 
   // Copy settings.local.json into worktree if it exists
