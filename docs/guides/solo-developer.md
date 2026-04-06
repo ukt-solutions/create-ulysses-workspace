@@ -42,7 +42,7 @@ Your project code is now inside `repos/my-app/`. The workspace wraps it — your
 
 ```bash
 claude
-/setup
+/workspace-init
 ```
 
 The setup skill confirms your repos are cloned, lets you activate any optional rules you want (you can skip these for now), and configures your user identity.

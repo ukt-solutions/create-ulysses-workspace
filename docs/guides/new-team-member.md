@@ -21,7 +21,7 @@ Open Claude Code and run the setup skill:
 
 ```bash
 claude
-/setup
+/workspace-init
 ```
 
 Setup clones the project repos listed in workspace.json into the `repos/` directory. It also asks for your name (used for shared context authoring) and shows you which optional rules are active.

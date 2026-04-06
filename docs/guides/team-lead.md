@@ -142,7 +142,7 @@ git push -u origin main
 
 ## Step 7: Onboard Your Team
 
-Send your team the workspace repo URL and point them to the [New Team Member Guide](new-team-member.md). They will clone, run `/setup`, and start working.
+Send your team the workspace repo URL and point them to the [New Team Member Guide](new-team-member.md). They will clone, run `/workspace-init`, and start working.
 
 Each person gets their own user-scoped directory (`shared-context/{their-name}/`). Their work sessions are independent — no coordination needed for parallel work.
 

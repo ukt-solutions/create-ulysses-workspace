@@ -106,7 +106,7 @@ Combines unreleased branch release notes into a versioned release document. Arch
 
 Audits workspace health and recommends cleanup. Checks cross-reference consistency, frontmatter integrity, workspace structure, and git state. Identifies stale context, orphaned worktrees, and contradictions between files. Run periodically or before a release to catch drift.
 
-### /setup
+### /workspace-init
 
 First-time workspace initialization. Clones repos from the workspace manifest, activates optional rules, configures user identity. Run once after scaffolding a new workspace.
 
@@ -149,5 +149,5 @@ No skill requires another skill to have run first (except /complete-work, which 
 - Skills are on-demand workflow commands loaded when invoked, not on every turn.
 - Capture skills (/handoff, /braindump, /aside) create shared context from conversation knowledge.
 - Lifecycle skills (/start-work, /pause-work, /complete-work, /sync-work) manage work sessions.
-- Admin skills (/promote, /release, /maintenance, /setup, /workspace-init, /workspace-update) handle workspace management.
+- Admin skills (/promote, /release, /maintenance, /workspace-init, /workspace-init, /workspace-update) handle workspace management.
 - Skills chain into a natural workflow but are not coupled — each can run independently.
