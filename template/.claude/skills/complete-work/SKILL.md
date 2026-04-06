@@ -1,11 +1,11 @@
 ---
 name: complete-work
-description: Finalize a work session — rebase, synthesize release notes from specs/plans/tracker/commits, create PRs with unified presentation. Handles both project repo and workspace repo. Use when work on a session is done.
+description: Finalize a work session — rebase, synthesize release notes from specs/plans/tracker/commits, create PRs with unified presentation. Handles all project repos and workspace repo. Use when work on a session is done.
 ---
 
 # Complete Work
 
-Finalize the active work session. Handles both the project repo (code changes, release notes, PR) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval.
+Finalize the active work session. Handles all project repos (code changes, release notes, PRs) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval.
 
 ## Flow
 
@@ -18,18 +18,19 @@ Read the full session marker from the main root's `.claude-scratchpad/`.
 
 Determine paths:
 - Workspace worktree: `repos/{session-name}___wt-workspace/`
-- Project worktree: `repos/{session-name}___wt-{repo}/`
-- Read the repo's branch from workspace.json (`repos.{repo}.branch`)
+- Project worktrees: `repos/{session-name}___wt-{repo}/` for each repo in `marker.repos`
+- Read each repo's branch from workspace.json (`repos.{repo}.branch`)
 
-### Step 2: Rebase project repo
+### Step 2: Rebase project repos
 
+For each repo in `marker.repos`:
 ```bash
 # {repo-branch} = repos.{repo}.branch from workspace.json
 cd repos/{session-name}___wt-{repo}
 git fetch origin
 git rebase origin/{repo-branch}
 ```
-If conflicts arise, STOP and present them to the user. Do not auto-resolve.
+If conflicts arise in any repo, STOP and present them to the user. Do not auto-resolve.
 
 ### Step 3: Capture final discussion state
 
@@ -42,7 +43,7 @@ Formally read ALL sources before synthesizing — do not write release notes fro
 
 1. **Inflight tracker** at `shared-context/{user}/inflight/session-{session-name}.md`
 
-2. **Branch-scoped specs/plans** in the project worktree or inflight/:
+2. **Branch-scoped specs/plans** in each project worktree or inflight/:
    - `design-*.md` files
    - `plan-*.md` files
    - Read each one fully
@@ -53,16 +54,19 @@ Formally read ALL sources before synthesizing — do not write release notes fro
    ```
    Read each matching file.
 
-4. **Branch commit log:**
+4. **Branch commit logs** (per repo):
    ```bash
+   # For each repo in marker.repos:
+   cd repos/{session-name}___wt-{repo}
    git log origin/{repo-branch}..HEAD --oneline
    ```
 
 ### Step 5: Synthesize release notes
 
-Using the gathered material, create two files in the **project repo** worktree:
+For each repo in `marker.repos` that has commits beyond the base branch:
 
 ```bash
+cd repos/{session-name}___wt-{repo}
 COMMIT_ID=$(git rev-parse --short HEAD)
 mkdir -p release-notes/unreleased
 ```
@@ -95,15 +99,17 @@ date: {YYYY-MM-DD}
 {Only genuinely open questions — not things resolved during implementation.}
 ```
 
-Commit to the project repo worktree:
+Commit per repo:
 ```bash
 git add release-notes/unreleased/
 git commit -m "docs: add release notes for {branch}"
 ```
 
+If a repo has no commits beyond the base, skip release notes for it.
+
 ### Step 6: Consume branch-scoped sources
 
-Remove branch-scoped specs and plans from the project worktree:
+For each repo in `marker.repos`:
 ```bash
 cd repos/{session-name}___wt-{repo}
 rm -f design-*.md plan-*.md
@@ -114,17 +120,19 @@ Only consume files that are branch-scoped (in the worktree or inflight/). Leave 
 
 ### Step 7: Check for no-remote
 
-Before pushing, verify remotes exist for both repos:
+For each repo in `marker.repos`, verify remotes exist:
 ```bash
+cd repos/{session-name}___wt-{repo}
 git remote -v
 ```
-If no remote: "No remote configured for {repo}. Want me to create one on GitHub, or provide a URL?"
+If no remote for any repo: "No remote configured for {repo}. Want me to create one on GitHub, or provide a URL?"
 Create via `gh repo create` or add the provided URL. Never silently skip push.
 
-### Step 8: Push both repos
+### Step 8: Push all repos
 
 ```bash
-# Project repo
+# Each project repo
+# For each repo in marker.repos:
 cd repos/{session-name}___wt-{repo}
 git push -u origin {branch}
 
@@ -137,10 +145,10 @@ git push -u origin {branch}
 
 ### Step 9: Create PRs and present unified summary
 
-Create both PRs, then present a single unified summary:
+Create one PR per project repo plus one workspace PR:
 
 ```bash
-# Project PR
+# For each repo in marker.repos:
 cd repos/{session-name}___wt-{repo}
 gh pr create --title "{type}: {description}" --body "..."
 
@@ -153,28 +161,36 @@ Present unified summary:
 ```
 Work session complete:
 
-PROJECT: {repo}
+PROJECT: {repo-1}
   PR #{n}: {type}: {description}
-  Branch: {branch} → {repo-branch}
+  Branch: {branch} → {repo-1-branch}
   Changes:
     - {bullet points from release notes}
   Release notes: branch-release-notes-{COMMIT_ID}.md
 
-WORKSPACE: {workspace-name}
-  PR #{m}: context: {session-name} work session
-  Branch: {branch} → main
+PROJECT: {repo-2}
+  PR #{m}: {type}: {description}
+  Branch: {branch} → {repo-2-branch}
   Changes:
-    - {summary of shared-context changes}
+    - {bullet points from release notes}
 
-Merge both? [Y/n]
+WORKSPACE: {workspace-name}
+  PR #{p}: context: {session-name} work session
+  Branch: {branch} → main
+
+Merge all? [Y/n]
 ```
 
-If yes:
+If yes — merge all PRs atomically:
 ```bash
-gh pr merge {project-pr-number} --merge
+# For each project PR:
+gh pr merge {pr-number} --merge
+
+# Workspace PR:
 gh pr merge {workspace-pr-number} --merge
 
-# Pull both repos to their default branches
+# Pull all repos to their default branches
+# For each repo in marker.repos:
 cd repos/{repo} && git pull origin {repo-branch}
 cd {main-workspace-root} && git pull origin main
 ```
@@ -188,8 +204,8 @@ node .claude/scripts/cleanup-work-session.mjs --session-name "{session-name}"
 
 This removes:
 - Workspace worktree
-- Project worktree
-- Local branches in both repos
+- All project worktrees
+- Local branches in all repos
 - Session marker
 
 Verify workspace root is still on main:
@@ -208,7 +224,7 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 - **Revert** — undo the changes (with confirmation)
 
 ## Notes
-- Release notes live in the PROJECT repo worktree — never the workspace
+- Release notes live in the PROJECT repo worktrees — never the workspace
 - The inflight tracker is the primary source for release note synthesis — it captures the full session history
-- Both repos get PRed and merged together — one approval for both
+- All repos get PRed and merged together — one approval for all
 - Context consumption, cleanup, and auto-committing release notes are intentional workflow behavior — these bypass normal commit conventions by design
