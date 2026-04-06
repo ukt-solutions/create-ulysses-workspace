@@ -43,12 +43,12 @@ The scaffold is a starting point. It ships with sensible defaults, but everythin
 
 ## First-Time Setup
 
-After scaffolding, open the workspace in Claude Code and run `/setup`:
+After scaffolding, open the workspace in Claude Code and run `/workspace-init`:
 
 ```bash
 cd my-workspace
 claude
-/setup
+/workspace-init
 ```
 
 The setup skill walks you through:
@@ -93,7 +93,7 @@ After adding a repo to workspace.json, clone it:
 git clone git@github.com:team/my-api.git repos/my-api
 ```
 
-Or re-run `/setup`, which will detect unclosed repos and offer to clone them.
+Or re-run `/workspace-init`, which will detect unclosed repos and offer to clone them.
 
 ## Template Versioning
 
@@ -158,7 +158,7 @@ Custom rules, custom skills, and custom agents are not affected by upgrades. The
 ## Key Takeaways
 
 - `npx create-claude-workspace --init` scaffolds a new workspace with the full template.
-- `/setup` handles first-time configuration — cloning repos, activating rules, setting user identity.
+- `/workspace-init` handles first-time configuration — cloning repos, activating rules, setting user identity.
 - Template versioning tracks which version of the template the workspace has.
 - `--upgrade` stages changes; `/workspace-update` applies them interactively with maintenance before and after.
 - Custom files are not affected by upgrades — the template manages only its own files.

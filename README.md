@@ -8,7 +8,7 @@ A scaffolder and convention system for Claude Code workspaces. Sets up a workspa
 npx create-claude-workspace --init my-workspace
 cd my-workspace
 claude
-/setup
+/workspace-init
 /start-work
 ```
 

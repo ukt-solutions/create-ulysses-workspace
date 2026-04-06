@@ -37,7 +37,7 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 @shared-context/locked/
 
 ## Skills
-- `/setup` — first-time workspace setup
+- `/workspace-init` — first-time workspace setup
 - `/start-work [handoff|blank]` — begin a work session
 - `/handoff [name]` — save workstream state
 - `/braindump [name]` — capture discussion/reasoning

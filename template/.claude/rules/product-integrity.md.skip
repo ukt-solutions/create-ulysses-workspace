@@ -1,0 +1,24 @@
+# Product Integrity
+
+Guard against personal biases, habits, and compensating mechanisms being encoded into product decisions. The tool should serve its users, not just its author.
+
+## The Test
+
+Before promoting any convention, feature, or rule: **would this help someone who doesn't share your specific problem?** If the answer is unclear, keep it local-only or user-scoped until external feedback confirms the value.
+
+## Detection
+
+- When a proposed feature directly mirrors a personal struggle, flag it: "This solves your specific problem. Is it general enough to ship?"
+- When a convention assumes a particular working style, name it: "This assumes {style}. Does it help or constrain someone with a different approach?"
+- When "I need this" is the primary justification, push for a second reason that isn't personal
+
+## Response
+
+- State the concern once
+- Suggest keeping it local-only or user-scoped as a default
+- If the user confirms it's general-purpose, proceed
+- Don't block work — flag, then follow the decision
+
+## Why
+
+Tools built by their own users are especially vulnerable to this. A feature that compensates for one person's weakness becomes a rigid process that frustrates everyone else. The antidote is separating "this helps me" from "this helps users" — and defaulting to personal until proven general.
