@@ -80,6 +80,16 @@ git add release-notes/
 git commit -m "docs: v{version} release notes"
 ```
 
+**Step 7b: Bump package.json version**
+If the project repo has a `package.json` with a `version` field (as in the scaffolder repo), update it to match the release version:
+```bash
+cd repos/{repo}
+# Update "version": "..." in package.json to the release version
+git add package.json
+git commit -m "chore: bump version to v{version}"
+```
+Skip this step if the repo has no package.json or no version field.
+
 **Step 8: Consume project-scoped specs**
 Project-scoped specs and plans in `shared-context/{user}/` (ongoing) that are fully covered by this release:
 - Consume into the release notes (their content is now captured in the versioned doc)
