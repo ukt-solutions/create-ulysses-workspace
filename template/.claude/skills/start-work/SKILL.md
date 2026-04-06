@@ -91,6 +91,19 @@ The script creates:
 
 Register this chat's session ID in the marker.
 
+### Capture prior conversation context
+
+If brainstorming, spec writing, or design discussion happened in this conversation before `/start-work` was called, that reasoning needs to be captured into the inflight tracker. Otherwise it will be lost when the conversation ends and `/complete-work` will produce thin release notes.
+
+Check: has the current conversation included substantive discussion (design decisions, requirements exploration, approach selection) before this point?
+
+If yes:
+1. Summarize the prior discussion — key decisions, requirements established, approaches chosen/rejected, constraints identified
+2. Write the summary into the inflight tracker's Progress section at `shared-context/{user}/inflight/session-{session-name}.md` (in the workspace worktree)
+3. Auto-commit: `git add shared-context/ && git commit -m "chore: capture pre-session discussion for {session-name}"`
+
+If no prior discussion: skip silently.
+
 Tell user: "Work session started. Work from `repos/{session-name}___wt-workspace/`."
 
 ### Add repo to active session
