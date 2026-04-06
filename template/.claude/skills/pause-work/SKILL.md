@@ -1,6 +1,6 @@
 ---
 name: pause-work
-description: Suspend current work — updates session marker, captures state to inflight tracker, pushes both repos, creates draft PRs. Use when stepping away from work that isn't finished.
+description: Suspend current work — updates session marker, captures state to inflight tracker, pushes all repos, creates draft PRs. Use when stepping away from work that isn't finished.
 ---
 
 # Pause Work
@@ -41,9 +41,10 @@ git commit -m "handoff: pause {session-name}"
 git push -u origin {branch}
 ```
 
-### Step 5: Push project repo
+### Step 5: Push project repos
 
 ```bash
+# For each repo in marker.repos:
 cd repos/{session-name}___wt-{repo}
 git push -u origin {branch}
 ```
@@ -51,7 +52,7 @@ git push -u origin {branch}
 ### Step 6: Create draft PRs
 
 ```bash
-# Project repo
+# For each repo in marker.repos:
 cd repos/{session-name}___wt-{repo}
 gh pr create --draft --title "WIP: {description}" --body "Work in progress. Session paused."
 

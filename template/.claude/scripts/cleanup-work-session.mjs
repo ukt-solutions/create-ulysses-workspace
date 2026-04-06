@@ -20,7 +20,7 @@ if (!sessionName) {
 
 const root = getWorkspaceRoot(import.meta.url);
 const marker = readSessionMarker(root, sessionName);
-const repo = marker?.repo;
+const repos = marker?.repos || [];
 const branch = marker?.branch;
 const reposDir = join(root, 'repos');
 
@@ -39,21 +39,21 @@ if (existsSync(wsWorktree)) {
   }
 }
 
-// Remove project worktree
-if (repo) {
+// Remove project worktrees and branches
+for (const repo of repos) {
   const projWorktreeName = `${sessionName}___wt-${repo}`;
   const projWorktree = join(reposDir, projWorktreeName);
   const repoDir = join(reposDir, repo);
+
   if (existsSync(projWorktree)) {
     try {
       execSync(`git worktree remove "${projWorktree}" --force`, { cwd: repoDir, stdio: 'pipe' });
       removed.push(projWorktreeName);
     } catch (err) {
-      errors.push(`Failed to remove project worktree: ${err.message}`);
+      errors.push(`Failed to remove ${repo} worktree: ${err.message}`);
     }
   }
 
-  // Delete project branch
   if (branch) {
     try {
       execSync(`git branch -d "${branch}"`, { cwd: repoDir, stdio: 'pipe' });

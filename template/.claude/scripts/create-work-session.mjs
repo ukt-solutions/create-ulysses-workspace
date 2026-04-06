@@ -13,35 +13,42 @@ const getArg = (name) => {
 
 const sessionName = getArg('session-name');
 const branch = getArg('branch');
-const repo = getArg('repo');
+const repoArg = getArg('repo');
 const user = getArg('user');
 const description = getArg('description') || '';
 
-if (!sessionName || !branch || !repo || !user) {
-  console.error('Usage: create-work-session.mjs --session-name NAME --branch BRANCH --repo REPO --user USER [--description DESC]');
+if (!sessionName || !branch || !repoArg || !user) {
+  console.error('Usage: create-work-session.mjs --session-name NAME --branch BRANCH --repo REPO[,REPO2,...] --user USER [--description DESC]');
   process.exit(1);
 }
 
+const repos = repoArg.split(',').map(r => r.trim()).filter(Boolean);
 const root = getWorkspaceRoot(import.meta.url);
 const config = readJSON(join(root, 'workspace.json'));
-const repoBranch = config?.repos?.[repo]?.branch || 'main';
 const reposDir = join(root, 'repos');
-const repoDir = join(reposDir, repo);
 
 const wsWorktreeName = `${sessionName}___wt-workspace`;
-const projWorktreeName = `${sessionName}___wt-${repo}`;
 const wsWorktree = join(reposDir, wsWorktreeName);
-const projWorktree = join(reposDir, projWorktreeName);
 
 try {
   // Create workspace branch and worktree
   execSync(`git branch "${branch}" main`, { cwd: root, stdio: 'pipe' });
   execSync(`git worktree add "${wsWorktree}" "${branch}"`, { cwd: root, stdio: 'pipe' });
 
-  // Create project branch and worktree
-  execSync(`git fetch origin`, { cwd: repoDir, stdio: 'pipe', timeout: 30000 });
-  execSync(`git branch "${branch}" "origin/${repoBranch}"`, { cwd: repoDir, stdio: 'pipe' });
-  execSync(`git worktree add "${projWorktree}" "${branch}"`, { cwd: repoDir, stdio: 'pipe' });
+  // Create project branches and worktrees
+  const projWorktrees = [];
+  for (const repo of repos) {
+    const repoBranch = config?.repos?.[repo]?.branch || 'main';
+    const repoDir = join(reposDir, repo);
+    const projWorktreeName = `${sessionName}___wt-${repo}`;
+    const projWorktree = join(reposDir, projWorktreeName);
+
+    execSync(`git fetch origin`, { cwd: repoDir, stdio: 'pipe', timeout: 30000 });
+    execSync(`git branch "${branch}" "origin/${repoBranch}"`, { cwd: repoDir, stdio: 'pipe' });
+    execSync(`git worktree add "${projWorktree}" "${branch}"`, { cwd: repoDir, stdio: 'pipe' });
+
+    projWorktrees.push({ repo, worktreeName: projWorktreeName });
+  }
 
   // Symlink repos/ into workspace worktree (relative for portability)
   const reposLink = join(wsWorktree, 'repos');
@@ -70,7 +77,7 @@ try {
   const today = new Date().toISOString().slice(0, 10);
   writeFileSync(
     join(inflightDir, `session-${sessionName}.md`),
-    `---\nstate: ephemeral\nlifecycle: active\ntype: tracker\ntopic: session-${sessionName}\nbranch: ${branch}\nrepo: ${repo}\nauthor: ${user}\nupdated: ${today}\n---\n\n# Work Session: ${sessionName}\n\n${description}\n\n## Progress\n\n(Updated as the session progresses)\n`
+    `---\nstate: ephemeral\nlifecycle: active\ntype: tracker\ntopic: session-${sessionName}\nbranch: ${branch}\nrepos: ${repos.join(', ')}\nauthor: ${user}\nupdated: ${today}\n---\n\n# Work Session: ${sessionName}\n\n${description}\n\n## Progress\n\n(Updated as the session progresses)\n`
   );
 
   // Write session marker to main root's scratchpad
@@ -78,7 +85,7 @@ try {
     name: sessionName,
     description,
     branch,
-    repo,
+    repos,
     status: 'active',
     created: new Date().toISOString(),
     user,
@@ -88,7 +95,7 @@ try {
   console.log(JSON.stringify({
     success: true,
     wsWorktree: `repos/${wsWorktreeName}`,
-    projWorktree: `repos/${projWorktreeName}`,
+    projWorktrees: projWorktrees.map(p => `repos/${p.worktreeName}`),
     marker: `.claude-scratchpad/.work-session-${sessionName}.json`,
     tracker: `shared-context/${user}/inflight/session-${sessionName}.md`,
   }));

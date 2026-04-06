@@ -5,7 +5,7 @@ description: Begin or resume a work session. Creates workspace + project worktre
 
 # Start Work
 
-Begin or resume a persistent work session. Each session gets its own workspace worktree and project worktree, enabling parallel sessions in separate terminal windows.
+Begin or resume a persistent work session. Each session gets its own workspace worktree and one worktree per project repo, enabling parallel sessions in separate terminal windows.
 
 ## Parameters
 - `/start-work` (no param) — check for active sessions, then resume or start new
@@ -20,7 +20,7 @@ Begin or resume a persistent work session. Each session gets its own workspace w
    Active work sessions:
      1. migrate-tool (active, last chat ended 2h ago)
         "Rewriting the migration module"
-        Branch: bugfix/migrate-rewrite | Repo: create-claude-workspace
+        Branch: bugfix/migrate-rewrite | Repos: create-claude-workspace
      
      [N] Start something new
    
@@ -35,8 +35,8 @@ Begin or resume a persistent work session. Each session gets its own workspace w
 1. Read the selected session marker
 2. Verify worktrees exist:
    - Workspace: `repos/{session-name}___wt-workspace/`
-   - Project: `repos/{session-name}___wt-{repo}/`
-   - If missing, recreate from the branch
+   - For each repo in `marker.repos`: `repos/{session-name}___wt-{repo}/`
+   - If any are missing, recreate from the branch
 3. Register this chat in the session marker:
    ```bash
    # Read the marker, append this chat's session ID to chatSessions with ended: null
@@ -64,7 +64,7 @@ If no gap is found, skip silently.
 2. Wait for response
 3. Generate session name from description (kebab-case slug)
 4. Determine type: feature, bugfix, or chore
-5. Ask which repo (if multiple repos in workspace.json)
+5. Ask which repo(s) — present numbered list from workspace.json, allow selecting multiple (e.g., "1,3" or "all")
 6. Propose branch: "How about `{prefix}/{session-name}`?"
 7. Wait for confirmation
 
@@ -75,14 +75,14 @@ Run the helper script:
 node .claude/scripts/create-work-session.mjs \
   --session-name "{session-name}" \
   --branch "{branch}" \
-  --repo "{repo}" \
+  --repo "{repo1},{repo2}" \
   --user "{user}" \
   --description "{description}"
 ```
 
 The script creates:
 - Workspace worktree at `repos/{session-name}___wt-workspace/`
-- Project worktree at `repos/{session-name}___wt-{repo}/`
+- Project worktree per repo at `repos/{session-name}___wt-{repo}/`
 - Symlinks `repos/` into the workspace worktree
 - Copies `settings.local.json` into the worktree
 - Session marker in `.claude-scratchpad/`
@@ -92,6 +92,19 @@ The script creates:
 Register this chat's session ID in the marker.
 
 Tell user: "Work session started. Work from `repos/{session-name}___wt-workspace/`."
+
+### Add repo to active session
+
+If there's an active session and the user wants to add a repo (explicitly or prompted by repo-write-detection):
+
+1. Confirm: "Add {repo} to the current session '{session-name}'?"
+2. Run the helper script:
+   ```bash
+   node .claude/scripts/add-repo-to-session.mjs \
+     --session-name "{session-name}" \
+     --repo "{repo}"
+   ```
+3. Tell user: "Added {repo}. Worktree at `repos/{session-name}___wt-{repo}/`."
 
 ### Stale worktree check
 
@@ -119,8 +132,8 @@ When /start-work is called after work has already begun:
 5. Summarize: "Formalized as work session: {name}. Work from `repos/{name}___wt-workspace/`."
 
 ## Notes
-- Both repos get the same branch name for traceability
-- Each session gets its own workspace worktree — the root stays on main
+- All repos (workspace + project repos) get the same branch name for traceability
+- Each session gets its own workspace worktree plus one worktree per project repo
 - The workspace worktree has a `repos/` symlink for project worktree access
 - inflight/ is created per work session, consumed by /complete-work
 - Auto-committing session markers is a workflow artifact — this intentionally bypasses normal commit conventions
