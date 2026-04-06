@@ -9,8 +9,9 @@ Capture discussion reasoning, exploration results, and design rationale into sha
 
 ## Parameters
 - `/braindump {name}` — create or update a named braindump
-- `/braindump side {name}` — capture an idea unrelated to current work
 - `/braindump` (no param) — analyze session and suggest name(s)
+
+> **Note:** `/braindump side` has moved to `/aside`. If the user invokes `/braindump side`, redirect them: "The side braindump is now `/aside`. Running it for you." Then invoke the `/aside` skill with their text.
 
 ## Session-Aware Behavior
 
@@ -27,8 +28,6 @@ When called within an active work session (`.claude-scratchpad/.active-session.j
 When called from the workspace root (no active session):
 - Create a `local-only-{name}.md` file (root only allows local-only writes)
 - Suggest starting a work session if the braindump is about actionable work
-
-`/braindump side {name}` always creates a separate `local-only-{name}.md` file regardless of session state — it's for unrelated ideas.
 
 The flows below apply when NOT in an active work session, or when the user explicitly asks for a standalone braindump file.
 
@@ -59,15 +58,11 @@ updated: {YYYY-MM-DD}
 {What this decision means for future work}
 ```
 
-## Flow: Side Braindump
+## Flow: Side Braindump (deprecated)
 
-`/braindump side {name}` is for capturing unrelated ideas without derailing the current work session:
-- Skips branch/repo context questions (there is no relevant branch)
-- Defaults to user-scoped or local-only (personal until promoted)
-- Quick capture, minimal interruption
-- Does not ask about team-visibility unless the user offers
-
-Example: you're deep in implementing auth but an idea about the deployment pipeline strikes. `/braindump side deployment-pipeline-idea` captures it and you continue with auth.
+`/braindump side` has been replaced by the `/aside` skill. If invoked:
+1. Inform the user: "The side braindump is now `/aside`. Running it for you."
+2. Invoke the `/aside` skill with the user's text
 
 ## Flow: No Parameter
 
@@ -96,5 +91,5 @@ git commit -m "braindump: {name}"
 ## Notes
 - User-scoped is the default
 - One topic, one file — don't mix unrelated ideas in one braindump
-- The "side" variant is for drive-by ideas that shouldn't interrupt flow
+- Drive-by ideas now use `/aside` instead of `/braindump side`
 - Auto-committing context files without user request is a workflow artifact — this intentionally bypasses the "do not commit unless asked" convention
