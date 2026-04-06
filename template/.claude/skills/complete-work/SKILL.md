@@ -116,6 +116,13 @@ rm -f design-*.md plan-*.md
 git add -u && git commit -m "chore: remove consumed branch-scoped specs and plans"
 ```
 
+Remove the inflight tracker (its content has been synthesized into release notes):
+```bash
+cd repos/{session-name}___wt-workspace
+rm -f shared-context/{user}/inflight/session-{session-name}.md
+git add -u && git commit -m "chore: consume inflight tracker for {session-name}"
+```
+
 Only consume files that are branch-scoped (in the worktree or inflight/). Leave project-scoped specs in `{user}/` ongoing.
 
 ### Step 7: Check for no-remote
