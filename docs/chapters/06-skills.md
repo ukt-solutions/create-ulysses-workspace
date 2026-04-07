@@ -108,11 +108,7 @@ Audits workspace health and recommends cleanup. Checks cross-reference consisten
 
 ### /workspace-init
 
-First-time workspace initialization. Clones repos from the workspace manifest, activates optional rules, configures user identity. Run once after scaffolding a new workspace.
-
-### /workspace-init
-
-One-time session for populating shared context from existing project knowledge. Guides you through extracting team truths from existing documentation, code, and conversation into the workspace's shared context structure.
+First-time workspace initialization — the single post-scaffold skill. Handles everything needed to make a workspace operational: clones repos from the workspace manifest, installs template components from the staged payload, activates optional rules, configures user identity, extracts team knowledge from documentation sources and prior Claude chat history, formalizes existing worktrees as work sessions, populates shared context, and sets up the workspace remote. Works on a branch (`chore/workspace-init`) so the user can review all changes before merging. Also handles team member onboarding — connecting to an existing workspace repo with rebase and conflict resolution.
 
 ### /workspace-update
 
@@ -149,5 +145,5 @@ No skill requires another skill to have run first (except /complete-work, which 
 - Skills are on-demand workflow commands loaded when invoked, not on every turn.
 - Capture skills (/handoff, /braindump, /aside) create shared context from conversation knowledge.
 - Lifecycle skills (/start-work, /pause-work, /complete-work, /sync-work) manage work sessions.
-- Admin skills (/promote, /release, /maintenance, /workspace-init, /workspace-init, /workspace-update) handle workspace management.
+- Admin skills (/promote, /release, /maintenance, /workspace-init, /workspace-update) handle workspace management.
 - Skills chain into a natural workflow but are not coupled — each can run independently.
