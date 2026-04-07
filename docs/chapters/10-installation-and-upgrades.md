@@ -12,36 +12,39 @@ To create a new workspace:
 npx create-claude-workspace --init my-workspace
 ```
 
-This creates the workspace directory with the full template: CLAUDE.md, workspace.json, rules, skills, hooks, scripts, agents, shared context structure, and gitignore. Git is initialized automatically.
+The CLI installs the bootstrap essentials: CLAUDE.md (generated from template), workspace.json, the workspace-init and workspace-update skills, all hooks, all scripts, shared-context directory structure, repos directory, scratchpad directory, and gitignore. The remaining skills, rules, and agents are installed interactively by `/workspace-init`.
 
-If you omit the directory name, the current directory is used:
+If you omit the directory name, the current directory is used — this supports initializing an existing project directory as a workspace:
 
 ```bash
-mkdir my-workspace && cd my-workspace
+cd my-existing-project
 npx create-claude-workspace --init
 ```
 
-After scaffolding, the workspace looks like this:
+If a CLAUDE.md already exists, it is backed up to `CLAUDE.md.bak` and replaced with the workspace version. The old content is preserved for `/workspace-init` to extract useful preferences and conventions from.
+
+After scaffolding, the workspace has the bootstrap structure:
 
 ```
 my-workspace/
-├── CLAUDE.md
-├── workspace.json
+├── CLAUDE.md                  (generated from template)
+├── workspace.json             (with workspace name and empty repos)
 ├── repos/                     (empty, gitignored)
 ├── shared-context/
 │   └── locked/                (empty)
 ├── .claude-scratchpad/        (empty, gitignored)
+├── .workspace-update/         (staged template payload)
 └── .claude/
-    ├── rules/                 (5 mandatory + 6 optional .skip)
-    ├── skills/                (13 skills)
-    ├── hooks/                 (8 hooks + _utils.mjs)
-    ├── scripts/               (3 helper scripts)
-    └── agents/                (4 agent definitions)
+    ├── skills/
+    │   ├── workspace-init/    (bootstrap skill)
+    │   └── workspace-update/  (bootstrap skill)
+    ├── hooks/                 (all hooks installed)
+    └── scripts/               (all scripts installed)
 ```
 
-The scaffold is a starting point. It ships with sensible defaults, but everything is yours to customize — activate optional rules, add repos to workspace.json, populate locked context with team knowledge.
+The full template (remaining skills, rules, agents) lives in `.workspace-update/` and is installed interactively by `/workspace-init`.
 
-## First-Time Setup
+## First-Time Initialization
 
 After scaffolding, open the workspace in Claude Code and run `/workspace-init`:
 
@@ -51,15 +54,23 @@ claude
 /workspace-init
 ```
 
-The setup skill walks you through:
+The skill creates a `chore/workspace-init` branch and walks you through a comprehensive setup:
 
-1. **Adding repos.** Edit workspace.json to declare your project repositories — name, remote URL, and default branch. The skill clones each repo into `repos/`.
+1. **Inventory.** Scans for existing files, pre-migration content, and auto-memory.
+2. **Clone repos.** Reads workspace.json and clones each configured repo into `repos/`.
+3. **Identify documentation sources.** Asks where project documentation lives (Notion, Confluence, markdown, etc.) — checks for already-extracted content before re-fetching.
+4. **Install template components.** Installs remaining skills, rules, and agents from the staged payload. Asks before overwriting any existing files.
+5. **Activate optional rules.** Presents `.skip` rules and lets you choose which to activate.
+6. **Extract documentation.** Pulls team knowledge from identified sources into rules and shared context.
+7. **Scan Claude chat history.** Searches `~/.claude/projects/` for prior conversation logs, synthesizes decisions and context into shared context. Uses a manifest to survive auto-compaction during processing.
+8. **Preserve local preferences.** Extracts conventions and settings from CLAUDE.md.bak.
+9. **Create locked team knowledge.** Combines extracted content into `shared-context/locked/`.
+10. **Formalize existing worktrees.** Detects in-progress git worktrees and creates session markers and inflight trackers for them, linking to related chat history.
+11. **Configure user identity.** Sets your name for user-scoped context.
+12. **Clean and verify.** Moves non-template items to unmigrated, cleans up the payload, checks for self-contradictions.
+13. **Set up workspace remote.** Creates a new repo or connects to an existing one (for team members joining a workspace that already exists).
 
-2. **Activating optional rules.** Review the `.skip` rules and activate any that fit your team. Drop the `.skip` extension to activate.
-
-3. **Configuring user identity.** Set your name for shared context authoring.
-
-For solo use, setup is quick — one repo, maybe one or two optional rules. For teams, the team lead typically runs setup once and commits the result.
+For solo use, many steps are quick or skipped. For teams, the team lead runs the full init and commits the result. Team members then clone the workspace repo and run `/workspace-init` to connect — the skill detects the initialized workspace and handles onboarding (clone repos, set identity, rebase local changes onto the remote).
 
 ## Adding Repos
 
@@ -93,7 +104,7 @@ After adding a repo to workspace.json, clone it:
 git clone git@github.com:team/my-api.git repos/my-api
 ```
 
-Or re-run `/workspace-init`, which will detect unclosed repos and offer to clone them.
+Or re-run `/workspace-init`, which will detect uncloned repos and offer to clone them.
 
 ## Template Versioning
 
@@ -157,8 +168,8 @@ Custom rules, custom skills, and custom agents are not affected by upgrades. The
 
 ## Key Takeaways
 
-- `npx create-claude-workspace --init` scaffolds a new workspace with the full template.
-- `/workspace-init` handles first-time configuration — cloning repos, activating rules, setting user identity.
+- `npx create-claude-workspace --init` scaffolds a workspace with bootstrap skills, hooks, and scripts. The full template is staged for interactive installation.
+- `/workspace-init` handles first-time configuration — cloning repos, installing template components, extracting team knowledge, activating rules, formalizing worktrees, setting user identity.
 - Template versioning tracks which version of the template the workspace has.
 - `--upgrade` stages changes; `/workspace-update` applies them interactively with maintenance before and after.
 - Custom files are not affected by upgrades — the template manages only its own files.
