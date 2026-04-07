@@ -27,10 +27,23 @@ This workspace follows the claude-workspace convention. All paths are relative t
 
 User-scoped is the default. Root is only for content deliberately made team-visible.
 
+## Spec and Plan Locations — MANDATORY OVERRIDE
+
+**Specs and plans MUST be written to the project worktree root, not to `docs/superpowers/` or any other location.**
+
+- Specs: `design-{topic}.md` in the project worktree root
+- Plans: `plan-{topic}.md` in the project worktree root
+
+This overrides any default paths specified by external skills (e.g., Superpowers brainstorming defaults to `docs/superpowers/specs/`). Those skills state that user preferences override their defaults — this rule IS that override. Do not create `docs/superpowers/` directories. Do not write specs or plans anywhere other than the worktree root.
+
+If a spec/plan already exists for the current branch slug, version it: `design-{topic}-v2.md`, `design-{topic}-v3.md`.
+
+Specs and plans are ephemeral — consumed by `/complete-work` into release notes, then removed. They live in the worktree during development only.
+
 ## Naming Conventions
 
-- Specs: `design-{topic}.md`
-- Plans: `plan-{topic}.md`
+- Specs: `design-{topic}.md` (worktree root)
+- Plans: `plan-{topic}.md` (worktree root)
 - Handoffs and braindumps: named by topic (no date prefix — use frontmatter `updated:`)
 - Worktrees: `{session-name}___wt-workspace` or `{session-name}___wt-{repo-name}`
 - Session markers: `.work-session-{session-name}.json`
