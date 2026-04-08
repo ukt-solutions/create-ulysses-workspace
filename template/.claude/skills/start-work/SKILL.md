@@ -37,17 +37,15 @@ Begin or resume a persistent work session. Each session gets its own workspace w
    - Workspace: `repos/{session-name}___wt-workspace/`
    - For each repo in `marker.repos`: `repos/{session-name}___wt-{repo}/`
    - If any are missing, recreate from the branch
-3. Register this chat in the session marker. The current chat session ID (UUID) is written to `.claude-scratchpad/.current-chat-id` by the session-start hook:
-   ```bash
-   cat .claude-scratchpad/.current-chat-id
-   ```
-   If the file doesn't exist (hook didn't fire), fall back to finding the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/` and extract the UUID from its filename.
+3. The session-start hook automatically registers each chat in the session marker's `chatSessions` array when Claude opens in a worktree. Verify the current chat is registered — if not (e.g., the hook didn't fire), register it manually.
 
-   Append to the marker's `chatSessions` array:
+   Each `chatSessions` entry has this format:
    ```json
-   { "id": "{uuid}", "names": ["{initial-name}"], "started": "{now}", "ended": null }
+   { "id": "{uuid}", "names": ["{name-if-any}"], "started": "{iso-timestamp}", "ended": null }
    ```
-   The `id` field is the authoritative identifier (UUID). The `names` field is an array that tracks all names the session has had (users can rename sessions) — append new names, never replace. Names are informational; the `id` is used for all lookups.
+   - `id` is the authoritative identifier — the UUID from Claude Code's session. The session-start hook gets it from `input.session_id`.
+   - `names` is an array tracking all names the session has had (users can rename). Append, never replace.
+   - `ended` is set by the session-end hook when the chat closes.
 4. Update marker status to `active` if it was `paused`
 5. Run history reconstruction (see below)
 6. Tell user: "Resuming {name}. Work from `repos/{session-name}___wt-workspace/`."
@@ -96,7 +94,7 @@ The script creates:
 - Active-session pointer in the worktree's `.claude-scratchpad/`
 - Inflight tracker in `shared-context/{user}/inflight/`
 
-Register this chat in the marker's `chatSessions` array using the same method as the resume flow — read the UUID from `.claude-scratchpad/.current-chat-id`.
+Register this chat in the marker's `chatSessions` array. For new sessions, the session-start hook has already fired (before /start-work was invoked) but the session didn't exist yet. Find the current chat's UUID from the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/` and add the entry manually. Subsequent chats on this session will be registered automatically by the hook.
 
 ### Capture prior conversation context
 
