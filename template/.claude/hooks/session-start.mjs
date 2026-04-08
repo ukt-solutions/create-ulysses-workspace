@@ -1,20 +1,16 @@
 #!/usr/bin/env node
 // SessionStart hook — surface active work sessions and shared context
-import { readdirSync, statSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
+import { readdirSync, statSync, readFileSync, existsSync } from 'fs';
 import { join, basename, relative } from 'path';
 import { execSync } from 'child_process';
-import { getWorkspaceRoot, readJSON, readStdin, respond, getSessionMarkers, getActiveSessionPointer, timeAgo } from './_utils.mjs';
+import { getWorkspaceRoot, readJSON, readStdin, respond, getSessionMarkers, getActiveSessionPointer, readSessionMarker, writeSessionMarker, timeAgo } from './_utils.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
 const input = await readStdin();
 const config = readJSON(join(root, 'workspace.json'));
 
-// Write current chat session ID to scratchpad so skills can read it
-if (input.session_id) {
-  const scratchpad = join(root, '.claude-scratchpad');
-  if (!existsSync(scratchpad)) mkdirSync(scratchpad, { recursive: true });
-  writeFileSync(join(scratchpad, '.current-chat-id'), input.session_id);
-}
+// Register this chat session in the active work session marker
+const chatId = input.session_id || null;
 const contextDir = join(root, 'shared-context');
 const reposDir = join(root, 'repos');
 const lines = [];
@@ -29,6 +25,19 @@ lines.push(`Workspace: ${config.workspace?.name || 'unnamed'}`);
 // Check if we're in a workspace worktree
 const pointer = getActiveSessionPointer(root);
 if (pointer) {
+  // Register this chat in the work session marker
+  if (chatId) {
+    const mainRoot = pointer.rootPath || root;
+    const marker = readSessionMarker(mainRoot, pointer.name);
+    if (marker) {
+      if (!marker.chatSessions) marker.chatSessions = [];
+      // Only add if this chat isn't already registered
+      if (!marker.chatSessions.some(c => c.id === chatId)) {
+        marker.chatSessions.push({ id: chatId, names: [], started: new Date().toISOString(), ended: null });
+        writeSessionMarker(mainRoot, pointer.name, marker);
+      }
+    }
+  }
   lines.push(`Active work session: ${pointer.name}`);
   lines.push(`Working in workspace worktree. Main root: ${pointer.rootPath}`);
   respond(lines.join('\n'));

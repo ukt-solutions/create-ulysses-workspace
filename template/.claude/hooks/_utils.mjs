@@ -86,11 +86,3 @@ export function timeAgo(isoString) {
   return `${days}d ago`;
 }
 
-export function getCurrentChatId(root) {
-  const chatIdFile = join(root, '.claude-scratchpad', '.current-chat-id');
-  try {
-    return readFileSync(chatIdFile, 'utf-8').trim();
-  } catch {
-    return null;
-  }
-}
