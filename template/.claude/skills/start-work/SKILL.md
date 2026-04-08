@@ -37,10 +37,16 @@ Begin or resume a persistent work session. Each session gets its own workspace w
    - Workspace: `repos/{session-name}___wt-workspace/`
    - For each repo in `marker.repos`: `repos/{session-name}___wt-{repo}/`
    - If any are missing, recreate from the branch
-3. Register this chat in the session marker:
+3. Register this chat in the session marker. Get the current chat session ID by finding the most recently modified `.jsonl` file in `~/.claude/projects/` for this workspace path:
    ```bash
-   # Read the marker, append this chat's session ID to chatSessions with ended: null
+   ls -t ~/.claude/projects/{project-path}/*.jsonl | head -1
+   # Extract the UUID filename (without .jsonl extension) — that is the session ID
    ```
+   Append to the marker's `chatSessions` array:
+   ```json
+   { "id": "{uuid}", "names": ["{initial-name}"], "started": "{now}", "ended": null }
+   ```
+   The `id` field is the authoritative identifier (UUID from the .jsonl filename). The `names` field is an array that tracks all names the session has had (users can rename sessions) — append new names, never replace. Names are informational; the `id` is used for all lookups.
 4. Update marker status to `active` if it was `paused`
 5. Run history reconstruction (see below)
 6. Tell user: "Resuming {name}. Work from `repos/{session-name}___wt-workspace/`."
@@ -50,9 +56,9 @@ Begin or resume a persistent work session. Each session gets its own workspace w
 On resume, check for uncaptured work from previous chats:
 
 1. Read the session marker's `chatSessions` array
-2. For the most recent ended chat, check if the inflight tracker was updated after it ended
-3. Look in `~/.claude/projects/{project-path}/` for message history matching the chat session ID
-4. If there's a gap (history is newer than tracker): scan those messages and generate a summary
+2. For the most recent ended chat entry, use its `id` field (UUID) to locate the conversation log at `~/.claude/projects/{project-path}/{id}.jsonl`
+3. Check if the inflight tracker was updated after that chat ended
+4. If there's a gap (conversation log has content newer than the tracker's last update): scan the log and generate a summary of decisions, progress, and context
 5. Append the summary to the inflight tracker
 6. Tell user: "Found uncaptured work from your last chat. Updated the session tracker."
 
@@ -89,7 +95,7 @@ The script creates:
 - Active-session pointer in the worktree's `.claude-scratchpad/`
 - Inflight tracker in `shared-context/{user}/inflight/`
 
-Register this chat's session ID in the marker.
+Register this chat in the marker's `chatSessions` array using the same method as the resume flow — find the current session's UUID from the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/`.
 
 ### Capture prior conversation context
 
