@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 // SessionStart hook — surface active work sessions and shared context
-import { readdirSync, statSync, readFileSync, existsSync } from 'fs';
+import { readdirSync, statSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join, basename, relative } from 'path';
 import { execSync } from 'child_process';
-import { getWorkspaceRoot, readJSON, respond, getSessionMarkers, getActiveSessionPointer, timeAgo } from './_utils.mjs';
+import { getWorkspaceRoot, readJSON, readStdin, respond, getSessionMarkers, getActiveSessionPointer, timeAgo } from './_utils.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
+const input = await readStdin();
 const config = readJSON(join(root, 'workspace.json'));
+
+// Write current chat session ID to scratchpad so skills can read it
+if (input.session_id) {
+  const scratchpad = join(root, '.claude-scratchpad');
+  if (!existsSync(scratchpad)) mkdirSync(scratchpad, { recursive: true });
+  writeFileSync(join(scratchpad, '.current-chat-id'), input.session_id);
+}
 const contextDir = join(root, 'shared-context');
 const reposDir = join(root, 'repos');
 const lines = [];

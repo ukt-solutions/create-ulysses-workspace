@@ -37,16 +37,17 @@ Begin or resume a persistent work session. Each session gets its own workspace w
    - Workspace: `repos/{session-name}___wt-workspace/`
    - For each repo in `marker.repos`: `repos/{session-name}___wt-{repo}/`
    - If any are missing, recreate from the branch
-3. Register this chat in the session marker. Get the current chat session ID by finding the most recently modified `.jsonl` file in `~/.claude/projects/` for this workspace path:
+3. Register this chat in the session marker. The current chat session ID (UUID) is written to `.claude-scratchpad/.current-chat-id` by the session-start hook:
    ```bash
-   ls -t ~/.claude/projects/{project-path}/*.jsonl | head -1
-   # Extract the UUID filename (without .jsonl extension) — that is the session ID
+   cat .claude-scratchpad/.current-chat-id
    ```
+   If the file doesn't exist (hook didn't fire), fall back to finding the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/` and extract the UUID from its filename.
+
    Append to the marker's `chatSessions` array:
    ```json
    { "id": "{uuid}", "names": ["{initial-name}"], "started": "{now}", "ended": null }
    ```
-   The `id` field is the authoritative identifier (UUID from the .jsonl filename). The `names` field is an array that tracks all names the session has had (users can rename sessions) — append new names, never replace. Names are informational; the `id` is used for all lookups.
+   The `id` field is the authoritative identifier (UUID). The `names` field is an array that tracks all names the session has had (users can rename sessions) — append new names, never replace. Names are informational; the `id` is used for all lookups.
 4. Update marker status to `active` if it was `paused`
 5. Run history reconstruction (see below)
 6. Tell user: "Resuming {name}. Work from `repos/{session-name}___wt-workspace/`."
@@ -95,7 +96,7 @@ The script creates:
 - Active-session pointer in the worktree's `.claude-scratchpad/`
 - Inflight tracker in `shared-context/{user}/inflight/`
 
-Register this chat in the marker's `chatSessions` array using the same method as the resume flow — find the current session's UUID from the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/`.
+Register this chat in the marker's `chatSessions` array using the same method as the resume flow — read the UUID from `.claude-scratchpad/.current-chat-id`.
 
 ### Capture prior conversation context
 

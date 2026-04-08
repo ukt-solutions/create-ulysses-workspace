@@ -85,3 +85,12 @@ export function timeAgo(isoString) {
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
 }
+
+export function getCurrentChatId(root) {
+  const chatIdFile = join(root, '.claude-scratchpad', '.current-chat-id');
+  try {
+    return readFileSync(chatIdFile, 'utf-8').trim();
+  } catch {
+    return null;
+  }
+}
