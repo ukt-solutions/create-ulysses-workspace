@@ -14,11 +14,12 @@ if (!['Bash', 'Edit', 'Write'].includes(toolName)) {
   process.exit(0);
 }
 
-// Extract file paths from tool input
+// Extract file paths from tool input — normalize to forward slashes for cross-platform matching
 const toolInput = input.tool_input || {};
 const paths = [toolInput.file_path, toolInput.command, toolInput.path]
   .filter(Boolean)
-  .join(' ');
+  .join(' ')
+  .replace(/\\/g, '/');
 
 // If we're in a workspace worktree, check for out-of-session repo writes
 const pointer = getActiveSessionPointer(root);
