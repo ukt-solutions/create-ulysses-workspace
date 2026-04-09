@@ -125,6 +125,33 @@ git add -u && git commit -m "chore: consume inflight tracker for {session-name}"
 
 Only consume files that are branch-scoped (in the worktree or inflight/). Leave project-scoped specs in `{user}/` ongoing.
 
+### Step 6b: Version bump (if applicable)
+
+For each repo in `marker.repos`, check if the repo has versioning:
+```bash
+cd repos/{session-name}___wt-{repo}
+cat package.json 2>/dev/null | grep '"version"'
+```
+
+If no `package.json` or no `version` field: skip this repo — no versioning to manage.
+
+If the repo has a version, determine the appropriate bump from the release notes just written:
+
+1. Read the `type:` field from the branch release notes created in Step 5
+2. Determine the bump:
+   - `type: fix` or `type: chore` → **patch** (auto-bump, no confirmation needed)
+   - `type: feature` → **minor** (present to user: "This session adds new functionality. Suggested bump: {current} → {next-minor}. Confirm or adjust?")
+   - Breaking changes detected (schema changes, removed APIs, convention changes) → **major** (present to user: "This session includes breaking changes. Suggested bump: {current} → {next-major}. Confirm or adjust?")
+
+3. Apply the bump:
+   ```bash
+   # Update version in package.json
+   git add package.json
+   git commit -m "chore: bump version to {new-version}"
+   ```
+
+The user can override any suggestion — they might want a patch even for a feature, or a minor even when the tool suggests patch. Accept their decision.
+
 ### Step 7: Check for no-remote
 
 For each repo in `marker.repos`, verify remotes exist:
