@@ -6,13 +6,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workspace-update-check.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/workspace-update-check.mjs",
             "timeout": 5000,
             "statusMessage": "Checking for workspace updates..."
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/session-start.mjs",
             "timeout": 30000,
             "statusMessage": "Syncing workspace..."
           }
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-start.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/subagent-start.mjs",
             "timeout": 5000,
             "statusMessage": "Loading shared context..."
           }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-compact.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/pre-compact.mjs",
             "timeout": 5000,
             "statusMessage": "Checking for uncaptured context..."
           }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/post-compact.mjs",
             "timeout": 5000
           }
         ]
@@ -59,12 +59,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workspace-update-check.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/workspace-update-check.mjs",
             "timeout": 5000
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/repo-write-detection.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/repo-write-detection.mjs",
             "timeout": 5000
           }
         ]
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/session-end.mjs",
             "timeout": 15000,
             "statusMessage": "Saving session state..."
           }
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/worktree-create.mjs",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/worktree-create.mjs",
             "timeout": 5000,
             "statusMessage": "Checking for stale worktrees..."
           }

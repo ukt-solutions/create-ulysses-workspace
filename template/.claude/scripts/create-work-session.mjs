@@ -50,10 +50,16 @@ try {
     projWorktrees.push({ repo, worktreeName: projWorktreeName });
   }
 
-  // Symlink repos/ into workspace worktree (relative for portability)
+  // Symlink repos/ into workspace worktree
+  // Windows: junctions work without elevation but require absolute paths
+  // Unix: relative symlinks for portability
   const reposLink = join(wsWorktree, 'repos');
   if (!existsSync(reposLink)) {
-    symlinkSync('../..', reposLink);
+    if (process.platform === 'win32') {
+      symlinkSync(resolve(reposDir, '..'), reposLink, 'junction');
+    } else {
+      symlinkSync('../..', reposLink);
+    }
   }
 
   // Copy settings.local.json into worktree if it exists
