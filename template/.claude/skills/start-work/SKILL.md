@@ -65,11 +65,21 @@ If no gap is found, skip silently.
 
 ## Flow: Blank (new session)
 
-1. Ask: "What are you working on?"
-2. Wait for response
-3. Generate session name from description (kebab-case slug)
-4. Determine type: feature, bugfix, or chore
-5. Ask which repo(s) — present numbered list from workspace.json, allow selecting multiple (e.g., "1,3" or "all")
+1. Check if `shared-context/open-work.md` exists and has open items. If so, present them sorted by priority:
+   ```
+   Open work items:
+     1. [P1 bug] Auth timeout on mobile (#3)
+     2. [P2 feat] Full-text search (#5)
+     3. [P3 chore] Remove deprecated endpoints (#7)
+   
+     [N] Something not on this list
+   
+   Which one, or describe something new?
+   ```
+2. If user picks an existing item: use its title, type, and repo. Generate session name from the title.
+3. If user describes something new: add it to `open-work.md` as a new item with the next available ID.
+4. Determine type: feature, bugfix, or chore (from the work item or user description)
+5. Ask which repo(s) — present numbered list from workspace.json, allow selecting multiple (e.g., "1,3" or "all"). Pre-select the repo from the work item if it's from a specific table.
 6. Propose branch: "How about `{prefix}/{session-name}`?"
 7. Wait for confirmation
 
@@ -95,6 +105,20 @@ The script creates:
 - Inflight tracker in `shared-context/{user}/inflight/`
 
 Register this chat in the marker's `chatSessions` array. For new sessions, the session-start hook has already fired (before /start-work was invoked) but the session didn't exist yet. Find the current chat's UUID from the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/` and add the entry manually. Subsequent chats on this session will be registered automatically by the hook.
+
+### Update open-work.md
+
+Update the work item's status to `in-progress` and populate its Branch field with the session branch:
+```markdown
+| 3 | bug | P1 | in-progress | bugfix/fix-auth | Auth timeout on mobile | ... |
+```
+If the session marker has a `workItem` field (set during the blank flow), use that to find the row. Auto-commit:
+```bash
+git add shared-context/open-work.md
+git commit -m "chore: mark work item #{id} as in-progress"
+```
+
+Also add a `workItem` field to the session marker linking back to the item ID so `/complete-work` and `/pause-work` know which item to update.
 
 ### Capture prior conversation context
 
