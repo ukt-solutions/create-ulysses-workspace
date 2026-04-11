@@ -1,0 +1,60 @@
+# Local Dev Environment
+
+Maintain a local-only document at `shared-context/locked/local-only-dev-environment.md` that captures machine-specific development context. This file is gitignored (local-only prefix) but positioned in locked for maximum visibility — Claude sees it every turn.
+
+## What to Record
+
+When you discover any of the following during work, add it to the local dev environment doc:
+
+- **Services & ports** — dev server URLs, database ports, API base URLs, queue endpoints
+- **Credentials** — local dev passwords, API keys for dev/staging, test user accounts, tokens
+- **CLI commands** — project-specific build/run/test commands, Docker invocations, migration commands
+- **Environment variables** — required env vars and their local values, .env file locations
+- **Paths** — local SDK paths, tool installations, config file locations, certificate paths
+- **Infrastructure** — local Docker containers, dev database names, S3 bucket names for dev
+
+## How to Record
+
+When you encounter a local development detail worth preserving:
+
+1. Check if `shared-context/locked/local-only-dev-environment.md` exists
+2. If not, create it with this structure:
+   ```markdown
+   ---
+   state: locked
+   type: reference
+   topic: local-dev-environment
+   updated: {today}
+   ---
+
+   # Local Dev Environment
+
+   Machine-specific development context. This file is gitignored — never shared.
+
+   ## Services & Ports
+
+   ## Credentials
+
+   ## CLI Commands
+
+   ## Environment Variables
+
+   ## Paths
+
+   ## Infrastructure
+   ```
+3. Add the new detail under the appropriate section
+4. Update the `updated:` date in frontmatter
+
+## When to Ask
+
+- **Credentials:** Always ask before recording: "Save this credential to your local dev doc? (gitignored, never shared)" — even though it's local-only, confirm the user wants it persisted.
+- **Everything else:** Record proactively when discovered. No need to ask — if you see the dev server is on port 3000, just add it.
+
+## When This Applies
+
+- You run a command and see a port or URL in the output
+- The user mentions "my API key is..." or "the database is at..."
+- You read a .env file or docker-compose.yml and learn the local setup
+- You troubleshoot a connection issue and discover the correct endpoint
+- The user provides credentials for a dev service
