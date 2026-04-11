@@ -88,12 +88,14 @@ Step 8: Scan Claude chat history
 Step 9: Preserve local preferences from CLAUDE.md.bak
 Step 10: Create locked team knowledge
 Step 11: Formalize existing worktrees as work sessions
-Step 12: Configure user identity
-Step 13: Clean root directory
-Step 14: Clean up payload and pre-migration artifacts
-Step 15: Verify — self-contradiction check
-Step 16: Set up workspace remote
-Step 17: Mark initialized, report
+Step 12: Populate open-work.md from discovered items
+Step 13: Set up issue tracker sync
+Step 14: Configure user identity
+Step 15: Clean root directory
+Step 16: Clean up payload and pre-migration artifacts
+Step 17: Verify — self-contradiction check
+Step 18: Set up workspace remote
+Step 19: Mark initialized, report
 
 Adjust this plan, reorder, skip steps, or add things?"
 ```
@@ -102,7 +104,7 @@ Adapt the plan to what was actually found. Only include relevant steps. Wait for
 
 ### Step 5: Install template components from payload
 
-Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 17 after the payload is deleted.
+Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 19 after the payload is deleted.
 
 Install components from `.workspace-update/.claude/` to `.claude/`. For each component directory — skills, hooks, agents, rules, scripts:
 
@@ -257,7 +259,74 @@ For each active worktree found:
 
 **Commit:** `git commit -m "feat: formalize existing worktrees as work sessions"`
 
-### Step 12: Configure user identity
+### Step 12: Populate open-work.md
+
+Create `shared-context/open-work.md` with one table per repo from workspace.json. Populate it from all sources discovered during init:
+
+1. **From braindumps and handoffs** (Steps 7-9): scan extracted content for action items, bugs, feature requests, TODOs. Each becomes a work item.
+2. **From formalized worktrees** (Step 11): each in-progress session becomes a work item with status `in-progress` and its branch populated.
+3. **From Claude chat history** (Step 8): unresolved questions, noted bugs, planned features mentioned in conversations.
+4. **From the user**: "Any other work items to add? Bugs you know about, features planned?"
+
+Present the populated table for review before committing. Let the user adjust priorities, remove items, or add more.
+
+```markdown
+---
+state: ephemeral
+lifecycle: active
+type: reference
+topic: open-work
+updated: {today}
+---
+
+# Open Work
+
+## {repo-name}
+
+| # | Type | Pri | Status | Branch | Title | Context |
+|---|------|-----|--------|--------|-------|---------|
+```
+
+**Commit:** `git commit -m "feat: populate open-work.md from discovered items"`
+
+### Step 13: Set up issue tracker sync
+
+Ask: "Do you use an issue tracker for this project? (GitHub Issues, Linear, Jira, Notion, or none)"
+
+**If none:** Skip. open-work.md is the only tracker.
+
+**If yes:**
+1. Ask which system and how they access it (API, MCP, CLI)
+2. Research online for existing MCPs or APIs for that system:
+   - GitHub Issues: `gh` CLI is likely available, or the GitHub MCP
+   - Linear: Linear MCP or API
+   - Jira: Jira API or MCP
+   - Notion: Notion MCP (likely already configured)
+3. Guide the user through setting up access (API keys, MCP configuration, CLI auth)
+4. Help build a sync script at `.claude/scripts/sync-open-work.mjs` that:
+   - Reads `shared-context/open-work.md`
+   - Parses the table(s)
+   - For each item: creates, updates, or closes the corresponding external issue
+   - Uses `<!-- gh-issue:repo#N -->` (or equivalent) markers to track the link between rows and external issues
+   - Reports what was synced
+5. Add the tracker config to workspace.json:
+   ```json
+   {
+     "workspace": {
+       "tracker": {
+         "type": "{system}",
+         "sync": ".claude/scripts/sync-open-work.mjs"
+       }
+     }
+   }
+   ```
+6. Test the sync: run the script and verify items appear in the external system
+
+**Commit:** `git commit -m "feat: configure issue tracker sync"`
+
+If the tracker setup is complex or requires access the user doesn't have right now, note it as a follow-up item in open-work.md itself and move on.
+
+### Step 14: Configure user identity
 
 Ask: "What name should be used for your user-scoped context? [{system-username}]"
 Save to `.claude/settings.local.json`:
@@ -269,7 +338,7 @@ Save to `.claude/settings.local.json`:
 }
 ```
 
-### Step 13: Clean root directory
+### Step 15: Clean root directory
 
 The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (.claude/, shared-context/, repos/, .claude-scratchpad/).
 
@@ -287,7 +356,7 @@ Report: "Moved {N} items to .claude-scratchpad/unmigrated/: {list}."
 
 **Commit:** `git commit -m "chore: clean root — move non-template items to unmigrated"`
 
-### Step 14: Clean up payload and pre-migration artifacts
+### Step 16: Clean up payload and pre-migration artifacts
 
 - **Delete `.workspace-update/` directory entirely**
 - **Remove any `@.workspace-update/` lines from CLAUDE.md**
@@ -297,7 +366,7 @@ Report: "Moved {N} items to .claude-scratchpad/unmigrated/: {list}."
 
 **Commit:** `git commit -m "chore: clean up payload and pre-migration artifacts"`
 
-### Step 15: Verify — self-contradiction check
+### Step 17: Verify — self-contradiction check
 
 Read EVERY created and activated file:
 - Every `.claude/rules/*.md` (not .skip)
@@ -315,7 +384,7 @@ Fix ALL issues found. This step must not be rushed.
 
 **Commit:** `git commit -m "fix: resolve self-contradictions from init"`
 
-### Step 16: Set up workspace remote
+### Step 18: Set up workspace remote
 
 Check if the workspace git repo already has a remote:
 ```bash
@@ -346,7 +415,7 @@ git remote -v
 - Create via `gh repo create {org}/{name} --private` and add as remote
 - Do NOT push yet — user merges the branch first
 
-### Step 17: Mark initialized and report
+### Step 19: Mark initialized and report
 
 Update workspace.json:
 - Set `initialized: true`
@@ -404,11 +473,11 @@ This session is done. Start a fresh Claude Code session and run /start-work to b
 - Execute confidently. Report after each major step completes.
 - Commit after each major step — granular history on the branch.
 - Ask the user only for decisions that require judgment.
-- **Capture the `templateVersion` from `.manifest.json` early** (Step 5) before the payload is deleted in Step 14.
+- **Capture the `templateVersion` from `.manifest.json` early** (Step 5) before the payload is deleted in Step 16.
 - **Root directory cleanliness is non-negotiable.** Non-template items go to unmigrated.
 - **Every expected behavior that fails must be reported.**
 - **Don't suggest starting work at the end.** Tell the user to restart Claude Code and run /start-work in a fresh session.
-- The verification step (Step 15) is mandatory — read every file, check thoroughly.
+- The verification step (Step 17) is mandatory — read every file, check thoroughly.
 - **Build manifests before long operations.** Chat history scanning (Step 8) and worktree formalization (Step 11) can be interrupted by auto-compaction. Write a manifest to `.claude-scratchpad/` before starting so progress survives.
 - **Never re-fetch content that already exists.** Always check shared-context and rules for existing extractions before accessing external sources.
 - This skill is idempotent — safe to run if interrupted and restarted.
