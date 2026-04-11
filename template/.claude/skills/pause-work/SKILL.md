@@ -28,9 +28,12 @@ Update the Progress section with:
 
 This is a coherent rewrite of the Progress section, not an append (coherent-revisions rule).
 
-### Step 3: Update session marker
+### Step 3: Update session marker and open-work.md
 
 Set `status: "paused"` and record this chat's `ended` timestamp in the marker.
+
+If the session marker has a `workItem` field, update the corresponding item in `shared-context/open-work.md`:
+- Set status to `paused`
 
 ### Step 4: Commit and push workspace
 

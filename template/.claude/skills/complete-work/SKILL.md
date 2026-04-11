@@ -229,7 +229,25 @@ cd repos/{repo} && git pull origin {repo-branch}
 cd {main-workspace-root} && git pull origin main
 ```
 
-### Step 10: Cleanup
+### Step 10: Update open-work.md and sync tracker
+
+If the session marker has a `workItem` field, update the corresponding item in `shared-context/open-work.md`:
+- Set status to `done`
+- Auto-commit:
+  ```bash
+  cd {main-workspace-root}
+  git add shared-context/open-work.md
+  git commit -m "chore: mark work item #{id} as done"
+  git push origin main
+  ```
+
+If `workspace.json` has a `tracker.sync` script configured, run it to sync the updated open-work.md to the external tracker:
+```bash
+node {tracker.sync}
+```
+Report the result. If the script fails, report the error but don't block cleanup.
+
+### Step 11: Cleanup
 
 Run the cleanup helper script from the main workspace root:
 ```bash
