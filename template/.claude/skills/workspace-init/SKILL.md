@@ -295,36 +295,9 @@ Ask: "Do you use an issue tracker for this project? (GitHub Issues, Linear, Jira
 
 **If none:** Skip. open-work.md is the only tracker.
 
-**If yes:**
-1. Ask which system and how they access it (API, MCP, CLI)
-2. Research online for existing MCPs or APIs for that system:
-   - GitHub Issues: `gh` CLI is likely available, or the GitHub MCP
-   - Linear: Linear MCP or API
-   - Jira: Jira API or MCP
-   - Notion: Notion MCP (likely already configured)
-3. Guide the user through setting up access (API keys, MCP configuration, CLI auth)
-4. Help build a sync script at `.claude/scripts/sync-open-work.mjs` that:
-   - Reads `shared-context/open-work.md`
-   - Parses the table(s)
-   - For each item: creates, updates, or closes the corresponding external issue
-   - Uses `<!-- gh-issue:repo#N -->` (or equivalent) markers to track the link between rows and external issues
-   - Reports what was synced
-5. Add the tracker config to workspace.json:
-   ```json
-   {
-     "workspace": {
-       "tracker": {
-         "type": "{system}",
-         "sync": ".claude/scripts/sync-open-work.mjs"
-       }
-     }
-   }
-   ```
-6. Test the sync: run the script and verify items appear in the external system
+**If yes:** Run `/setup-tracker` — it handles the full tracker configuration flow (identify system, research integration, set up access, build sync script, configure workspace.json, test). That skill can also be run standalone anytime after init.
 
-**Commit:** `git commit -m "feat: configure issue tracker sync"`
-
-If the tracker setup is complex or requires access the user doesn't have right now, note it as a follow-up item in open-work.md itself and move on.
+If the tracker setup is complex or requires access the user doesn't have right now, note it as a follow-up item in open-work.md itself and move on — the user can run `/setup-tracker` later.
 
 ### Step 14: Configure user identity
 
