@@ -1,10 +1,10 @@
 {
-  "name": "create-claude-workspace",
+  "name": "create-ulysses-workspace",
   "version": "0.5.2",
   "description": "Scaffold a convention-over-configuration workspace for Claude Code",
   "type": "module",
   "bin": {
-    "create-claude-workspace": "./bin/create.mjs"
+    "create-ulysses-workspace": "./bin/create.mjs"
   },
   "files": [
     "bin/",
