@@ -27,7 +27,7 @@ Three layers of protection:
 
 ### Action required for existing workspaces
 
-Run `npx create-claude-workspace --upgrade` (or local equivalent) and then `/workspace-update`. The migration step will handle the fix automatically. Alternatively, manually change `repos/` to `repos` in your workspace's `.gitignore` and untrack any committed `repos` symlink with `git rm --cached repos`.
+Run `npx create-ulysses-workspace --upgrade` (or local equivalent) and then `/workspace-update`. The migration step will handle the fix automatically. Alternatively, manually change `repos/` to `repos` in your workspace's `.gitignore` and untrack any committed `repos` symlink with `git rm --cached repos`.
 
 ### How this happened
 

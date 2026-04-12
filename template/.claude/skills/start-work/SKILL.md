@@ -20,7 +20,7 @@ Begin or resume a persistent work session. Each session gets its own workspace w
    Active work sessions:
      1. migrate-tool (active, last chat ended 2h ago)
         "Rewriting the migration module"
-        Branch: bugfix/migrate-rewrite | Repos: create-claude-workspace
+        Branch: bugfix/migrate-rewrite | Repos: my-app
      
      [N] Start something new
    

@@ -5,14 +5,14 @@ description: Apply a staged template update to an initialized workspace. The CLI
 
 # Workspace Update
 
-Apply a staged template update to an initialized workspace. The CLI (`npx create-claude-workspace --upgrade`) stages the payload in `.workspace-update/`. This skill reads and applies it. Runs a maintenance audit before updating and verifies integrity after.
+Apply a staged template update to an initialized workspace. The CLI (`npx create-ulysses-workspace --upgrade`) stages the payload in `.workspace-update/`. This skill reads and applies it. Runs a maintenance audit before updating and verifies integrity after.
 
 ## Prerequisites
 
 - `workspace.json` must have `initialized: true`
 - If not initialized, report: "Workspace not initialized. Run /workspace-init first."
-- `.workspace-update/` payload directory must exist (staged by `npx create-claude-workspace --upgrade`)
-- If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx create-claude-workspace --upgrade` to stage the template."
+- `.workspace-update/` payload directory must exist (staged by `npx create-ulysses-workspace --upgrade`)
+- If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx create-ulysses-workspace --upgrade` to stage the template."
 - Read `.workspace-update/.manifest.json` for `fromVersion`, `toVersion`, and `action`
 - If `action` is `"init"`, report: "This payload is for initial setup. Run /workspace-init instead."
 
@@ -125,10 +125,10 @@ Report: "Workspace updated to v{toVersion}. Restart Claude Code if rules or hook
 
 ## Notes
 
-- The CLI (`npx create-claude-workspace --upgrade`) stages the payload. This skill processes it.
+- The CLI (`npx create-ulysses-workspace --upgrade`) stages the payload. This skill processes it.
 - Never overwrites without asking
 - Preserves local modifications and custom content
 - Can be run multiple times safely (idempotent) — if `.workspace-update/` doesn't exist, it reports no payload and exits
-- Initial setup is handled by `npx create-claude-workspace --init` + `/workspace-init` — this skill is for subsequent updates only
+- Initial setup is handled by `npx create-ulysses-workspace --init` + `/workspace-init` — this skill is for subsequent updates only
 - The `.sh` to `.mjs` hook migration is a one-time transition for workspaces created before hooks moved to JavaScript
 - The maintenance audits are read-only and non-blocking — they surface issues but don't prevent the update
