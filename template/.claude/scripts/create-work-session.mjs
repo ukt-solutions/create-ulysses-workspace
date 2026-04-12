@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Helper: create workspace + project worktrees, marker, pointer, and inflight tracker
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, symlinkSync, copyFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, symlinkSync, copyFileSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { getWorkspaceRoot, readJSON, writeSessionMarker } from '../hooks/_utils.mjs';
 
@@ -26,6 +26,27 @@ const repos = repoArg.split(',').map(r => r.trim()).filter(Boolean);
 const root = getWorkspaceRoot(import.meta.url);
 const config = readJSON(join(root, 'workspace.json'));
 const reposDir = join(root, 'repos');
+
+// Safety check: the workspace creates a symlink named "repos" inside every
+// workspace worktree. The .gitignore MUST match it with "repos" (no trailing
+// slash) — "repos/" only matches directories, not symlinks. If the pattern
+// is wrong, git add -A inside a worktree will stage the symlink, and pulling
+// it at the workspace root will destroy the real repos/ directory. Refuse
+// to create the worktree until the .gitignore is fixed.
+const gitignorePath = join(root, '.gitignore');
+if (existsSync(gitignorePath)) {
+  const gitignore = readFileSync(gitignorePath, 'utf-8');
+  if (/^repos\/$/m.test(gitignore)) {
+    console.error(
+      'ABORT: .gitignore has "repos/" (trailing slash) which does not match ' +
+      'the symlink that this script creates in worktrees. This is a critical ' +
+      'bug that can destroy your repos/ directory. Fix it by changing ' +
+      '"repos/" to "repos" (no slash) in .gitignore, then re-run. See ' +
+      'release-notes for v0.5.1 for details.'
+    );
+    process.exit(2);
+  }
+}
 
 const wsWorktreeName = `${sessionName}___wt-workspace`;
 const wsWorktree = join(reposDir, wsWorktreeName);
