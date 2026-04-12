@@ -1,9 +1,14 @@
 # Repos (cloned separately per user)
-repos/
+# NOTE: no trailing slash — the start-work helper creates a symlink named
+# "repos" inside workspace worktrees, and trailing-slash patterns match
+# directories only, not symlinks. Without this, git add -A will stage the
+# symlink, and pulling it to the workspace root will replace the real
+# repos/ directory with the symlink and destroy everything inside.
+repos
 !repos/.keep
 
 # Scratchpad (ephemeral workspace files)
-.claude-scratchpad/
+.claude-scratchpad
 !.claude-scratchpad/.keep
 
 # Personal overrides
