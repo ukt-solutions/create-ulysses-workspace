@@ -192,7 +192,7 @@ Based on Q1 (audience) and Q7 (reading pattern), propose two or three structural
 > Here are some structural options for your documentation:
 >
 > A. **Three-part** (Foundations → Systems → Integration). DDIA-style, deeply structured. Works for technical products with layered architecture.
-> B. **Narrative spine** — follow a user/learner journey. Works for user-facing products or tutorials.
+> B. **Narrative spine** — follow a user journey through the product. Works for user-facing products or tutorials.
 > C. **Hybrid** — narrative within a structured frame. Works when the product has both architectural depth and a journey story.
 >
 > Based on your answers, I'd suggest {recommendation}. Which fits your project, or describe your own?
