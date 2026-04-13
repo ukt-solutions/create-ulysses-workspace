@@ -15,14 +15,14 @@ Capture discussion reasoning, exploration results, and design rationale into sha
 
 ## Session-Aware Behavior
 
-When called within an active work session (`.claude-scratchpad/.active-session.json` exists):
+When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
 
-- Default behavior: append reasoning and decisions to the inflight tracker at `shared-context/{user}/inflight/session-{session-name}.md`
-- Add a new section to the tracker with the braindump content (Context, Exploration, Decisions, Implications)
-- Auto-commit the update:
+- Default behavior: append reasoning and decisions to the session tracker body at `work-sessions/{session-name}/session.md`
+- Add a new section to the tracker body (Context, Exploration, Decisions, Implications) — do NOT touch the frontmatter
+- Auto-commit from the workspace root:
   ```bash
-  git add shared-context/{user}/inflight/session-{session-name}.md
-  git commit -m "braindump: update {session-name} tracker"
+  git -C {workspace-root} add work-sessions/{session-name}/session.md
+  git -C {workspace-root} commit -m "braindump: update {session-name} tracker"
   ```
 
 When called from the workspace root (no active session):

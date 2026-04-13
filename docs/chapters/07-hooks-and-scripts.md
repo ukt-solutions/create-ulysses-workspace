@@ -20,7 +20,7 @@ The workspace ships with eight hooks. The design philosophy is minimal intervent
 
 **Fires:** When a new Claude Code conversation begins.
 
-**Does:** Reads session markers from `.claude-scratchpad/` and surfaces active work sessions. If there are active or paused sessions, it injects a summary so Claude can offer to resume them. Also surfaces recent handoffs so the conversation starts with awareness of prior work.
+**Does:** Walks `work-sessions/` for any `session.md` trackers and surfaces active work sessions. If there are active or paused sessions, it injects a summary so Claude can offer to resume them. Also surfaces recent handoffs so the conversation starts with awareness of prior work.
 
 This is how `/start-work` knows about existing sessions — the hook has already told Claude what is available before you type anything.
 
@@ -58,7 +58,7 @@ This is one of the most important hooks in the workspace. Without it, subagents 
 
 **Does two things:**
 
-First, when running from the workspace root (main branch), it enforces write restrictions. Only `.claude-scratchpad/` and `local-only-*` files are writable from the root. Attempts to write to repos, shared context, or template files trigger a warning telling Claude to use a workspace worktree.
+First, when running from the workspace root (main branch), it enforces write restrictions. Only `workspace-scratchpad/` and `local-only-*` files are writable from the root. Attempts to write to repos, shared context, template files, or session folders trigger a warning telling Claude to use a workspace worktree.
 
 Second, when running from a workspace worktree with an active session, it detects writes to repos that are not part of the session. If you try to write to `my-api` but your session only includes `my-app`, the hook warns Claude so it can offer to add the repo to the session before proceeding.
 
@@ -82,7 +82,7 @@ Each script takes explicit arguments, fails loudly on errors, and prints a JSON 
 
 ### create-work-session.mjs
 
-Creates everything a work session needs: workspace branch and worktree, project branches and worktrees (one per repo), repos/ symlink, settings copy, active-session pointer, inflight tracker, and session marker.
+Creates everything a work session needs: the `work-sessions/{name}/` folder, workspace branch and worktree, project branches and nested worktrees (one per repo) inside the workspace worktree's real `repos/` directory, settings copy, active-session pointer, and the unified `session.md` tracker.
 
 ```bash
 node .claude/scripts/create-work-session.mjs \
@@ -104,7 +104,7 @@ node .claude/scripts/cleanup-work-session.mjs \
 
 ### add-repo-to-session.mjs
 
-Adds a repo to an existing session mid-flight. Creates the branch and worktree, updates the session marker's repos array, and updates the inflight tracker frontmatter.
+Adds a repo to an existing session mid-flight. Creates the branch and worktree nested inside the workspace worktree's `repos/` directory, and updates the session tracker's `repos:` frontmatter.
 
 ```bash
 node .claude/scripts/add-repo-to-session.mjs \

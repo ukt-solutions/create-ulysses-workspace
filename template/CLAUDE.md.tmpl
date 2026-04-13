@@ -3,10 +3,10 @@
 This is a claude-workspace. All conventions are defined in .claude/rules/.
 
 ## Quick Reference
-- This root is the launcher — all work happens in workspace worktrees
+- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`
 - `/start-work` to create or resume a work session
-- Worktrees: `repos/{session}___wt-workspace/` and `repos/{session}___wt-{repo}/`
-- From root: only `local-only-*` and `.claude-scratchpad/` are writable
+- Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker
+- From root: only `local-only-*` and `workspace-scratchpad/` are writable
 - Shared memory lives in `shared-context/`
 
 ## Workspace Config

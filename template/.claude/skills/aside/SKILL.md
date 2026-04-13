@@ -106,8 +106,8 @@ Topics that would benefit from deeper exploration or user input.}
 ## Session Behavior
 
 Asides are session-agnostic. Regardless of whether a work session is active:
-- Files always go to `shared-context/{user}/` (never inflight)
-- No interaction with the inflight tracker
+- Files always go to `shared-context/{user}/`
+- No interaction with the session tracker
 - No interaction with `/complete-work` synthesis
 
 ## Lifecycle

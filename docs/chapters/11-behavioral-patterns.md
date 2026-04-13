@@ -70,7 +70,7 @@ The `/release` skill's synthesis cycle is the natural pressure valve. It distill
 
 **The practice:** Start a work session, do the work, complete or pause the session, end the conversation. Do not chain multiple work sessions in a single conversation. Finish one, start fresh.
 
-**Why it matters:** Claude's context window has a fixed size. As a conversation grows, older messages are compacted — summaries replace the original content. A long conversation that chains multiple work sessions means the context from the first session is compressed or lost by the time you start the second. The inflight tracker captures key state, but the nuanced reasoning and discussion context degrades.
+**Why it matters:** Claude's context window has a fixed size. As a conversation grows, older messages are compacted — summaries replace the original content. A long conversation that chains multiple work sessions means the context from the first session is compressed or lost by the time you start the second. The session tracker captures key state, but the nuanced reasoning and discussion context degrades.
 
 **What goes wrong:** You complete one feature and immediately start another in the same conversation. By the time you are deep into the second feature, Claude's memory of the first feature's decisions is compressed summaries. If something from the first session is relevant to the second, Claude may miss it or misremember it.
 

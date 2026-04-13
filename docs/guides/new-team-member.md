@@ -60,7 +60,7 @@ When you are ready to do actual work:
 Claude asks what you are working on. Describe the task. Pick which repo (or repos) you need. Confirm the branch name. The workspace creates worktrees for you — isolated checkouts where your work happens without affecting anyone else.
 
 ```
-Work session started. Work from repos/fix-bug___wt-workspace/.
+Work session started. Work from work-sessions/fix-bug/workspace/.
 ```
 
 Now work normally. Make changes, commit, iterate. Claude knows about your session and can help you navigate the project repos.

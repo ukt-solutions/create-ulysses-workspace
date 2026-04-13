@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-// WorktreeCreate hook — scan for stale worktrees and flag them
+// WorktreeCreate hook — scan for stale worktrees across project repos and
+// flag them. Project worktrees live inside work-sessions/{name}/workspace/repos/
+// in the new layout. The scan walks each project repo's worktree admin list
+// rather than a filesystem pattern, so it keeps working regardless of where
+// worktrees are physically located.
 import { readdirSync, existsSync } from 'fs';
 import { join, basename } from 'path';
 import { execSync } from 'child_process';
@@ -17,7 +21,6 @@ if (!existsSync(reposDir)) {
 for (const entry of readdirSync(reposDir)) {
   const repoPath = join(reposDir, entry);
   if (!existsSync(join(repoPath, '.git'))) continue;
-  if (entry.includes('___wt-')) continue;
 
   let worktreeOutput;
   try {

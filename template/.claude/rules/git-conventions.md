@@ -11,11 +11,16 @@
 ## Worktrees
 
 - Work sessions get N+1 worktrees: one for the workspace, plus one per project repo
-- Worktree naming: `{session-name}___wt-{type}` where type is `workspace` or `{repo-name}`
-- Examples: `repos/migrate-tool___wt-workspace/`, `repos/migrate-tool___wt-my-app/`
-- All worktrees for a session are adjacent in directory listings
-- The main repo clone and workspace root stay on their default branches
-- Remove worktrees when the work session is completed
+- Each session lives in a self-contained folder at `work-sessions/{session-name}/`
+- The workspace worktree is at `work-sessions/{session-name}/workspace/`
+- Project worktrees are nested inside the workspace worktree at `work-sessions/{session-name}/workspace/repos/{repo-name}/`
+- Example: for a session `fix-auth` on branch `bugfix/fix-auth` touching repos `my-app` and `my-api`:
+  - `work-sessions/fix-auth/workspace/` — workspace worktree
+  - `work-sessions/fix-auth/workspace/repos/my-app/` — project worktree
+  - `work-sessions/fix-auth/workspace/repos/my-api/` — project worktree
+- The workspace repo's `.gitignore` pattern `repos` (no trailing slash) covers both the workspace root's `repos/` and the nested `repos/` inside every worktree
+- Source clones at `repos/{repo-name}/` (at the workspace root) stay on their default branch at all times
+- Remove worktrees when the work session is completed — use the cleanup helper to enforce the mandatory teardown order (project worktrees first, then workspace worktree, then prune)
 
 ## Branch Maintenance
 

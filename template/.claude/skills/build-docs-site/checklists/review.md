@@ -119,7 +119,7 @@ npm start      # dev server
 
 ## After all four passes
 
-Update the inflight tracker with:
+Update the session tracker with:
 - Pass 1 hits resolved (count, summary of categories)
 - Pass 2 hits resolved (count)
 - Pass 3 mapping final state (replaced/partial/superseded counts)
