@@ -49,23 +49,23 @@ Root-level files are an explicit choice. Content lands here when you deliberatel
 
 ### User-Scoped — Personal Working Context
 
-`shared-context/{user}/` contains one person's working context. This is the default destination for everything captured during work sessions. Braindumps, handoffs, and session-specific artifacts land here.
+`shared-context/{user}/` contains one person's working context. This is the default destination for everything captured outside of an active work session. Standalone braindumps, ongoing reference material, personal notes.
 
-Within user-scoped context, `{user}/inflight/` holds artifacts tied to active work sessions. The inflight tracker (`session-{name}.md`) accumulates progress, decisions, and reasoning throughout a session's life. It is created by `/start-work` and consumed by `/complete-work` when the session finalizes. Inflight content is ephemeral by definition — it feeds into release notes and then is removed.
+Session-scoped state (the session tracker, specs, plans) does NOT live in shared-context. It lives in `work-sessions/{name}/` — each session is self-contained. Inside a session, `/handoff` and `/braindump` route to the session tracker body in `work-sessions/{name}/session.md` rather than creating new shared-context files. Outside of a session, they land in `shared-context/{user}/`.
 
-User-scoped files that are not inflight persist across work sessions. These are your ongoing reference material — naming ideas, sabbatical plans, competitive analysis. They stay until you promote them, move them, or delete them.
+User-scoped files persist across work sessions. They are your ongoing reference material — naming ideas, sabbatical plans, competitive analysis. They stay until you promote them, move them, or delete them.
 
 ## How Context Gets Created
 
 Three capture skills feed the shared context system. Each serves a different purpose:
 
-**`/handoff`** captures workstream state — what was done, what is in progress, what comes next. It is structured and actionable. When called during an active work session, it updates the inflight tracker rather than creating a new file. Use it when someone (including your future self) needs to pick up where you left off.
+**`/handoff`** captures workstream state — what was done, what is in progress, what comes next. It is structured and actionable. When called during an active work session, it updates the session tracker's body at `work-sessions/{name}/session.md` rather than creating a new file. Use it when someone (including your future self) needs to pick up where you left off.
 
 **`/braindump`** captures reasoning and exploration — why a decision was made, what alternatives were considered, what the tradeoffs are. It is more freeform than a handoff. Use it when the conversation produced insights worth preserving, even if no code was written. The signal to braindump is hearing "we decided..." — that phrase means a decision just happened.
 
 **`/aside`** captures drive-by ideas without interrupting the current work. It dispatches a background agent to research and expand on the idea while you continue working. Use it when a thought crosses your mind that does not belong in the current session but should not be lost.
 
-All three default to user-scoped context. During active work sessions, `/handoff` and `/braindump` route to the inflight tracker. Outside of work sessions, they create standalone files.
+All three default to user-scoped context for standalone captures. During active work sessions, `/handoff` and `/braindump` route to the session tracker body so the captured reasoning becomes part of the session's durable thinking — synthesized into release notes by `/complete-work` when the session finishes.
 
 ## The Promotion Lifecycle
 
@@ -102,10 +102,13 @@ The mental model: locked controls placement (front of context, maximum attention
 
 Shared context files follow naming conventions rather than a directory hierarchy:
 
-- Specs: `design-{topic}.md`
-- Plans: `plan-{topic}.md`
 - Handoffs and braindumps: named by topic, no date prefix (frontmatter has `updated:` for timestamps)
-- Inflight trackers: `session-{name}.md`
+
+Session-scoped files live in `work-sessions/{name}/`, not in shared-context:
+
+- Session trackers: `work-sessions/{name}/session.md`
+- Specs: `work-sessions/{name}/design-{topic}.md`
+- Plans: `work-sessions/{name}/plan-{topic}.md`
 
 The principle is one topic per file. A handoff about authentication and a braindump about database migration are two files, not two sections in one file. Different topics have different lifecycles, different audiences, and different promotion paths. Keeping them separate means each can be promoted, archived, or deleted independently.
 
