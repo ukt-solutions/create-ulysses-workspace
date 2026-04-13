@@ -1,18 +1,21 @@
 #!/usr/bin/env node
-// PreCompact hook — session-aware context capture nudge
+// PreCompact hook — session-aware context capture nudge.
 import { existsSync, statSync } from 'fs';
-import { join } from 'path';
-import { getWorkspaceRoot, readJSON, respond, getActiveSessionPointer, timeAgo } from './_utils.mjs';
+import {
+  getWorkspaceRoot,
+  respond,
+  getActiveSessionPointer,
+  getMainRoot,
+  sessionFilePath,
+  timeAgo,
+} from './_utils.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
-const settings = readJSON(join(root, '.claude', 'settings.local.json'));
-const user = settings?.workspace?.user || 'unknown';
-
 const pointer = getActiveSessionPointer(root);
 
 if (pointer) {
-  // In an active work session — check tracker freshness
-  const trackerPath = join(root, 'shared-context', user, 'inflight', `session-${pointer.name}.md`);
+  const mainRoot = getMainRoot(root);
+  const trackerPath = sessionFilePath(mainRoot, pointer.name);
 
   if (existsSync(trackerPath)) {
     const stat = statSync(trackerPath);
@@ -27,6 +30,5 @@ if (pointer) {
     respond(`Context is about to be compacted. No session tracker found for "${pointer.name}". Use /handoff to capture progress before context is lost.`);
   }
 } else {
-  // No active session — generic message
-  respond(`Context is about to be compacted — earlier conversation details will be lost.\n\nIf this session produced decisions or progress worth keeping:\n  /braindump [name] — capture discussion and reasoning\n  /handoff [name]   — capture workstream state and next steps\n\nFiles in shared-context/${user}/ will persist. Conversation details won't.`);
+  respond(`Context is about to be compacted — earlier conversation details will be lost.\n\nIf this session produced decisions or progress worth keeping:\n  /braindump [name] — capture discussion and reasoning\n  /handoff [name]   — capture workstream state and next steps\n\nFiles in shared-context/ will persist. Conversation details won't.`);
 }

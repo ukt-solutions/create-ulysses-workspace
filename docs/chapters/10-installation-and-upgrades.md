@@ -12,7 +12,7 @@ To create a new workspace:
 npx create-ulysses-workspace --init my-workspace
 ```
 
-The CLI installs the bootstrap essentials: CLAUDE.md (generated from template), workspace.json, the workspace-init and workspace-update skills, all hooks, all scripts, shared-context directory structure, repos directory, scratchpad directory, and gitignore. The remaining skills, rules, and agents are installed interactively by `/workspace-init`.
+The CLI installs the bootstrap essentials: CLAUDE.md (generated from template), workspace.json, the workspace-init and workspace-update skills, all hooks, all scripts, the shared library helpers, shared-context directory structure, and gitignore. The remaining skills, rules, and agents are installed interactively by `/workspace-init`. The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created when they first need to hold something.
 
 If you omit the directory name, the current directory is used — this supports initializing an existing project directory as a workspace:
 
@@ -29,20 +29,19 @@ After scaffolding, the workspace has the bootstrap structure:
 my-workspace/
 ├── CLAUDE.md                  (generated from template)
 ├── workspace.json             (with workspace name and empty repos)
-├── repos/                     (empty, gitignored)
 ├── shared-context/
 │   └── locked/                (empty)
-├── .claude-scratchpad/        (empty, gitignored)
 ├── .workspace-update/         (staged template payload)
 └── .claude/
     ├── skills/
     │   ├── workspace-init/    (bootstrap skill)
     │   └── workspace-update/  (bootstrap skill)
     ├── hooks/                 (all hooks installed)
-    └── scripts/               (all scripts installed)
+    ├── scripts/               (all scripts installed)
+    └── lib/                   (shared parser helpers)
 ```
 
-The full template (remaining skills, rules, agents) lives in `.workspace-update/` and is installed interactively by `/workspace-init`.
+The full template (remaining skills, rules, agents) lives in `.workspace-update/` and is installed interactively by `/workspace-init`. `repos/` is created when the first repo is cloned, `work-sessions/` when the first session is started, and `workspace-scratchpad/` when the first hook or script needs to write to it.
 
 ## First-Time Initialization
 
@@ -65,7 +64,7 @@ The skill creates a `chore/workspace-init` branch and walks you through a compre
 7. **Scan Claude chat history.** Searches `~/.claude/projects/` for prior conversation logs, synthesizes decisions and context into shared context. Uses a manifest to survive auto-compaction during processing.
 8. **Preserve local preferences.** Extracts conventions and settings from CLAUDE.md.bak.
 9. **Create locked team knowledge.** Combines extracted content into `shared-context/locked/`.
-10. **Formalize existing worktrees.** Detects in-progress git worktrees and creates session markers and inflight trackers for them, linking to related chat history.
+10. **Formalize existing worktrees.** Detects in-progress git worktrees and creates `work-sessions/{name}/` folders with session trackers for them, linking to related chat history.
 11. **Configure user identity.** Sets your name for user-scoped context.
 12. **Clean and verify.** Moves non-template items to unmigrated, cleans up the payload, checks for self-contradictions.
 13. **Set up workspace remote.** Creates a new repo or connects to an existing one (for team members joining a workspace that already exists).
@@ -155,6 +154,45 @@ The `/workspace-update` skill applies the staged changes interactively:
 5. **Runs maintenance audit** after applying. This catches any drift or issues introduced by the update.
 
 The two-stage approach (CLI stages, skill applies) means upgrades are never automatic or silent. You see every change before it takes effect.
+
+## Upgrading to v0.8.0 (one-time manual procedure)
+
+v0.8.0 restructures the on-disk layout so each work session lives in a single self-contained folder at `work-sessions/{name}/`. This replaces the scattered old layout where session state was spread across `repos/{name}___wt-*/`, `.claude-scratchpad/.work-session-*.json`, and `shared-context/{user}/inflight/`. It also eliminates the `repos/` symlink that caused the v0.5.1 destructive gitignore bug.
+
+The user-facing skill API does not change — `/start-work`, `/complete-work`, `/pause-work` still work the same. The breaking part is the on-disk shape, which existing workspaces upgrade manually. There is no auto-migration. Clean state is required before upgrading.
+
+### Procedure
+
+1. **Drain in-flight work**
+   - For each active or paused session: `/complete-work` if shippable, otherwise `/pause-work` and merge or close out the PR manually
+   - Verify `ls repos/ | grep ___wt-` returns empty
+   - Verify `ls .claude-scratchpad/.work-session-*.json` returns empty
+   - Verify `ls shared-context/{user}/inflight/` returns empty
+   - Commit any pending workspace changes to main
+
+2. **Pull the new template**
+   - `git pull` in the workspace repo to pick up the new template version
+   - Run `/workspace-update` to apply the new template files
+
+3. **Manual cleanup of old layout**
+   - `rm -rf .claude-scratchpad/` — replaced by `workspace-scratchpad/`, which lazy-creates on first use
+   - `rmdir shared-context/{user}/inflight/` — content was already drained in step 1
+   - Commit the deletions
+
+4. **Smoke test**
+   - `/start-work blank` → name it `test-upgrade` → confirm it creates `work-sessions/test-upgrade/` with the expected internal layout
+   - `cd work-sessions/test-upgrade/workspace/`, make a trivial change, verify `git status` is clean
+   - Tear it down via `/complete-work` and verify the folder vanishes cleanly
+
+5. **Multi-machine workspaces**
+   - Pull on the second machine. The tracked `session.md`, `design-*.md`, and `plan-*.md` files come along automatically. Worktrees are local-only — they get recreated on first `/start-work` resume.
+
+### What can go wrong
+
+- **`/workspace-update` fails partway with merge conflicts in `.claude/`**: resolve manually and finish the update. Conflicts almost always come from template files you had customized.
+- **Stale worktree records in a project repo (orphans from prior misuses)**: `git -C repos/{repo} worktree prune`.
+- **Forgotten in-flight session discovered after the upgrade**: the old marker is gone but the worktree might still exist on disk. `git worktree list` from the project repo will show it. Either `git worktree remove` it manually or recreate the layout under the new convention by hand and resume from there.
+- **Old inflight content in git history**: `git show {old-commit}:shared-context/{user}/inflight/{file}` to pull the content out, then drop it into the appropriate `work-sessions/{name}/session.md` or shared-context location.
 
 ## Staying Current
 

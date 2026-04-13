@@ -20,19 +20,19 @@ These skills create shared context — they turn conversation knowledge into per
 
 ### /handoff
 
-Saves workstream state: what was done, what is in progress, what comes next. Structured and actionable. During an active work session, it updates the inflight tracker rather than creating a new file.
+Saves workstream state: what was done, what is in progress, what comes next. Structured and actionable. During an active work session, it updates the session tracker rather than creating a new file.
 
 **When to use it:** You are stopping work and someone (including future you) needs to know where things stand. You finished a chunk of work and want to record the state before moving on.
 
-**What it produces:** An updated inflight tracker (during a session) or a new user-scoped context file (outside a session).
+**What it produces:** An updated session tracker (during a session) or a new user-scoped context file (outside a session).
 
 ### /braindump
 
-Captures reasoning, exploration, and design rationale. More freeform than a handoff — designed for "why we chose X" content. During an active work session, it appends to the inflight tracker.
+Captures reasoning, exploration, and design rationale. More freeform than a handoff — designed for "why we chose X" content. During an active work session, it appends to the session tracker.
 
 **When to use it:** The conversation produced a decision worth preserving. You discussed tradeoffs, explored alternatives, or settled on an approach. The signal is hearing "we decided..." — that means a decision just happened.
 
-**What it produces:** Reasoning content added to the inflight tracker (during a session) or a new braindump file (outside a session).
+**What it produces:** Reasoning content added to the session tracker (during a session) or a new braindump file (outside a session).
 
 ### /aside
 
@@ -50,13 +50,13 @@ These skills manage work sessions — starting, pausing, completing, and backing
 
 Begins or resumes a work session. With no arguments, it checks for existing sessions and offers to resume or start new. `/start-work blank` skips straight to creating a new session. `/start-work handoff` shows available handoffs to resume from.
 
-**The creation flow:** You describe what you are working on, choose which repos to include, confirm the branch name. The skill runs `create-work-session.mjs` to create worktrees, the session marker, and the inflight tracker.
+**The creation flow:** You describe what you are working on, choose which repos to include, confirm the branch name. The skill runs `create-work-session.mjs` to create the `work-sessions/{name}/` folder with a workspace worktree, nested project worktrees, and the unified session tracker (`session.md`).
 
-**The resume flow:** You pick an existing session. The skill verifies worktrees exist, registers the current chat in the marker, and reconstructs any uncaptured history from previous conversations.
+**The resume flow:** You pick an existing session. The skill verifies worktrees exist, registers the current chat in the session tracker's `chatSessions` frontmatter, and reconstructs any uncaptured history from previous conversations.
 
 ### /pause-work
 
-Suspends the active work session. Captures the current state to the inflight tracker, pushes all branches, creates draft pull requests, and marks the session as paused. The worktrees stay in place — the session is meant to be resumed.
+Suspends the active work session. Captures the current state to the session tracker, pushes all branches, creates draft pull requests, and marks the session as paused. The worktrees stay in place — the session is meant to be resumed.
 
 **When to use it:** You are stopping for the day, switching to something else, or stepping away. You want your work backed up and visible but not finalized.
 
@@ -66,7 +66,7 @@ Finalizes the active work session. This is the most complex skill — it handles
 
 1. Rebases all project repos against their default branches
 2. Offers a final braindump to capture remaining discussion
-3. Gathers all source material (inflight tracker, specs, plans, handoffs, commit logs)
+3. Gathers all source material (session tracker, specs, plans, handoffs, commit logs)
 4. Synthesizes release notes from the gathered material
 5. Consumes branch-scoped specs and plans
 6. Pushes all repos
