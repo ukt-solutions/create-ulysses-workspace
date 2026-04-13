@@ -1,32 +1,33 @@
 ---
 name: complete-work
-description: Finalize a work session — rebase, synthesize release notes from specs/plans/tracker/commits, create PRs with unified presentation. Handles all project repos and workspace repo. Use when work on a session is done.
+description: Finalize a work session — rebase, synthesize release notes from spec/plan/session tracker/commits, create PRs with unified presentation. Handles all project repos and workspace repo. Use when work on a session is done.
 ---
 
 # Complete Work
 
-Finalize the active work session. Handles all project repos (code changes, release notes, PRs) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval.
+Finalize the active work session. Handles all project repos (code changes, release notes, PRs) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval, then tears down the session folder.
 
 ## Flow
 
 ### Step 1: Detect context
 
-Read the active-session pointer from `.claude-scratchpad/.active-session.json`.
+Read the active-session pointer from `.claude/.active-session.json` in the current worktree.
 If no active session: "No active work session. Nothing to complete."
 
-Read the full session marker from the main root's `.claude-scratchpad/`.
+Read the full session tracker at `work-sessions/{session-name}/session.md` (use the frontmatter helper in `.claude/lib/session-frontmatter.mjs` — scripts and hooks use `_utils.mjs` which wraps it).
 
 Determine paths:
-- Workspace worktree: `repos/{session-name}___wt-workspace/`
-- Project worktrees: `repos/{session-name}___wt-{repo}/` for each repo in `marker.repos`
-- Read each repo's branch from workspace.json (`repos.{repo}.branch`)
+- Session folder: `work-sessions/{session-name}/`
+- Workspace worktree: `work-sessions/{session-name}/workspace/`
+- Project worktrees: `work-sessions/{session-name}/workspace/repos/{repo}/` for each repo in the tracker's `repos:` list
+- Read each repo's default branch from workspace.json (`repos.{repo}.branch`)
 
 ### Step 2: Rebase project repos
 
-For each repo in `marker.repos`:
+For each repo in the tracker's `repos:`:
 ```bash
 # {repo-branch} = repos.{repo}.branch from workspace.json
-cd repos/{session-name}___wt-{repo}
+cd work-sessions/{session-name}/workspace/repos/{repo}
 git fetch origin
 git rebase origin/{repo-branch}
 ```
@@ -34,18 +35,18 @@ If conflicts arise in any repo, STOP and present them to the user. Do not auto-r
 
 ### Step 3: Capture final discussion state
 
-Run `/braindump` to capture any final discussion/reasoning to the inflight tracker.
+Run `/braindump` to capture any final discussion/reasoning to the session tracker body.
 If the user declines or there's nothing to capture, skip.
 
 ### Step 4: Gather source material
 
 Formally read ALL sources before synthesizing — do not write release notes from memory alone:
 
-1. **Inflight tracker** at `shared-context/{user}/inflight/session-{session-name}.md`
+1. **Session tracker** at `work-sessions/{session-name}/session.md` — read the full body (frontmatter is machine state, body is human content)
 
-2. **Branch-scoped specs/plans** in each project worktree or inflight/:
-   - `design-*.md` files
-   - `plan-*.md` files
+2. **Session-scoped specs/plans** in the session folder:
+   - `work-sessions/{session-name}/design-*.md` files
+   - `work-sessions/{session-name}/plan-*.md` files
    - Read each one fully
 
 3. **Handoffs** — any shared-context entries referencing this branch:
@@ -56,17 +57,17 @@ Formally read ALL sources before synthesizing — do not write release notes fro
 
 4. **Branch commit logs** (per repo):
    ```bash
-   # For each repo in marker.repos:
-   cd repos/{session-name}___wt-{repo}
+   # For each repo in the tracker's repos list:
+   cd work-sessions/{session-name}/workspace/repos/{repo}
    git log origin/{repo-branch}..HEAD --oneline
    ```
 
 ### Step 5: Synthesize release notes
 
-For each repo in `marker.repos` that has commits beyond the base branch:
+For each repo in the tracker's `repos:` list that has commits beyond the base branch:
 
 ```bash
-cd repos/{session-name}___wt-{repo}
+cd work-sessions/{session-name}/workspace/repos/{repo}
 COMMIT_ID=$(git rev-parse --short HEAD)
 mkdir -p release-notes/unreleased
 ```
@@ -107,29 +108,17 @@ git commit -m "docs: add release notes for {branch}"
 
 If a repo has no commits beyond the base, skip release notes for it.
 
-### Step 6: Consume branch-scoped sources
+### Step 6: Consume session-scoped sources
 
-For each repo in `marker.repos`:
-```bash
-cd repos/{session-name}___wt-{repo}
-rm -f design-*.md plan-*.md
-git add -u && git commit -m "chore: remove consumed branch-scoped specs and plans"
-```
+The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 11. Before that happens, make sure everything worth preserving has landed in release notes.
 
-Remove the inflight tracker (its content has been synthesized into release notes):
-```bash
-cd repos/{session-name}___wt-workspace
-rm -f shared-context/{user}/inflight/session-{session-name}.md
-git add -u && git commit -m "chore: consume inflight tracker for {session-name}"
-```
-
-Only consume files that are branch-scoped (in the worktree or inflight/). Leave project-scoped specs in `{user}/` ongoing.
+No separate "consume spec and plan" commit is needed for the project repos — specs and plans now live in the session folder, not in the project worktrees. The project worktrees only carry source code changes.
 
 ### Step 6b: Version bump (if applicable)
 
-For each repo in `marker.repos`, check if the repo has versioning:
+For each repo in the tracker's `repos:`, check if the repo has versioning:
 ```bash
-cd repos/{session-name}___wt-{repo}
+cd work-sessions/{session-name}/workspace/repos/{repo}
 cat package.json 2>/dev/null | grep '"version"'
 ```
 
@@ -145,34 +134,33 @@ If the repo has a version, determine the appropriate bump from the release notes
 
 3. Apply the bump:
    ```bash
-   # Update version in package.json
    git add package.json
    git commit -m "chore: bump version to {new-version}"
    ```
 
-The user can override any suggestion — they might want a patch even for a feature, or a minor even when the tool suggests patch. Accept their decision.
+The user can override any suggestion. Accept their decision.
 
 ### Step 7: Check for no-remote
 
-For each repo in `marker.repos`, verify remotes exist:
+For each repo in the tracker's `repos:`, verify remotes exist:
 ```bash
-cd repos/{session-name}___wt-{repo}
+cd work-sessions/{session-name}/workspace/repos/{repo}
 git remote -v
 ```
-If no remote for any repo: "No remote configured for {repo}. Want me to create one on GitHub, or provide a URL?"
+If no remote: "No remote configured for {repo}. Want me to create one on GitHub, or provide a URL?"
 Create via `gh repo create` or add the provided URL. Never silently skip push.
 
 ### Step 8: Push all repos
 
 ```bash
 # Each project repo
-# For each repo in marker.repos:
-cd repos/{session-name}___wt-{repo}
+# For each repo in the tracker's repos:
+cd work-sessions/{session-name}/workspace/repos/{repo}
 git push -u origin {branch}
 
-# Workspace repo
-cd repos/{session-name}___wt-workspace
-git add shared-context/
+# Workspace repo — from the workspace worktree
+cd work-sessions/{session-name}/workspace
+git add .
 git commit -m "chore: finalize context for {session-name}"
 git push -u origin {branch}
 ```
@@ -182,12 +170,12 @@ git push -u origin {branch}
 Create one PR per project repo plus one workspace PR:
 
 ```bash
-# For each repo in marker.repos:
-cd repos/{session-name}___wt-{repo}
+# For each repo in the tracker's repos:
+cd work-sessions/{session-name}/workspace/repos/{repo}
 gh pr create --title "{type}: {description}" --body "..."
 
-# Workspace PR
-cd repos/{session-name}___wt-workspace
+# Workspace PR — from the workspace worktree
+cd work-sessions/{session-name}/workspace
 gh pr create --title "context: {session-name} work session" --body "..."
 ```
 
@@ -224,14 +212,14 @@ gh pr merge {pr-number} --merge
 gh pr merge {workspace-pr-number} --merge
 
 # Pull all repos to their default branches
-# For each repo in marker.repos:
+# For each repo in the tracker's repos:
 cd repos/{repo} && git pull origin {repo-branch}
 cd {main-workspace-root} && git pull origin main
 ```
 
 ### Step 10: Update open-work.md and sync tracker
 
-If the session marker has a `workItem` field, update the corresponding item in `shared-context/open-work.md`:
+If the session tracker has a `workItem:` field, update the corresponding item in `shared-context/open-work.md`:
 - Set status to `done`
 - Auto-commit:
   ```bash
@@ -254,11 +242,14 @@ Run the cleanup helper script from the main workspace root:
 node .claude/scripts/cleanup-work-session.mjs --session-name "{session-name}"
 ```
 
-This removes:
-- Workspace worktree
-- All project worktrees
-- Local branches in all repos
-- Session marker
+The script tears down in the **mandatory** order:
+1. Remove each nested project worktree from its project repo
+2. Remove the workspace worktree from the workspace repo
+3. `git worktree prune` on each project repo (belt-and-suspenders for orphan records)
+4. Delete local branches in all repos
+5. `rm -rf work-sessions/{session-name}/` — the tracker, specs, plans, and any local-only artifacts vanish. Their content was already archived into release notes in Step 5.
+
+Workspace-first removal silently deletes the nested project worktrees' `.git` files and leaves orphan worktree records in the project repos. The script enforces the safe order.
 
 Verify workspace root is still on main:
 ```bash
@@ -277,6 +268,7 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 
 ## Notes
 - Release notes live in the PROJECT repo worktrees — never the workspace
-- The inflight tracker is the primary source for release note synthesis — it captures the full session history
+- The session tracker's body is the primary source for release note synthesis — it captures the full session history alongside specs and plans
 - All repos get PRed and merged together — one approval for all
+- The teardown order is mandatory: project worktrees first, then workspace worktree, then prune, then delete the session folder
 - Context consumption, cleanup, and auto-committing release notes are intentional workflow behavior — these bypass normal commit conventions by design

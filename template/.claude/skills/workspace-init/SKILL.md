@@ -164,7 +164,7 @@ Search for prior Claude Code conversation logs related to this project. Chat his
 
 **Build a processing manifest** before reading any content. Auto-compaction could happen at any point during this step, so the manifest ensures progress survives:
 
-Write `.claude-scratchpad/chat-history-manifest.json`:
+Write `workspace-scratchpad/chat-history-manifest.json`:
 ```json
 {
   "projectPaths": ["{path1}", "{path2}"],
@@ -193,7 +193,7 @@ Let the user review and approve what gets kept.
 
 Remove the manifest after processing:
 ```bash
-rm -f .claude-scratchpad/chat-history-manifest.json
+rm -f workspace-scratchpad/chat-history-manifest.json
 ```
 
 ### Step 9: Preserve local preferences
@@ -224,38 +224,19 @@ Check for existing git worktrees that represent in-progress work:
 git -C repos/{repo} worktree list
 ```
 
-Also check for feature/bugfix/chore branches that are checked out in directories outside `repos/`:
+Also check for any existing `work-sessions/*/` folders:
 ```bash
-# Check for directories that look like worktrees
-ls -d repos/*___wt-* 2>/dev/null
-# Also check for non-standard worktree locations
-git -C repos/{repo} branch -v
+ls work-sessions/ 2>/dev/null
 ```
 
-For each active worktree found:
+For each active worktree or session folder found:
 1. Determine the session name from the branch name or directory name
 2. Ask: "Found worktree for branch `{branch}` at `{path}`. Formalize as work session '{suggested-name}'? [Y/n]"
-3. If confirmed:
-   - Create a session marker in `.claude-scratchpad/`:
-     ```json
-     {
-       "name": "{session-name}",
-       "description": "{description from user or inferred from branch}",
-       "branch": "{branch}",
-       "repos": ["{repo}"],
-       "status": "active",
-       "created": "{now}",
-       "user": "{user}",
-       "chatSessions": []
-     }
-     ```
-   - Create workspace worktree if it doesn't exist: `repos/{session-name}___wt-workspace/`
-   - Rename/move project worktree to match convention if needed: `repos/{session-name}___wt-{repo}/`
-   - Create inflight tracker at `shared-context/{user}/inflight/session-{session-name}.md`
-   - **Search Claude chat history for sessions that touched this branch** — scan conversation logs for commits or file edits on this branch, and synthesize what was being worked on into the inflight tracker
-   - Ask the user to describe the current state and next steps, add to tracker
+3. If confirmed, invoke `node .claude/scripts/create-work-session.mjs --session-name {name} --branch {branch} --repo {repo} --user {user}` to set up the standard layout. For existing worktrees that are already on the right branch, the script will refuse — in that case, move the worktree manually under `work-sessions/{name}/workspace/repos/{repo}/` using `git -C repos/{repo} worktree move`, then write the `work-sessions/{name}/session.md` tracker by hand with the helper.
+4. **Search Claude chat history for sessions that touched this branch** — scan conversation logs for commits or file edits on this branch, and synthesize what was being worked on into the session.md body
+5. Ask the user to describe the current state and next steps, add to the tracker body
 
-4. If declined: leave the worktree as-is, report it in the final summary
+6. If declined: leave the worktree as-is, report it in the final summary
 
 **Commit:** `git commit -m "feat: formalize existing worktrees as work sessions"`
 
@@ -313,19 +294,19 @@ Save to `.claude/settings.local.json`:
 
 ### Step 15: Clean root directory
 
-The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (.claude/, shared-context/, repos/, .claude-scratchpad/).
+The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (`.claude/`, `shared-context/`). The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created the first time something writes to them — they won't exist yet unless a repo has already been cloned.
 
-Move everything else to `.claude-scratchpad/unmigrated/`:
+Move everything else to `workspace-scratchpad/unmigrated/`:
 
 ```bash
-mkdir -p .claude-scratchpad/unmigrated
+mkdir -p workspace-scratchpad/unmigrated
 ```
 
 For each non-template item at root:
-- Move to `.claude-scratchpad/unmigrated/{name}`
+- Move to `workspace-scratchpad/unmigrated/{name}`
 - This includes old directories, stray files, MCP data directories, IDE configs
 
-Report: "Moved {N} items to .claude-scratchpad/unmigrated/: {list}."
+Report: "Moved {N} items to workspace-scratchpad/unmigrated/: {list}."
 
 **Commit:** `git commit -m "chore: clean root — move non-template items to unmigrated"`
 
@@ -411,7 +392,7 @@ Summary:
 - {K} user context files
 - {H} prior chat sessions scanned, {D} decisions extracted
 - {W} existing worktrees formalized as work sessions
-- {L} items moved to .claude-scratchpad/unmigrated/
+- {L} items moved to workspace-scratchpad/unmigrated/
 - {V} self-contradictions found and fixed
 - Template version: {version}
 - Remote: {status}
@@ -424,7 +405,7 @@ If no issues: "No issues encountered."
 Active work sessions (formalized from existing worktrees):
 - {list each with branch, repo, and description}
 
-Items in .claude-scratchpad/unmigrated/:
+Items in workspace-scratchpad/unmigrated/:
 - {list each item with a one-line description}
 
 Review the branch:
@@ -451,7 +432,7 @@ This session is done. Start a fresh Claude Code session and run /start-work to b
 - **Every expected behavior that fails must be reported.**
 - **Don't suggest starting work at the end.** Tell the user to restart Claude Code and run /start-work in a fresh session.
 - The verification step (Step 17) is mandatory — read every file, check thoroughly.
-- **Build manifests before long operations.** Chat history scanning (Step 8) and worktree formalization (Step 11) can be interrupted by auto-compaction. Write a manifest to `.claude-scratchpad/` before starting so progress survives.
+- **Build manifests before long operations.** Chat history scanning (Step 8) and worktree formalization (Step 11) can be interrupted by auto-compaction. Write a manifest to `workspace-scratchpad/` before starting so progress survives.
 - **Never re-fetch content that already exists.** Always check shared-context and rules for existing extractions before accessing external sources.
 - This skill is idempotent — safe to run if interrupted and restarted.
 
