@@ -12,7 +12,7 @@
 
 - Work sessions get N+1 worktrees: one for the workspace, plus one per project repo
 - Worktree naming: `{session-name}___wt-{type}` where type is `workspace` or `{repo-name}`
-- Examples: `repos/migrate-tool___wt-workspace/`, `repos/migrate-tool___wt-create-claude-workspace/`
+- Examples: `repos/migrate-tool___wt-workspace/`, `repos/migrate-tool___wt-my-app/`
 - All worktrees for a session are adjacent in directory listings
 - The main repo clone and workspace root stay on their default branches
 - Remove worktrees when the work session is completed

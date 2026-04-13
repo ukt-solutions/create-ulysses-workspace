@@ -6,7 +6,7 @@ import { initGit, cloneRepos } from '../lib/git.mjs';
 import { resolve } from 'path';
 
 async function main() {
-  console.log('\n  create-claude-workspace\n');
+  console.log('\n  create-ulysses-workspace\n');
 
   const initFlag = process.argv.includes('--init');
   const upgradeFlag = process.argv.includes('--upgrade');
@@ -16,8 +16,8 @@ async function main() {
   if (migrateFlag) {
     console.error('  --migrate is deprecated. Use --init (fresh install) or --upgrade (template update).');
     console.error('');
-    console.error('  Fresh install:    npx create-claude-workspace --init [target-dir]');
-    console.error('  Template update:  npx create-claude-workspace --upgrade [target-dir]');
+    console.error('  Fresh install:    npx create-ulysses-workspace --init [target-dir]');
+    console.error('  Template update:  npx create-ulysses-workspace --upgrade [target-dir]');
     console.error('');
     process.exit(1);
   }

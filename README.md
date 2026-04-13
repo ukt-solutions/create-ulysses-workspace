@@ -1,11 +1,11 @@
-# create-claude-workspace
+# create-ulysses-workspace
 
 A scaffolder and convention system for Claude Code workspaces. Sets up a workspace with skills, hooks, rules, shared context, and git conventions so your AI-assisted projects have structure, memory, and repeatable workflows.
 
 ## Quick Start
 
 ```bash
-npx create-claude-workspace --init my-workspace
+npx create-ulysses-workspace --init my-workspace
 cd my-workspace
 claude
 /workspace-init

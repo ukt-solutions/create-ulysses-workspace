@@ -1,0 +1,305 @@
+#!/usr/bin/env node
+/**
+ * Sync shared-context/open-work.md → GitHub Issues (one-way).
+ *
+ * REFERENCE IMPLEMENTATION — copy to .claude/scripts/sync-open-work.mjs
+ * when your workspace uses GitHub Issues. Activated by /setup-tracker.
+ *
+ * open-work.md is the source of truth. GitHub Issues is a presentation layer.
+ * This script reads the ticket table, creates/updates/closes issues to match,
+ * and writes a <!-- tracker-state --> block at the bottom of open-work.md
+ * to link ticket IDs to issue numbers.
+ *
+ * Issues are created in the WORKSPACE repo, not individual project repos. The
+ * workspace is the cross-cutting tracker: one table per project repo inside a
+ * single open-work.md, synced to a single issue tracker. Repo slug is read
+ * from the workspace root's own git remote.
+ *
+ * Usage:
+ *   node .claude/scripts/sync-open-work.mjs [--dry-run] [--init-labels]
+ *
+ *   --dry-run     Show what would change without calling gh
+ *   --init-labels Create required labels (bug, feat, chore, P1, P2, P3) and exit
+ *
+ * Requires: gh CLI installed and authenticated (gh auth login).
+ */
+
+import { readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const WORKSPACE_ROOT = resolve(__dirname, '..', '..')
+const OPEN_WORK_PATH = resolve(WORKSPACE_ROOT, 'shared-context/open-work.md')
+const WORKSPACE_JSON_PATH = resolve(WORKSPACE_ROOT, 'workspace.json')
+
+const LABELS = {
+  types: { bug: 'd73a4a', feat: 'a2eeef', chore: 'cfd3d7' },
+  priorities: { P1: 'b60205', P2: 'fbca04', P3: '0e8a16' },
+}
+
+// ── workspace.json → tracker config ────────────────────────────────────────
+
+function getTrackerConfig() {
+  const ws = JSON.parse(readFileSync(WORKSPACE_JSON_PATH, 'utf-8'))
+  return ws.workspace?.tracker ?? {}
+}
+
+// ── workspace repo git remote → gh --repo slug ─────────────────────────────
+
+function getRepoSlug() {
+  const result = spawnSync('git', ['-C', WORKSPACE_ROOT, 'remote', 'get-url', 'origin'], {
+    encoding: 'utf-8',
+  })
+  if (result.status !== 0) {
+    throw new Error(`git remote get-url failed: ${result.stderr}`)
+  }
+  const remote = result.stdout.trim()
+  const m = remote.match(/github\.com[:/]([^/]+)\/([^/.]+?)(?:\.git)?$/)
+  if (!m) throw new Error(`Cannot parse GitHub remote: ${remote}`)
+  return `${m[1]}/${m[2]}`
+}
+
+// ── open-work.md parsing ───────────────────────────────────────────────────
+
+function parseOpenWork(content) {
+  const tickets = []
+
+  // Table row: | N | type | Pri | milestone | status | branch | title |
+  const rowRe = /^\|\s*(\d+)\s*\|\s*(bug|feat|chore)\s*\|\s*(P[123])\s*\|\s*([^|]+?)\s*\|\s*(open|in-progress|paused|done)\s*\|\s*([^|]+?)\s*\|\s*(.+?)\s*\|\s*$/gm
+  let m
+  while ((m = rowRe.exec(content)) !== null) {
+    const rawMilestone = m[4].trim()
+    tickets.push({
+      id: parseInt(m[1], 10),
+      type: m[2],
+      priority: m[3],
+      milestone: rawMilestone === '—' || rawMilestone === '' ? null : rawMilestone,
+      status: m[5],
+      branch: m[6].trim() === '—' ? null : m[6].trim(),
+      title: m[7].trim(),
+    })
+  }
+
+  // Details: ### #N — Title ... (until next ### or tracker-state)
+  const detailRe = /^### #(\d+)\s*—\s*[^\n]+\n\n([\s\S]+?)(?=^### #\d+|<!-- tracker-state|\Z)/gm
+  const details = {}
+  while ((m = detailRe.exec(content)) !== null) {
+    details[parseInt(m[1], 10)] = m[2].trim()
+  }
+  for (const t of tickets) {
+    t.body = details[t.id] ?? ''
+  }
+
+  // State block: <!-- tracker-state ... -->
+  const state = {}
+  const stateBlock = content.match(/<!-- tracker-state\s*([\s\S]*?)\s*-->/)
+  if (stateBlock) {
+    for (const line of stateBlock[1].split('\n')) {
+      const sm = line.match(/^#(\d+)\s*=\s*gh:(\d+)$/)
+      if (sm) state[parseInt(sm[1], 10)] = parseInt(sm[2], 10)
+    }
+  }
+
+  return { tickets, state }
+}
+
+function writeState(content, state) {
+  const lines = Object.entries(state)
+    .map(([id, num]) => [parseInt(id, 10), num])
+    .sort((a, b) => a[0] - b[0])
+    .map(([id, num]) => `#${id} = gh:${num}`)
+  const block = `<!-- tracker-state (managed by sync-open-work.mjs — do not edit)\n${lines.join('\n')}\n-->`
+
+  if (content.match(/<!-- tracker-state[\s\S]*?-->/)) {
+    return content.replace(/<!-- tracker-state[\s\S]*?-->/, block)
+  }
+  return content.trimEnd() + '\n\n' + block + '\n'
+}
+
+// ── gh wrappers ────────────────────────────────────────────────────────────
+
+function gh(args, { input, capture = true } = {}) {
+  const result = spawnSync('gh', args, {
+    input,
+    encoding: 'utf-8',
+    stdio: input !== undefined ? ['pipe', 'pipe', 'pipe'] : ['inherit', 'pipe', 'pipe'],
+  })
+  if (result.status !== 0) {
+    throw new Error(`gh ${args.join(' ')} failed: ${result.stderr}`)
+  }
+  return capture ? result.stdout : null
+}
+
+function formatIssueBody(ticket) {
+  const lines = [ticket.body || '_No details yet._', '', '---', '', `Synced from \`shared-context/open-work.md\` ticket #${ticket.id}.`]
+  return lines.join('\n')
+}
+
+function formatIssueTitle(ticket) {
+  return `[#${ticket.id}] ${ticket.title}`
+}
+
+function ensureLabels(repo) {
+  for (const [name, color] of Object.entries({ ...LABELS.types, ...LABELS.priorities })) {
+    try {
+      gh(['label', 'create', name, '--repo', repo, '--color', color, '--force'])
+      console.log(`  label: ${name}`)
+    } catch (e) {
+      console.warn(`  label ${name} failed: ${e.message.trim()}`)
+    }
+  }
+}
+
+// Fetch milestones from GitHub and build shortName → fullName map.
+// Short form is the first whitespace-delimited token of the milestone title
+// (e.g., "v0.1 — Alpha" → "v0.1", "Backlog" → "Backlog").
+function fetchMilestoneMap(repo) {
+  const stdout = gh(['api', `repos/${repo}/milestones?state=all&per_page=100`])
+  const milestones = JSON.parse(stdout)
+  const map = {}
+  for (const m of milestones) {
+    const short = m.title.split(/\s+/)[0]
+    map[short] = m.title
+  }
+  return map
+}
+
+function resolveMilestone(shortName, milestoneMap) {
+  if (!shortName) return null
+  const full = milestoneMap[shortName]
+  if (!full) {
+    console.warn(`  warning: milestone "${shortName}" not found on GitHub — skipping`)
+    return null
+  }
+  return full
+}
+
+function issueCreate(repo, ticket, milestoneMap) {
+  const args = [
+    'issue', 'create',
+    '--repo', repo,
+    '--title', formatIssueTitle(ticket),
+    '--body-file', '-',
+    '--label', `${ticket.type},${ticket.priority}`,
+  ]
+  const fullMilestone = resolveMilestone(ticket.milestone, milestoneMap)
+  if (fullMilestone) args.push('--milestone', fullMilestone)
+  const stdout = gh(args, { input: formatIssueBody(ticket) })
+  const m = stdout.match(/\/issues\/(\d+)/)
+  if (!m) throw new Error(`Could not parse issue number from: ${stdout}`)
+  return parseInt(m[1], 10)
+}
+
+function issueUpdate(repo, number, ticket, milestoneMap) {
+  const args = [
+    'issue', 'edit', String(number),
+    '--repo', repo,
+    '--title', formatIssueTitle(ticket),
+    '--body-file', '-',
+    '--add-label', `${ticket.type},${ticket.priority}`,
+  ]
+  const fullMilestone = resolveMilestone(ticket.milestone, milestoneMap)
+  if (fullMilestone) {
+    args.push('--milestone', fullMilestone)
+  } else if (ticket.milestone === null) {
+    args.push('--remove-milestone')
+  }
+  gh(args, { input: formatIssueBody(ticket) })
+}
+
+function issueClose(repo, number) {
+  gh(['issue', 'close', String(number), '--repo', repo])
+}
+
+function issueReopen(repo, number) {
+  gh(['issue', 'reopen', String(number), '--repo', repo])
+}
+
+// ── main ───────────────────────────────────────────────────────────────────
+
+function main() {
+  const args = new Set(process.argv.slice(2))
+  const dryRun = args.has('--dry-run')
+  const initLabels = args.has('--init-labels')
+
+  const repo = getRepoSlug()
+  console.log(`Target repo: ${repo}`)
+
+  if (initLabels) {
+    console.log('Creating labels...')
+    ensureLabels(repo)
+    return
+  }
+
+  const content = readFileSync(OPEN_WORK_PATH, 'utf-8')
+  const { tickets, state } = parseOpenWork(content)
+  console.log(`Parsed ${tickets.length} tickets, ${Object.keys(state).length} already linked`)
+
+  const trackerConfig = getTrackerConfig()
+  const defaultMilestone = trackerConfig.defaultMilestone ?? null
+  const milestoneMap = fetchMilestoneMap(repo)
+  console.log(`Loaded ${Object.keys(milestoneMap).length} milestones from GitHub: ${Object.keys(milestoneMap).join(', ')}`)
+  if (defaultMilestone) console.log(`Default milestone for tickets without one: ${defaultMilestone}`)
+  if (dryRun) console.log('(dry run — no changes)\n')
+
+  // Apply default milestone fallback
+  for (const ticket of tickets) {
+    if (ticket.milestone === null && defaultMilestone) {
+      ticket.milestone = defaultMilestone
+    }
+  }
+
+  const newState = { ...state }
+  let created = 0, updated = 0, closed = 0, reopened = 0, contentChanged = false
+
+  for (const ticket of tickets) {
+    const existing = state[ticket.id]
+    const msLabel = ticket.milestone ? ` [${ticket.milestone}]` : ''
+
+    if (ticket.status === 'done') {
+      if (existing) {
+        console.log(`close   #${ticket.id} → gh:${existing}`)
+        if (!dryRun) issueClose(repo, existing)
+        closed++
+      }
+      continue
+    }
+
+    if (!existing) {
+      console.log(`create  #${ticket.id}${msLabel}: ${ticket.title}`)
+      if (!dryRun) {
+        const num = issueCreate(repo, ticket, milestoneMap)
+        newState[ticket.id] = num
+        contentChanged = true
+        // Persist state after every create so a crash doesn't orphan issues
+        writeFileSync(OPEN_WORK_PATH, writeState(readFileSync(OPEN_WORK_PATH, 'utf-8'), newState))
+      }
+      created++
+      continue
+    }
+
+    // Existing, not done → ensure open + sync content
+    console.log(`update  #${ticket.id} → gh:${existing}${msLabel}`)
+    if (!dryRun) {
+      issueReopen(repo, existing) // no-op if already open
+      issueUpdate(repo, existing, ticket, milestoneMap)
+    }
+    updated++
+  }
+
+  if (!dryRun && !contentChanged && JSON.stringify(state) !== JSON.stringify(newState)) {
+    writeFileSync(OPEN_WORK_PATH, writeState(content, newState))
+  }
+
+  console.log(`\nSummary: ${created} created, ${updated} updated, ${closed} closed, ${reopened} reopened`)
+}
+
+try {
+  main()
+} catch (e) {
+  console.error(`sync failed: ${e.message}`)
+  process.exit(1)
+}
