@@ -1,0 +1,119 @@
+---
+state: ephemeral
+lifecycle: active
+type: design
+topic: docs-site
+author: {{USER}}
+updated: {{DATE}}
+---
+
+# Documentation Site Spec — {{PROJECT_NAME}}
+
+Specification for the documentation site to be built by `/build-docs-site`. Generated from Phase 1 framing answers, Phase 2 source inventory, and review of the project's existing material.
+
+## Purpose
+
+{{PURPOSE_PARAGRAPH}}
+
+The site replaces the existing scattered documentation listed in the migration mapping below. Old material is treated as source content; the new site is the authoritative reference going forward.
+
+## Audience
+
+**Primary:** {{AUDIENCE_PRIMARY}}
+
+{{AUDIENCE_NOTES}}
+
+The audience shapes tone, depth, and what counts as an implementation-detail leak (Phase 6 review).
+
+## Reading pattern
+
+**Engagement style:** {{ENGAGEMENT_STYLE}}
+**Content cohesion:** {{CONTENT_COHESION}}
+**Chapter split threshold:** {{CHAPTER_SPLIT_THRESHOLD}} lines
+
+These shape how chapters are sized and when long chapters get split into Docusaurus categories with sub-pages.
+
+## Structure
+
+{{STRUCTURE_TYPE}}
+
+### Parts and chapters
+
+{{CHAPTER_LIST}}
+
+Each chapter has a one-paragraph synopsis. Chapter 1 is written last (technical-writing convention — the opener benefits from being written with full authority over what the rest says).
+
+## Existing documentation mapping
+
+This table lists every existing doc that was identified in Phase 1 and what it maps to in the new site. The act of writing the new site IS the migration — these old files become source material and are replaced when the site is complete.
+
+| Old file | Topic | Quality | New chapter | Status |
+|----------|-------|---------|-------------|--------|
+{{MAPPING_ROWS}}
+
+Quality categories: `sparse` (thin or stub), `adequate` (covers the topic but could be better), `comprehensive` (good content, just disorganized), `outdated` (was good but is now wrong).
+
+After Phase 6 coverage check passes, files marked as `replaced` are safe to delete.
+
+## Source inventory
+
+Beyond the existing documentation, the following sources feed into the new site:
+
+{{SOURCE_INVENTORY}}
+
+## Brand and style
+
+**Identity source:** {{BRAND_SOURCE}}
+
+**Colors:**
+- Primary: {{BRAND_PRIMARY}}
+- Accent: {{BRAND_ACCENT}}
+- Background (light): {{BRAND_BACKGROUND}}
+- Background (dark): {{BRAND_BACKGROUND_DARK}}
+
+**Fonts:**
+- Headings: {{BRAND_FONT_HEADING}}
+- Body: {{BRAND_FONT_BODY}}
+- Monospace: {{BRAND_FONT_MONO}}
+
+**Voice and tone:**
+{{BRAND_VOICE}}
+
+## Language constraints
+
+Words, phrases, or framings to avoid throughout the documentation. The forbidden-word grep in Phase 6 uses this list.
+
+{{LANGUAGE_CONSTRAINTS}}
+
+## Research treatment
+
+**Research timing:** {{RESEARCH_TIMING}}
+**Designed vs built:** {{DESIGNED_VS_BUILT}}
+
+{{RESEARCH_NOTES}}
+
+## Diagrams plan
+
+Initial diagram stubs by chapter. Fleshed out before Phase 7 (diagrams). Diagrams may be reused across chapters when they show the same concept.
+
+{{DIAGRAM_STUBS}}
+
+## Implementation-detail rule
+
+The documentation describes concepts and roles, not library choices. Library names, framework names, and model names appear only in the Tech Stack appendix unless the choice itself is architecturally meaningful.
+
+The Phase 6 leak grep derives its detection list from the project's own dependency manifests (`package.json`, `pyproject.toml`, etc.) plus any project-specific terms added below.
+
+**Project-specific terms to flag:**
+
+{{PROJECT_LEAK_TERMS}}
+
+## Brainstorm-acronym translations
+
+Terms that came from brainstorming sessions and need to be translated to descriptive names in the documentation. The descriptive name leads; the acronym (if useful) survives only as a parenthetical shorthand.
+
+{{ACRONYM_TRANSLATIONS}}
+
+## Notes
+
+This spec is consumed by `/complete-work` into release notes when the session finishes. Update it as decisions change during writing.
