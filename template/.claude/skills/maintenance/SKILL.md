@@ -23,12 +23,13 @@ Scan all shared-context files against each other:
 - **Contradictions** — file A says "user-scoped is default" but file B says "root is default"
 
 ### 2. Frontmatter integrity
-For each shared-context `.md` file:
-- Valid frontmatter? (state, lifecycle, type, topic, author, updated)
+For each shared-context `.md` file and each `work-sessions/*/session.md`:
+- Valid frontmatter? (state, lifecycle, type, topic, author, updated; plus name/status/branch/repos for session trackers)
 - `branch` field references a branch that still exists?
-- `repo` field references a repo in workspace.json?
+- `repo`/`repos` field references repos that exist in workspace.json?
 - `lifecycle: active` on a file not updated in 7+ days? (stale candidate)
 - `lifecycle: resolved` files that should have been processed by /complete-work?
+- Session tracker `status: active` but the workspace worktree at `work-sessions/{name}/workspace/` is missing? (orphaned)
 
 ### 3. Workspace structure
 - Actual directory layout matches what workspace-structure rule describes?
@@ -41,6 +42,7 @@ For each shared-context `.md` file:
 - Local branches with no remote tracking? (unpushed work)
 - Worktrees whose branch has already been merged? (cleanup candidates)
 - Workspace repo on expected branch?
+- Orphan worktree records in project repos — run `git -C repos/{repo} worktree list` for each repo and flag any `prunable` markers. These usually come from a workspace-first teardown (the unsafe order) leaving stale admin records behind. Suggest `git worktree prune` on the affected repo.
 
 ## Cleanup
 
@@ -48,7 +50,8 @@ Active recommendations. Flags problems and suggests fixes, but asks before actin
 
 ### 5. Stale context
 - Ephemeral files not updated in 7+ days — suggest resolve, update, or archive
-- Inflight files with no active work session — suggest cleanup or reconnect
+- `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
+- Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
 - Braindumps that overlap significantly — suggest merging (e.g., "workspace-branching.md and persistent-work-sessions.md cover the same topic")
 - Handoffs referencing deleted branches — suggest resolve or remove
 
@@ -61,7 +64,7 @@ Active recommendations. Flags problems and suggests fixes, but asks before actin
 ### 7. Health metrics
 - Total size of `shared-context/locked/` — flag if over 10KB target
 - Number of ephemeral files — flag if accumulating without resolution
-- Session log stats (if `.claude-scratchpad/session-log.jsonl` exists):
+- Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
   - Sessions without capture
   - Average session length
   - Compaction-to-capture ratio

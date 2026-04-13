@@ -38,48 +38,22 @@ Report with version info from the manifest:
 
 If everything is unchanged and there are no new or removed files, report: "Workspace is up to date (template v{toVersion}). No changes needed."
 
-### Step 2b: Critical .gitignore migration (safety fix)
+### Step 2b: Historical .gitignore safety check
 
-**Run this check regardless of what the template update contains** — workspaces created before v0.5.1 are vulnerable to a destructive symlink bug and must be patched before any other update is applied.
+Workspaces created before v0.5.1 are vulnerable to a destructive symlink bug in the old layout. The v0.8.0 layout removes the symlink entirely, so new workspaces are not vulnerable — but a workspace being upgraded from a pre-v0.8.0 version may still have the bad `.gitignore` pattern left over.
 
 Check the workspace `.gitignore` for the `repos/` trailing-slash pattern:
 ```bash
 grep -E '^repos/$' .gitignore
-grep -E '^\.claude-scratchpad/$' .gitignore
 ```
 
-**The problem:** `repos/` (with trailing slash) only matches real directories in git's ignore patterns, not symlinks. The start-work helper creates a symlink named `repos` inside every workspace worktree. Without the fix, `git add -A` inside the worktree will stage that symlink. When the commit is merged to main and pulled at the workspace root, git replaces the real `repos/` directory with the symlink, destroying all project clones and worktrees inside it.
-
-If either pattern is found, warn loudly and offer the fix:
-```
-⚠ CRITICAL: Your .gitignore has 'repos/' (trailing slash) which does NOT match
-the symlink that start-work creates in worktrees. Without this fix, committing
-from a worktree and pulling at the root can DESTROY your repos/ directory
-and everything inside it.
-
-Fix now? [Y/n]
-```
-
-If confirmed (default yes), rewrite the two lines in place:
-- `repos/` → `repos`
-- `.claude-scratchpad/` → `.claude-scratchpad`
-
-Also check for any tracked `repos` symlink that was already committed (if the user already hit this bug):
+If found, rewrite it in place to `repos` (no trailing slash). Also check for any tracked `repos` symlink that was already committed:
 ```bash
 git ls-files | grep -E '^repos$'
 ```
-If found, untrack it:
-```bash
-git rm --cached repos
-```
+If found, untrack it: `git rm --cached repos`.
 
-Commit the fix **before** applying other template updates:
-```bash
-git add .gitignore
-git commit -m "fix: untrack symlink-vulnerable gitignore patterns"
-```
-
-This fix runs ahead of Step 3 because applying other updates while the bug is still present could itself trigger the destruction.
+Commit the fix **before** applying other template updates. This runs ahead of Step 3 because applying other updates while the bug is still present could itself trigger the destruction on workspaces that still have the old layout.
 
 ### Step 3: Selective update
 
