@@ -6,7 +6,18 @@ repos
 
 # Work sessions — the folder and worktrees are local, but the session tracker,
 # specs, and plans are tracked so durable thinking travels across machines.
-work-sessions/
+#
+# The pattern is intentionally subtle: git cannot re-include files beneath an
+# ignored parent directory, so naive `work-sessions/` + `!` negations silently
+# fail. Instead:
+#   - `work-sessions/**` ignores every descendant at every depth
+#   - `!work-sessions/*/` re-includes each session folder as a walkable dir
+#   - `!work-sessions/*/session.md` (and friends) re-includes the specific
+#     tracked files inside each session folder
+# Nested contents like `work-sessions/{name}/workspace/...` stay ignored
+# because they are matched by `**` and not re-included.
+work-sessions/**
+!work-sessions/*/
 !work-sessions/*/session.md
 !work-sessions/*/design-*.md
 !work-sessions/*/plan-*.md
