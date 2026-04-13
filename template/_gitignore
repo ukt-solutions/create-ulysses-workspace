@@ -1,18 +1,22 @@
-# Repos (cloned separately per user)
-# NOTE: no trailing slash — the start-work helper creates a symlink named
-# "repos" inside workspace worktrees, and trailing-slash patterns match
-# directories only, not symlinks. Without this, git add -A will stage the
-# symlink, and pulling it to the workspace root will replace the real
-# repos/ directory with the symlink and destroy everything inside.
+# Source clones — cloned separately per user and not part of the workspace repo
+# NOTE: no trailing slash. The same pattern covers both this top-level repos/
+# and the real repos/ directory nested inside each work-session's workspace
+# worktree, where project worktrees live as siblings.
 repos
-!repos/.keep
 
-# Scratchpad (ephemeral workspace files)
-.claude-scratchpad
-!.claude-scratchpad/.keep
+# Work sessions — the folder and worktrees are local, but the session tracker,
+# specs, and plans are tracked so durable thinking travels across machines.
+work-sessions/
+!work-sessions/*/session.md
+!work-sessions/*/design-*.md
+!work-sessions/*/plan-*.md
+
+# Disposable workspace-scoped scratchpad (session log, hook debug output)
+workspace-scratchpad/
 
 # Personal overrides
 .claude/settings.local.json
+.claude/.active-session.json
 
 # Local-only convention (rules, context)
 .claude/rules/local-only-*

@@ -1,9 +1,18 @@
 #!/usr/bin/env node
-// Helper: create workspace + project worktrees, marker, pointer, and inflight tracker
+// Create a work session: workspace worktree + nested project worktrees +
+// session.md tracker. Produces a self-contained work-sessions/{name}/ folder.
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, symlinkSync, copyFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, copyFileSync } from 'fs';
 import { join, resolve } from 'path';
-import { getWorkspaceRoot, readJSON, writeSessionMarker } from '../hooks/_utils.mjs';
+import {
+  getWorkspaceRoot,
+  readJSON,
+  getWorkspacePaths,
+  sessionFilePath,
+  sessionFolderPath,
+  createSessionTracker,
+  writeActiveSessionPointer,
+} from '../hooks/_utils.mjs';
 
 const args = process.argv.slice(2);
 const getArg = (name) => {
@@ -26,105 +35,83 @@ const repos = repoArg.split(',').map(r => r.trim()).filter(Boolean);
 const root = getWorkspaceRoot(import.meta.url);
 const config = readJSON(join(root, 'workspace.json'));
 const reposDir = join(root, 'repos');
+const { workSessionsDir } = getWorkspacePaths(root);
 
-// Safety check: the workspace creates a symlink named "repos" inside every
-// workspace worktree. The .gitignore MUST match it with "repos" (no trailing
-// slash) — "repos/" only matches directories, not symlinks. If the pattern
-// is wrong, git add -A inside a worktree will stage the symlink, and pulling
-// it at the workspace root will destroy the real repos/ directory. Refuse
-// to create the worktree until the .gitignore is fixed.
-const gitignorePath = join(root, '.gitignore');
-if (existsSync(gitignorePath)) {
-  const gitignore = readFileSync(gitignorePath, 'utf-8');
-  if (/^repos\/$/m.test(gitignore)) {
-    console.error(
-      'ABORT: .gitignore has "repos/" (trailing slash) which does not match ' +
-      'the symlink that this script creates in worktrees. This is a critical ' +
-      'bug that can destroy your repos/ directory. Fix it by changing ' +
-      '"repos/" to "repos" (no slash) in .gitignore, then re-run. See ' +
-      'release-notes for v0.5.1 for details.'
-    );
-    process.exit(2);
-  }
-}
-
-const wsWorktreeName = `${sessionName}___wt-workspace`;
-const wsWorktree = join(reposDir, wsWorktreeName);
+const sessionFolder = sessionFolderPath(root, sessionName);
+const wsWorktree = join(sessionFolder, 'workspace');
 
 try {
-  // Create workspace branch and worktree
+  // Ensure the work-sessions/ parent and the session folder exist
+  mkdirSync(sessionFolder, { recursive: true });
+
+  // Create the workspace branch and worktree
   execSync(`git branch "${branch}" main`, { cwd: root, stdio: 'pipe' });
   execSync(`git worktree add "${wsWorktree}" "${branch}"`, { cwd: root, stdio: 'pipe' });
 
-  // Create project branches and worktrees
+  // Real repos/ directory inside the workspace worktree (no symlink).
+  // The workspace .gitignore pattern `repos` (no slash) covers both the
+  // workspace root's repos/ and this one.
+  const nestedReposDir = join(wsWorktree, 'repos');
+  mkdirSync(nestedReposDir, { recursive: true });
+
+  // Create each project branch and nest its worktree inside the workspace worktree
   const projWorktrees = [];
   for (const repo of repos) {
     const repoBranch = config?.repos?.[repo]?.branch || 'main';
     const repoDir = join(reposDir, repo);
-    const projWorktreeName = `${sessionName}___wt-${repo}`;
-    const projWorktree = join(reposDir, projWorktreeName);
+    const projWorktree = join(nestedReposDir, repo);
 
     execSync(`git fetch origin`, { cwd: repoDir, stdio: 'pipe', timeout: 30000 });
     execSync(`git branch "${branch}" "origin/${repoBranch}"`, { cwd: repoDir, stdio: 'pipe' });
     execSync(`git worktree add "${projWorktree}" "${branch}"`, { cwd: repoDir, stdio: 'pipe' });
 
-    projWorktrees.push({ repo, worktreeName: projWorktreeName });
+    projWorktrees.push(projWorktree);
   }
 
-  // Symlink repos/ into workspace worktree
-  // Windows: junctions work without elevation but require absolute paths
-  // Unix: relative symlinks for portability
-  const reposLink = join(wsWorktree, 'repos');
-  if (!existsSync(reposLink)) {
-    if (process.platform === 'win32') {
-      symlinkSync(resolve(reposDir, '..'), reposLink, 'junction');
-    } else {
-      symlinkSync('../..', reposLink);
-    }
-  }
-
-  // Copy settings.local.json into worktree if it exists
+  // Copy settings.local.json into the workspace worktree if present at root
   const settingsSrc = join(root, '.claude', 'settings.local.json');
   const settingsDst = join(wsWorktree, '.claude', 'settings.local.json');
   if (existsSync(settingsSrc)) {
     copyFileSync(settingsSrc, settingsDst);
   }
 
-  // Create .claude-scratchpad in worktree with active-session pointer
-  const wsScratchpad = join(wsWorktree, '.claude-scratchpad');
-  mkdirSync(wsScratchpad, { recursive: true });
-  writeFileSync(
-    join(wsScratchpad, '.active-session.json'),
-    JSON.stringify({ name: sessionName, rootPath: root }, null, 2) + '\n'
+  // Write the active-session pointer inside the worktree's .claude/ dir so
+  // hooks running inside the worktree know which session is in scope.
+  writeActiveSessionPointer(wsWorktree, { name: sessionName, rootPath: root });
+
+  // Write the unified session.md tracker. Frontmatter holds machine state;
+  // body holds human content. Hooks and skills update the frontmatter via
+  // the session-frontmatter helper; humans update the body directly.
+  const now = new Date().toISOString();
+  const today = now.slice(0, 10);
+  createSessionTracker(
+    root,
+    sessionName,
+    {
+      type: 'session-tracker',
+      name: sessionName,
+      description,
+      status: 'active',
+      branch,
+      created: now,
+      user,
+      repos,
+      chatSessions: [],
+      author: user,
+      updated: today,
+    },
+    `\n# Work Session: ${sessionName}\n\n${description}\n\n## Progress\n\n(Updated as the session progresses)\n`
   );
 
-  // Create inflight directory and tracker in workspace worktree
-  const inflightDir = join(wsWorktree, 'shared-context', user, 'inflight');
-  mkdirSync(inflightDir, { recursive: true });
-  const today = new Date().toISOString().slice(0, 10);
-  writeFileSync(
-    join(inflightDir, `session-${sessionName}.md`),
-    `---\nstate: ephemeral\nlifecycle: active\ntype: tracker\ntopic: session-${sessionName}\nbranch: ${branch}\nrepos: ${repos.join(', ')}\nauthor: ${user}\nupdated: ${today}\n---\n\n# Work Session: ${sessionName}\n\n${description}\n\n## Progress\n\n(Updated as the session progresses)\n`
-  );
-
-  // Write session marker to main root's scratchpad
-  writeSessionMarker(root, sessionName, {
-    name: sessionName,
-    description,
-    branch,
-    repos,
-    status: 'active',
-    created: new Date().toISOString(),
-    user,
-    chatSessions: [],
-  });
+  // Paths for the success payload, relative to the workspace root
+  const rel = (p) => p.startsWith(root + '/') ? p.slice(root.length + 1) : p;
 
   console.log(JSON.stringify({
     success: true,
-    wsWorktree: `repos/${wsWorktreeName}`,
-    projWorktrees: projWorktrees.map(p => `repos/${p.worktreeName}`),
-    marker: `.claude-scratchpad/.work-session-${sessionName}.json`,
-    tracker: `shared-context/${user}/inflight/session-${sessionName}.md`,
+    sessionFolder: rel(sessionFolder),
+    wsWorktree: rel(wsWorktree),
+    projWorktrees: projWorktrees.map(rel),
+    tracker: rel(sessionFilePath(root, sessionName)),
   }));
 } catch (err) {
   console.log(JSON.stringify({ success: false, error: err.message }));

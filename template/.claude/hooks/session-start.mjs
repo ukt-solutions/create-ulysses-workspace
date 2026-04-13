@@ -1,40 +1,58 @@
 #!/usr/bin/env node
-// SessionStart hook — surface active work sessions and shared context
+// SessionStart hook — register this chat in the active session tracker
+// and surface open sessions + shared context.
 import { readdirSync, statSync, readFileSync, existsSync } from 'fs';
 import { join, basename, relative } from 'path';
 import { execSync } from 'child_process';
-import { getWorkspaceRoot, readJSON, readStdin, respond, getSessionMarkers, getActiveSessionPointer, readSessionMarker, writeSessionMarker, timeAgo } from './_utils.mjs';
+import {
+  getWorkspaceRoot,
+  readJSON,
+  readStdin,
+  respond,
+  getSessionTrackers,
+  getActiveSessionPointer,
+  readSessionTracker,
+  updateSessionTracker,
+  sessionFolderPath,
+  timeAgo,
+} from './_utils.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
 const input = await readStdin();
 const config = readJSON(join(root, 'workspace.json'));
 
-// Register this chat session in the active work session marker
 const chatId = input.session_id || null;
 const contextDir = join(root, 'shared-context');
 const reposDir = join(root, 'repos');
 const lines = [];
 
 if (!config) {
-  respond('No workspace.json found. Run /setup to initialize this workspace.');
+  respond('No workspace.json found. Run /workspace-init to initialize this workspace.');
   process.exit(0);
 }
 
 lines.push(`Workspace: ${config.workspace?.name || 'unnamed'}`);
 
-// Check if we're in a workspace worktree
+// If we're inside a workspace worktree, its .claude/.active-session.json
+// tells us which session this is.
 const pointer = getActiveSessionPointer(root);
 if (pointer) {
-  // Register this chat in the work session marker
   if (chatId) {
     const mainRoot = pointer.rootPath || root;
-    const marker = readSessionMarker(mainRoot, pointer.name);
-    if (marker) {
-      if (!marker.chatSessions) marker.chatSessions = [];
-      // Only add if this chat isn't already registered
-      if (!marker.chatSessions.some(c => c.id === chatId)) {
-        marker.chatSessions.push({ id: chatId, names: [], started: new Date().toISOString(), ended: null });
-        writeSessionMarker(mainRoot, pointer.name, marker);
+    const tracker = readSessionTracker(mainRoot, pointer.name);
+    if (tracker) {
+      const chats = tracker.chatSessions || [];
+      if (!chats.some(c => c.id === chatId)) {
+        chats.push({
+          id: chatId,
+          names: [],
+          started: new Date().toISOString(),
+          ended: null,
+        });
+        updateSessionTracker(mainRoot, pointer.name, {
+          chatSessions: chats,
+          updated: new Date().toISOString().slice(0, 10),
+        });
       }
     }
   }
@@ -44,13 +62,12 @@ if (pointer) {
   process.exit(0);
 }
 
-// We're at the main workspace root — surface work sessions and context
+// We're at the main workspace root — surface open sessions and context.
 
-// Sync repos
+// Fetch project repos in the background (best effort)
 const repoNames = Object.keys(config.repos || {});
 const missing = [];
 const existing = [];
-
 for (const name of repoNames) {
   const repoPath = join(reposDir, name);
   if (existsSync(repoPath)) {
@@ -62,41 +79,37 @@ for (const name of repoNames) {
     missing.push(name);
   }
 }
-
-if (missing.length > 0) lines.push(`Missing repos: ${missing.join(', ')}. Run /setup to clone them.`);
+if (missing.length > 0) lines.push(`Missing repos: ${missing.join(', ')}. Run /workspace-init to clone them.`);
 if (existing.length > 0) lines.push(`Repos synced: ${existing.join(', ')}`);
 
 // Surface active work sessions
-const markers = getSessionMarkers(root);
-if (markers.length > 0) {
+const trackers = getSessionTrackers(root);
+if (trackers.length > 0) {
   lines.push('');
   lines.push('Active work sessions:');
-
-  for (let i = 0; i < markers.length; i++) {
-    const m = markers[i];
-    const wsWorktree = join(reposDir, `${m.name}___wt-workspace`);
+  for (let i = 0; i < trackers.length; i++) {
+    const t = trackers[i];
+    const wsWorktree = join(sessionFolderPath(root, t.name), 'workspace');
     const worktreeExists = existsSync(wsWorktree);
-
     if (!worktreeExists) {
-      lines.push(`  ${i + 1}. ${m.name} (orphaned — worktree missing)`);
+      lines.push(`  ${i + 1}. ${t.name} (orphaned — worktree missing)`);
       continue;
     }
-
-    const lastChat = m.chatSessions?.[m.chatSessions.length - 1];
+    const chats = t.chatSessions || [];
+    const lastChat = chats[chats.length - 1];
     const lastEnded = lastChat?.ended;
-    const statusDetail = m.status === 'paused'
+    const statusDetail = t.status === 'paused'
       ? `paused ${timeAgo(lastEnded)}`
       : lastEnded
         ? `active, last chat ended ${timeAgo(lastEnded)}`
         : 'active';
-
-    lines.push(`  ${i + 1}. ${m.name} (${statusDetail})`);
-    lines.push(`     "${m.description}"`);
-    lines.push(`     Branch: ${m.branch} | Repo: ${m.repo}`);
-    lines.push(`     Worktree: repos/${m.name}___wt-workspace/`);
+    const repoList = Array.isArray(t.repos) ? t.repos.join(', ') : (t.repos || '—');
+    lines.push(`  ${i + 1}. ${t.name} (${statusDetail})`);
+    lines.push(`     "${t.description || ''}"`);
+    lines.push(`     Branch: ${t.branch} | Repos: ${repoList}`);
+    lines.push(`     Worktree: work-sessions/${t.name}/workspace/`);
     lines.push('');
   }
-
   lines.push('Use /start-work to resume a session or start new work.');
 }
 
@@ -115,21 +128,18 @@ if (existsSync(contextDir)) {
       } else if (entry.endsWith('.md') && entry !== '.keep' && !entry.startsWith('local-only-')) {
         const relPath = relative(contextDir, fullPath);
         if (relPath.startsWith('locked/')) continue;
-
         const content = readFileSync(fullPath, 'utf-8');
         const topicMatch = content.match(/^topic:\s*(.+)$/m);
         const lifecycleMatch = content.match(/^lifecycle:\s*(.+)$/m);
         const topic = topicMatch ? topicMatch[1].trim() : basename(entry, '.md');
         const lifecycle = lifecycleMatch ? lifecycleMatch[1].trim() : 'active';
         const mtime = stat.mtime.toISOString().slice(0, 16).replace('T', ' ');
-
         entries.push(`- ${topic} (${lifecycle}, updated ${mtime}) — ${relPath}`);
       }
     }
   }
 
   scanDir(contextDir);
-
   if (entries.length > 0) {
     lines.push('');
     lines.push('Shared context:');
