@@ -1,0 +1,89 @@
+import type { SidebarsConfig } from '@docusaurus/plugin-content-docs';
+
+/**
+ * Sidebar configuration for the documentation site.
+ *
+ * The build-docs-site skill replaces the placeholder structure below
+ * based on the user's Phase 1 answers (audience, structure, chapters).
+ *
+ * Patterns to know:
+ *
+ *   1. Clickable category labels — use `link: { type: 'doc', id: 'overview-doc-id' }`
+ *      so clicking the category itself navigates to its overview page.
+ *
+ *   2. Generated category index — alternative when no overview doc exists:
+ *      `link: { type: 'generated-index' }` auto-builds an index page from
+ *      the category's children.
+ *
+ *   3. Nested categories — categories can contain other categories.
+ *      Use sparingly; deep nesting hurts navigation.
+ *
+ *   4. Doc IDs — paths are relative to the docs/ directory, without
+ *      the .md or .mdx extension.
+ *
+ * Replace the placeholder structure with the real chapter list during
+ * Phase 4 scaffold. The skill writes one entry per chapter from the spec.
+ */
+
+const sidebars: SidebarsConfig = {
+  docs: [
+    'index', // The site's root page (slug: /)
+
+    {
+      type: 'category',
+      label: 'Part I — Foundations',
+      link: {
+        type: 'doc',
+        id: 'part-1/overview',
+      },
+      items: [
+        'part-1/chapter-1',
+        'part-1/chapter-2',
+        'part-1/chapter-3',
+      ],
+    },
+
+    {
+      type: 'category',
+      label: 'Part II — Systems',
+      link: {
+        type: 'doc',
+        id: 'part-2/overview',
+      },
+      items: [
+        'part-2/chapter-4',
+        'part-2/chapter-5',
+        // For long chapters, use nested categories with their own clickable label:
+        // {
+        //   type: 'category',
+        //   label: 'Chapter N — Title',
+        //   link: { type: 'doc', id: 'part-2/chapter-n/overview' },
+        //   items: ['part-2/chapter-n/topic-a', 'part-2/chapter-n/topic-b'],
+        // },
+      ],
+    },
+
+    {
+      type: 'category',
+      label: 'Part III — Integration',
+      link: {
+        type: 'doc',
+        id: 'part-3/overview',
+      },
+      items: [
+        'part-3/chapter-final',
+      ],
+    },
+
+    {
+      type: 'category',
+      label: 'Appendices',
+      items: [
+        'appendix/glossary',
+        'appendix/tech-stack',
+      ],
+    },
+  ],
+};
+
+export default sidebars;

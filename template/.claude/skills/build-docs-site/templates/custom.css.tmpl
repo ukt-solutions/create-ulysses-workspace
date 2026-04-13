@@ -1,0 +1,212 @@
+/**
+ * Documentation site custom CSS.
+ *
+ * This file is a template — the build-docs-site skill fills in the
+ * brand placeholders (marked with {{...}}) with values from the
+ * Phase 1 brand identity question. After substitution the file is a
+ * valid Docusaurus custom.css.
+ *
+ * Sections:
+ *   1. Brand fonts (imports)
+ *   2. Infima theme overrides (light)
+ *   3. Infima theme overrides (dark)
+ *   4. Diagram tokens (--dx-*)
+ *   5. Diagram class layer (.dx-fill-* / .dx-stroke-*)
+ *   6. Diagram container styling
+ *   7. Typography polish (justified body, heading spacing, column width)
+ */
+
+/* ============================================================
+ * 1. Brand fonts
+ * Replace with @import or @font-face declarations for your fonts.
+ * Example: @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+ * ============================================================ */
+{{BRAND_FONTS_IMPORT}}
+
+/* ============================================================
+ * 2. Infima theme overrides (light mode)
+ * ============================================================ */
+:root {
+  --ifm-color-primary: {{BRAND_PRIMARY}};
+  --ifm-color-primary-dark: {{BRAND_PRIMARY_DARK}};
+  --ifm-color-primary-darker: {{BRAND_PRIMARY_DARKER}};
+  --ifm-color-primary-darkest: {{BRAND_PRIMARY_DARKEST}};
+  --ifm-color-primary-light: {{BRAND_PRIMARY_LIGHT}};
+  --ifm-color-primary-lighter: {{BRAND_PRIMARY_LIGHTER}};
+  --ifm-color-primary-lightest: {{BRAND_PRIMARY_LIGHTEST}};
+
+  --ifm-background-color: {{BRAND_BACKGROUND}};
+  --ifm-font-color-base: {{BRAND_TEXT}};
+
+  --ifm-font-family-base: {{BRAND_FONT_BODY}}, system-ui, -apple-system, sans-serif;
+  --ifm-heading-font-family: {{BRAND_FONT_HEADING}}, system-ui, -apple-system, sans-serif;
+  --ifm-font-family-monospace: {{BRAND_FONT_MONO}}, 'SF Mono', Consolas, monospace;
+
+  --ifm-code-font-size: 90%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+/* ============================================================
+ * 3. Infima theme overrides (dark mode)
+ * ============================================================ */
+[data-theme='dark'] {
+  --ifm-color-primary: {{BRAND_PRIMARY_DARK_MODE}};
+  --ifm-color-primary-dark: {{BRAND_PRIMARY_DARK_MODE_DARK}};
+  --ifm-color-primary-darker: {{BRAND_PRIMARY_DARK_MODE_DARKER}};
+  --ifm-color-primary-darkest: {{BRAND_PRIMARY_DARK_MODE_DARKEST}};
+  --ifm-color-primary-light: {{BRAND_PRIMARY_DARK_MODE_LIGHT}};
+  --ifm-color-primary-lighter: {{BRAND_PRIMARY_DARK_MODE_LIGHTER}};
+  --ifm-color-primary-lightest: {{BRAND_PRIMARY_DARK_MODE_LIGHTEST}};
+
+  --ifm-background-color: {{BRAND_BACKGROUND_DARK}};
+  --ifm-font-color-base: {{BRAND_TEXT_DARK}};
+
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* ============================================================
+ * 4. Diagram tokens (--dx-*)
+ *
+ * Semantic colors used by the diagram primitives library.
+ * The class layer below resolves these for fill/stroke.
+ * Keep in sync with primitives/tokens.ts hex values.
+ * ============================================================ */
+:root {
+  --dx-primary: {{BRAND_PRIMARY}};
+  --dx-accent: {{BRAND_ACCENT}};
+  --dx-surface: #FFFFFF;
+  --dx-surface-strong: #F2F2F2;
+  --dx-text: #1A1A1A;
+  --dx-text-muted: #666666;
+  --dx-stroke: #CCCCCC;
+  --dx-stroke-strong: #888888;
+  --dx-diagram-bg: {{BRAND_BACKGROUND}};
+}
+
+[data-theme='dark'] {
+  --dx-primary: {{BRAND_PRIMARY_DARK_MODE}};
+  --dx-accent: {{BRAND_ACCENT_DARK_MODE}};
+  --dx-surface: #1A1A1A;
+  --dx-surface-strong: #2A2A2A;
+  --dx-text: #EDEDED;
+  --dx-text-muted: #999999;
+  --dx-stroke: #444444;
+  --dx-stroke-strong: #777777;
+  --dx-diagram-bg: {{BRAND_BACKGROUND_DARK}};
+}
+
+/* ============================================================
+ * 5. Diagram class layer
+ *
+ * CSS variables in `fill="var(--x)"` or inline style do not paint
+ * reliably in Chromium's SVG pipeline. The variables resolve correctly
+ * through class selectors. Apply via className on SVG elements:
+ *
+ *   <rect className="dx-fill-primary dx-stroke-stroke" />
+ * ============================================================ */
+.dx-fill-primary { fill: var(--dx-primary); }
+.dx-fill-accent { fill: var(--dx-accent); }
+.dx-fill-surface { fill: var(--dx-surface); }
+.dx-fill-surface-strong { fill: var(--dx-surface-strong); }
+.dx-fill-text { fill: var(--dx-text); }
+.dx-fill-text-muted { fill: var(--dx-text-muted); }
+.dx-fill-stroke { fill: var(--dx-stroke); }
+.dx-fill-stroke-strong { fill: var(--dx-stroke-strong); }
+
+.dx-stroke-primary { stroke: var(--dx-primary); }
+.dx-stroke-accent { stroke: var(--dx-accent); }
+.dx-stroke-surface { stroke: var(--dx-surface); }
+.dx-stroke-surface-strong { stroke: var(--dx-surface-strong); }
+.dx-stroke-text { stroke: var(--dx-text); }
+.dx-stroke-text-muted { stroke: var(--dx-text-muted); }
+.dx-stroke-stroke { stroke: var(--dx-stroke); }
+.dx-stroke-stroke-strong { stroke: var(--dx-stroke-strong); }
+
+/* ============================================================
+ * 6. Diagram container styling
+ * ============================================================ */
+.dx-diagram-container {
+  background: var(--dx-diagram-bg);
+  border-radius: 8px;
+  padding: 24px;
+  margin: 2rem 0;
+  border: 1px solid var(--dx-stroke);
+}
+
+.dx-diagram-container svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.dx-diagram-caption {
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  color: var(--dx-text-muted);
+  text-align: center;
+  font-style: italic;
+}
+
+/* ============================================================
+ * 7. Typography polish
+ *
+ * Captured defaults that produce comfortable long-form reading.
+ * The chapter-length question in Phase 1 may inform whether you
+ * adjust these — these are the Linear/Together defaults.
+ * ============================================================ */
+
+/* Justified body text with hyphenation */
+.markdown p,
+.markdown li {
+  text-align: justify;
+  hyphens: auto;
+  -webkit-hyphens: auto;
+  -ms-hyphens: auto;
+}
+
+/* Heading spacing — generous top, controlled bottom */
+.markdown h2 {
+  margin-top: 3.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.markdown h3 {
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+}
+
+.markdown h4 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Collapse spacing between adjacent headings (avoid double-stacking) */
+.markdown h2 + h3,
+.markdown h3 + h4 {
+  margin-top: 1rem;
+}
+
+/* Paragraph and list-item bottom spacing */
+.markdown p {
+  margin-bottom: 1.25rem;
+}
+
+.markdown li {
+  margin-bottom: 0.4rem;
+}
+
+.markdown li:last-child {
+  margin-bottom: 1.25rem;
+}
+
+/* Content column width — wide enough for justified text to look even */
+.markdown {
+  max-width: 760px;
+}
+
+/* Code blocks should not be justified */
+.markdown pre,
+.markdown pre code {
+  text-align: left;
+  hyphens: none;
+}
