@@ -13,15 +13,16 @@ Save structured workstream state to shared context. Usable anytime, any number o
 
 ## Session-Aware Behavior
 
-When called within an active work session (`.claude-scratchpad/.active-session.json` exists):
+When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
 
-- Default behavior: update the inflight tracker at `shared-context/{user}/inflight/session-{session-name}.md`
-- Rewrite the tracker's Progress section with current state (coherent-revisions rule)
+- Default behavior: update the session tracker body at `work-sessions/{session-name}/session.md`
+- Rewrite the tracker's `## Progress` section with current state (coherent-revisions rule)
+- Do NOT touch the frontmatter — it's machine state managed by hooks and scripts
 - Skip the naming and scoping questions — the tracker is already scoped to this session
-- Auto-commit the update:
+- Auto-commit the update from the workspace root (the session tracker lives at the workspace-root level, not inside the worktree):
   ```bash
-  git add shared-context/{user}/inflight/session-{session-name}.md
-  git commit -m "handoff: update {session-name} tracker"
+  git -C {workspace-root} add work-sessions/{session-name}/session.md
+  git -C {workspace-root} commit -m "handoff: update {session-name} tracker"
   ```
 
 When called from the workspace root (no active session):
@@ -33,11 +34,11 @@ The flows below apply when NOT in an active work session, or when the user expli
 ## Flow: Named
 
 1. Read workspace user identity from `.claude/settings.local.json` (`workspace.user`)
-2. Check if handoff already exists in `shared-context/{user}/`, `shared-context/{user}/inflight/`, or `shared-context/` root
+2. Check if handoff already exists in `shared-context/{user}/` or `shared-context/` root
 3. If exists: read it, prepare to update with current session state
 4. If new: prepare to create
 5. Ask: "Should this be user-scoped (default), team-visible, or local-only?"
-   - User-scoped (default): `shared-context/{user}/{name}.md` or `shared-context/{user}/inflight/{name}.md` if part of active work session
+   - User-scoped (default): `shared-context/{user}/{name}.md`
    - Team-visible: `shared-context/{name}.md`
    - Local-only: `shared-context/local-only-{name}.md`
 6. Write the handoff file:

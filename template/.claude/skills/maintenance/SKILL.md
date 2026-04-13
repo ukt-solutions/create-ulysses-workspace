@@ -82,7 +82,7 @@ Issues (3):
 
 Warnings (2):
   ⚠ shared-context/myron/workspace-analytics.md not updated in 8 days
-  ⚠ Worktree repos/foo___wt-old-feature has no commits in 5 days
+  ⚠ Worktree work-sessions/old-feature/workspace has no commits in 5 days
 
 Cleanup suggestions (2):
   ⊕ workspace-branching.md and persistent-work-sessions.md overlap

@@ -49,6 +49,19 @@ export function getWorkspacePaths(root) {
   };
 }
 
+/**
+ * Defensive normalization for a session tracker's `repos` field. A fresh
+ * tracker written by create-work-session always holds an array, but an
+ * older hand-edited tracker or a tracker migrated from the previous layout
+ * might carry a scalar string (single repo) or null. Iterating a string
+ * with `for (const x of s)` yields characters — this helper prevents that.
+ */
+export function normalizeRepos(value) {
+  if (Array.isArray(value)) return value;
+  if (value === null || value === undefined || value === '') return [];
+  return [String(value)];
+}
+
 // === Session tracker helpers ===
 
 export function sessionFilePath(root, sessionName) {
@@ -143,9 +156,8 @@ export function deleteSessionFolder(root, sessionName) {
 // === Active session pointer (per-worktree) ===
 // A workspace worktree writes a tiny JSON pointer file at:
 //   {worktree}/.claude/.active-session.json
-// to tell hooks which session is currently in scope. This is the
-// replacement for the old .claude-scratchpad/.active-session.json —
-// now scoped to the worktree itself rather than a shared scratchpad.
+// to tell hooks which session is currently in scope. Scoped to the
+// worktree itself — each worktree has its own pointer.
 
 export function activeSessionPointerPath(worktreeRoot) {
   return join(worktreeRoot, '.claude', '.active-session.json');

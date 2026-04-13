@@ -219,7 +219,7 @@ for inner_zip in inner_zips:
 
 After extraction, check that you have a flat directory of markdown files with their attachment folders. The filenames should preserve their emoji characters (e.g., `🏗 Architecture.md`), not become garbled.
 
-Move the extracted files to `.claude-scratchpad/` for working access, not shared context. They're raw material, not source of truth.
+Move the extracted files to `workspace-scratchpad/` for working access, not shared context. They're raw material, not source of truth.
 
 ---
 

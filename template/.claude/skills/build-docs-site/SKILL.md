@@ -98,8 +98,9 @@ For the codebase:
 For shared context:
 - Walk `shared-context/` for handoffs, braindumps, locked team knowledge, release notes
 
-For inflight trackers:
-- Walk `shared-context/{user}/inflight/` for historical session records that may contain decisions not committed elsewhere
+For work-session history:
+- Walk `work-sessions/*/session.md` for any currently-active session trackers — their bodies may contain decisions not yet consumed into release notes
+- Check git history for previously-completed session trackers that were synthesized into release notes by `/complete-work`
 
 For existing project documentation (from Phase 1 Q2):
 - Read every file the user pointed at
@@ -311,7 +312,7 @@ Produce a final report:
 - **Files needing user decision.** Any old docs with content that didn't migrate cleanly — coverage check found gaps the user needs to resolve.
 - **URLs that may need redirects.** If the old docs had live URLs, list them. The skill flags but does not set up redirects.
 
-Update the inflight tracker with the final state. The skill's work ends here. `/complete-work` handles the merge, release notes, and cleanup.
+Update the session tracker with the final state. The skill's work ends here. `/complete-work` handles the merge, release notes, and cleanup.
 
 ## Notes
 
@@ -319,4 +320,4 @@ Update the inflight tracker with the final state. The skill's work ends here. `/
 - Diagrams primitives are deliberately fixed (no project customization) because the class-based fill pattern is load-bearing for theme support.
 - The leak grep is project-accurate because it derives the list from the project's own dependency manifests. Do not maintain a hardcoded master list — it would over-trigger for projects whose docs legitimately discuss their own dependencies.
 - The forbidden-word grep is per-project — each project supplies its own list from Phase 1 Q5. There is no default.
-- This skill takes hours, not minutes. Always run inside an active work session. Update the inflight tracker periodically so context compaction doesn't lose state.
+- This skill takes hours, not minutes. Always run inside an active work session. Update the session tracker periodically so context compaction doesn't lose state.
