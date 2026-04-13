@@ -59,13 +59,16 @@ Five things per session folder: one workspace worktree (containing nested projec
 The `.gitignore` pattern that makes this work:
 
 ```gitignore
-work-sessions/
+work-sessions/**
+!work-sessions/*/
 !work-sessions/*/session.md
 !work-sessions/*/design-*.md
 !work-sessions/*/plan-*.md
 ```
 
-Standard gitignored-folder-with-tracked-file-exception pattern. Worktrees stay local; durable files cross machines.
+This pattern is intentionally subtle. The naive approach (`work-sessions/` + negations) silently fails because git cannot re-include files beneath an ignored parent directory — the negations have no effect when the parent is excluded as a directory entity. The working pattern ignores every descendant at every depth via `**`, then re-includes each session folder as a walkable directory via `!work-sessions/*/`, and finally re-includes the specific tracked files inside each session folder. Nested contents like `work-sessions/{name}/workspace/...` stay ignored because they are matched by `**` and never re-included.
+
+Worktrees stay local; durable files cross machines.
 
 Source clones stay at `repos/{repo}/` at the workspace root. Clones are workspace-scoped (one per repo, used by all sessions); sessions are session-scoped. Mixing them under `work-sessions/` would obscure the lifecycle distinction. Two top-level concepts (`repos/` for clones, `work-sessions/` for sessions) is intentional — each communicates its lifecycle by location.
 

@@ -140,21 +140,28 @@ If the repo has a version, determine the appropriate bump from the release notes
 
 The user can override any suggestion. Accept their decision.
 
-### Step 7: Check for no-remote
+### Step 7: Detect remote type per repo
 
-For each repo in the tracker's `repos:`, verify remotes exist:
+For each repo in the tracker's `repos:` plus the workspace repo, determine the remote type. This drives how Step 8 and Step 9 push and merge.
+
 ```bash
 cd work-sessions/{session-name}/workspace/repos/{repo}
-git remote -v
+git remote get-url origin 2>&1
 ```
-If no remote: "No remote configured for {repo}. Want me to create one on GitHub, or provide a URL?"
-Create via `gh repo create` or add the provided URL. Never silently skip push.
+
+Classify the result:
+
+- **GitHub remote** — URL contains `github.com` or `gh repo view` succeeds against origin → use the PR flow (Step 8a, Step 9a).
+- **Local / bare remote** — URL is a filesystem path (starts with `/`, `./`, `file://`, or points at a `.git` bare mirror) → use the local merge flow (Step 8b, Step 9b).
+- **Other remote** (e.g., GitLab, Bitbucket, self-hosted) — no `gh` support → fall back to the local merge flow (Step 8b, Step 9b), and mention it in the final summary.
+- **No remote at all** — "No remote configured for {repo}. Want me to create one on GitHub, add an existing URL, or keep the session local (push/merge inside the local clone only)?" Act on the user's choice. Never silently skip push.
 
 ### Step 8: Push all repos
 
+#### Step 8a: GitHub remotes
+
 ```bash
-# Each project repo
-# For each repo in the tracker's repos:
+# Each project repo with a GitHub remote
 cd work-sessions/{session-name}/workspace/repos/{repo}
 git push -u origin {branch}
 
@@ -165,12 +172,30 @@ git commit -m "chore: finalize context for {session-name}"
 git push -u origin {branch}
 ```
 
-### Step 9: Create PRs and present unified summary
+#### Step 8b: Local/bare remotes
+
+```bash
+# Push the feature branch to the bare remote so it exists there
+cd work-sessions/{session-name}/workspace/repos/{repo}
+git push -u origin {branch}
+
+# Workspace repo — same commit + push pattern
+cd work-sessions/{session-name}/workspace
+git add .
+git commit -m "chore: finalize context for {session-name}"
+git push -u origin {branch}
+```
+
+The push shape is the same as 8a — what differs is the merge mechanics in Step 9b.
+
+### Step 9: Merge and present unified summary
+
+#### Step 9a: GitHub remotes — create PRs, unified summary, merge
 
 Create one PR per project repo plus one workspace PR:
 
 ```bash
-# For each repo in the tracker's repos:
+# For each repo in the tracker's repos with a GitHub remote:
 cd work-sessions/{session-name}/workspace/repos/{repo}
 gh pr create --title "{type}: {description}" --body "..."
 
@@ -215,6 +240,52 @@ gh pr merge {workspace-pr-number} --merge
 # For each repo in the tracker's repos:
 cd repos/{repo} && git pull origin {repo-branch}
 cd {main-workspace-root} && git pull origin main
+```
+
+#### Step 9b: Local / bare / other remotes — local merge flow
+
+No PRs are created — these remotes don't have a PR concept (or we don't have a client wired up for them). Present an adjusted summary:
+
+```
+Work session complete:
+
+PROJECT: {repo-1}  (local remote)
+  Branch: {branch} → {repo-1-branch}
+  Changes:
+    - {bullet points from release notes}
+  Release notes: branch-release-notes-{COMMIT_ID}.md
+
+PROJECT: {repo-2}  (local remote)
+  Branch: {branch} → {repo-2-branch}
+  Changes:
+    - {bullet points from release notes}
+
+WORKSPACE: {workspace-name}  (local remote)
+  Branch: {branch} → main
+
+Merge all locally? [Y/n]
+```
+
+If yes — fast-forward merge on each remote, delete the feature branch, pull the source clone:
+```bash
+# For each repo in the tracker's repos with a local/bare remote:
+cd work-sessions/{session-name}/workspace/repos/{repo}
+git push origin HEAD:{repo-branch}        # fast-forward the default branch
+git push origin --delete {branch}         # remove the feature branch from the remote
+cd repos/{repo} && git checkout {repo-branch} && git pull origin {repo-branch}
+
+# Workspace repo — same pattern from the workspace worktree
+cd work-sessions/{session-name}/workspace
+git push origin HEAD:main
+git push origin --delete {branch}
+cd {main-workspace-root} && git pull origin main
+```
+
+If the fast-forward push fails because the remote's default branch has moved ahead, STOP and present the divergence — the user decides whether to rebase and retry or handle it another way. Do not auto-resolve.
+
+For repos with no remote at all (user chose "keep local"): skip push entirely. The branch lives only in the source clone after cleanup merges it:
+```bash
+cd repos/{repo} && git merge --ff-only {branch}
 ```
 
 ### Step 10: Update open-work.md and sync tracker
