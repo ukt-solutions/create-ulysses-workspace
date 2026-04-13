@@ -10,6 +10,7 @@ import {
   readSessionTracker,
   updateSessionTracker,
   sessionFolderPath,
+  normalizeRepos,
 } from '../hooks/_utils.mjs';
 
 const args = process.argv.slice(2);
@@ -40,7 +41,7 @@ if (!config?.repos?.[repo]) {
   process.exit(1);
 }
 
-const existingRepos = tracker.repos || [];
+const existingRepos = normalizeRepos(tracker.repos);
 if (existingRepos.includes(repo)) {
   console.log(JSON.stringify({ success: false, error: `Repo "${repo}" is already in this session` }));
   process.exit(1);

@@ -64,7 +64,7 @@ The skill creates a `chore/workspace-init` branch and walks you through a compre
 7. **Scan Claude chat history.** Searches `~/.claude/projects/` for prior conversation logs, synthesizes decisions and context into shared context. Uses a manifest to survive auto-compaction during processing.
 8. **Preserve local preferences.** Extracts conventions and settings from CLAUDE.md.bak.
 9. **Create locked team knowledge.** Combines extracted content into `shared-context/locked/`.
-10. **Formalize existing worktrees.** Detects in-progress git worktrees and creates session markers and inflight trackers for them, linking to related chat history.
+10. **Formalize existing worktrees.** Detects in-progress git worktrees and creates `work-sessions/{name}/` folders with session trackers for them, linking to related chat history.
 11. **Configure user identity.** Sets your name for user-scoped context.
 12. **Clean and verify.** Moves non-template items to unmigrated, cleans up the payload, checks for self-contradictions.
 13. **Set up workspace remote.** Creates a new repo or connects to an existing one (for team members joining a workspace that already exists).

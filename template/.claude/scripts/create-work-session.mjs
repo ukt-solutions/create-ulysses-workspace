@@ -7,7 +7,6 @@ import { join, resolve } from 'path';
 import {
   getWorkspaceRoot,
   readJSON,
-  getWorkspacePaths,
   sessionFilePath,
   sessionFolderPath,
   createSessionTracker,
@@ -35,7 +34,6 @@ const repos = repoArg.split(',').map(r => r.trim()).filter(Boolean);
 const root = getWorkspaceRoot(import.meta.url);
 const config = readJSON(join(root, 'workspace.json'));
 const reposDir = join(root, 'repos');
-const { workSessionsDir } = getWorkspacePaths(root);
 
 const sessionFolder = sessionFolderPath(root, sessionName);
 const wsWorktree = join(sessionFolder, 'workspace');

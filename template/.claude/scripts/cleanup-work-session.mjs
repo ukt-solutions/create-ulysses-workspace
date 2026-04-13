@@ -19,6 +19,7 @@ import {
   readSessionTracker,
   deleteSessionFolder,
   sessionFolderPath,
+  normalizeRepos,
 } from '../hooks/_utils.mjs';
 
 const args = process.argv.slice(2);
@@ -35,7 +36,7 @@ if (!sessionName) {
 
 const root = getWorkspaceRoot(import.meta.url);
 const tracker = readSessionTracker(root, sessionName);
-const repos = tracker?.repos || [];
+const repos = normalizeRepos(tracker?.repos);
 const branch = tracker?.branch;
 const reposDir = join(root, 'repos');
 const sessionFolder = sessionFolderPath(root, sessionName);

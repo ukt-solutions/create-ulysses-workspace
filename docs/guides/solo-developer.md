@@ -56,12 +56,12 @@ The setup skill confirms your repos are cloned, lets you activate any optional r
 Since there are no active sessions, Claude asks what you are working on. Describe it — "Add user authentication" or "Fix the broken search endpoint." Claude generates a session name, proposes a branch, and asks you to confirm.
 
 Once you confirm, the workspace creates:
-- A workspace worktree at `repos/add-auth___wt-workspace/`
-- A project worktree at `repos/add-auth___wt-my-app/`
-- A session marker tracking the session's state
-- An inflight tracker for accumulating context
+- A self-contained session folder at `work-sessions/add-auth/`
+- A workspace worktree at `work-sessions/add-auth/workspace/`
+- A nested project worktree at `work-sessions/add-auth/workspace/repos/my-app/`
+- A unified `session.md` tracker — frontmatter is machine state, body is human content
 
-Claude tells you: "Work session started. Work from `repos/add-auth___wt-workspace/`."
+Claude tells you: "Work session started. Work from `work-sessions/add-auth/workspace/`."
 
 ## Step 5: Do Your Work
 
@@ -73,7 +73,7 @@ As you work, you might make design decisions, encounter tradeoffs, or explore al
 /braindump
 ```
 
-Claude synthesizes the recent discussion into the inflight tracker. You do not lose this context when the conversation ends.
+Claude synthesizes the recent discussion into the session tracker. You do not lose this context when the conversation ends.
 
 If you need to back up your work without any ceremony:
 

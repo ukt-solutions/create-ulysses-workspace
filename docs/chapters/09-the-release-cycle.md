@@ -14,7 +14,7 @@ Release notes flow through four stages:
 Branch work → unreleased/ → versioned release → archive/
 ```
 
-**Stage 1: Branch work.** During a work session, you write code, make commits, capture context. The inflight tracker accumulates progress. Specs and plans live in the worktree.
+**Stage 1: Branch work.** During a work session, you write code, make commits, capture context. The session tracker's body accumulates progress. Specs and plans live in the session folder alongside the tracker.
 
 **Stage 2: Unreleased.** When `/complete-work` finalizes a session, it synthesizes the accumulated material into two files: `branch-release-notes-{commit}.md` (the narrative) and `branch-release-questions-{commit}.md` (open questions). These land in `release-notes/unreleased/` in the project repo.
 
@@ -26,8 +26,8 @@ Branch work → unreleased/ → versioned release → archive/
 
 When a session completes, `/complete-work` gathers material from four sources:
 
-1. **The inflight tracker** — accumulated progress, decisions, and reasoning from the session
-2. **Branch-scoped specs and plans** — `design-*.md` and `plan-*.md` files in the worktree
+1. **The session tracker body** — accumulated progress, decisions, and reasoning from the session
+2. **Session-scoped specs and plans** — `design-*.md` and `plan-*.md` files in the session folder
 3. **Handoffs** — shared context entries referencing this branch
 4. **The commit log** — what actually changed, commit by commit
 
@@ -35,7 +35,7 @@ From these sources, it writes a coherent narrative — not a concatenation of no
 
 The branch-release-questions file captures only genuinely open questions — things that were not resolved during implementation. Design tradeoffs that were settled, bugs that were fixed, approaches that were rejected — these are not open questions.
 
-After writing the release notes, the skill consumes the branch-scoped sources. Specs and plans are removed from the worktree (their content now lives in the release notes). The inflight tracker is removed (its content was synthesized). The release notes are the surviving artifacts.
+After writing the release notes, the skill tears down the session. The cleanup script removes project worktrees first, then the workspace worktree, then the entire `work-sessions/{name}/` folder — tracker, specs, and plans disappear along with it. Their content now lives in the release notes, which are the surviving artifacts.
 
 ## How /release Works
 
@@ -59,7 +59,7 @@ The release cycle is the workspace's natural garbage collector. Without it, shar
 
 The cleanup works in layers:
 
-**Branch-scoped artifacts** (specs, plans, inflight trackers) are consumed by `/complete-work` when a session finalizes. They do not survive past the session that created them.
+**Session-scoped artifacts** (the session tracker, specs, plans) are consumed by `/complete-work` when a session finalizes. They do not survive past the session that created them — the entire `work-sessions/{name}/` folder is removed.
 
 **Unreleased notes** are consumed by `/release` when a version is cut. They are archived, not deleted — preserved for audit but no longer in the active pipeline.
 

@@ -26,8 +26,8 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 ## Quick Reference
 - This root is the launcher — all work happens in workspace worktrees
 - `/start-work` to create or resume a work session
-- Worktrees: `repos/{session}___wt-workspace/` and `repos/{session}___wt-{repo}/`
-- From root: only `local-only-*` and `.claude-scratchpad/` are writable
+- Worktrees: `work-sessions/{session}/workspace/` with nested project worktrees at `work-sessions/{session}/workspace/repos/{repo}/`
+- From root: only `local-only-*` and `workspace-scratchpad/` are writable
 - Shared memory lives in `shared-context/`
 
 ## Workspace Config
