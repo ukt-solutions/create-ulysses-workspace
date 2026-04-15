@@ -100,5 +100,8 @@
       "Bash(git:*)",
       "Bash(ls:*)"
     ]
+  },
+  "enabledPlugins": {
+    "playwright@claude-plugins-official": false
   }
 }
