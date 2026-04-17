@@ -51,7 +51,7 @@ cd work-sessions/{session-name}/workspace
 git push -u origin {branch-name}
 ```
 
-The tracked session files (`session.md`, `design-*.md`, `plan-*.md`) ride along with the workspace push — that's how durable session thinking reaches another machine.
+The session-branch top-level files (`session.md`, `design-*.md`, `plan-*.md`) ride along with the workspace push — they live on the session branch, not on main, so pushing the branch is how durable session thinking reaches another machine.
 Report per repo: "Synced: {repo} ({branch-name}) pushed to origin."
 
 **Step 5: Optionally offer capture**

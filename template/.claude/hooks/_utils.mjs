@@ -66,12 +66,17 @@ export function normalizeRepos(value) {
 
 export function sessionFilePath(root, sessionName) {
   const { workSessionsDir } = getWorkspacePaths(root);
-  return join(workSessionsDir, sessionName, 'session.md');
+  return join(workSessionsDir, sessionName, 'workspace', 'session.md');
 }
 
 export function sessionFolderPath(root, sessionName) {
   const { workSessionsDir } = getWorkspacePaths(root);
   return join(workSessionsDir, sessionName);
+}
+
+export function sessionWorktreePath(root, sessionName) {
+  const { workSessionsDir } = getWorkspacePaths(root);
+  return join(workSessionsDir, sessionName, 'workspace');
 }
 
 /**
@@ -83,7 +88,7 @@ export function getSessionTrackers(root) {
   if (!existsSync(workSessionsDir)) return [];
   const results = [];
   for (const entry of readdirSync(workSessionsDir)) {
-    const sessionPath = join(workSessionsDir, entry, 'session.md');
+    const sessionPath = join(workSessionsDir, entry, 'workspace', 'session.md');
     if (!existsSync(sessionPath)) continue;
     try {
       const parsed = readSessionFile(sessionPath);
