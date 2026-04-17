@@ -39,19 +39,21 @@ Each session lives in its own folder at `work-sessions/{session-name}/`. That fo
 
 ```
 work-sessions/fix-auth/
-├── workspace/                    # Workspace worktree
-│   ├── .claude/                  # Settings, active-session pointer
-│   ├── CLAUDE.md                 # Inherited from the workspace branch
-│   ├── shared-context/           # Workspace shared-context, on this branch
-│   └── repos/                    # Real directory (not symlink)
-│       ├── my-app/               # Project worktree on bugfix/fix-auth
-│       └── my-api/               # Project worktree on bugfix/fix-auth
-├── session.md                    # Session tracker — TRACKED
-├── design-auth-redesign.md       # Spec — TRACKED
-└── plan-auth-redesign.md         # Plan — TRACKED
+└── workspace/                         # Workspace worktree (on session branch)
+    ├── .claude/                       # Settings, active-session pointer
+    ├── CLAUDE.md                      # Inherited from the workspace branch
+    ├── session.md                     # Session tracker — on the session branch
+    ├── design-auth-redesign.md        # Spec — on the session branch
+    ├── plan-auth-redesign.md          # Plan — on the session branch
+    ├── shared-context/                # Workspace shared-context, on this branch
+    └── repos/                         # Real directory (not symlink)
+        ├── my-app/                    # Project worktree on bugfix/fix-auth
+        └── my-api/                    # Project worktree on bugfix/fix-auth
 ```
 
-Three things are tracked in git via a gitignored-folder-with-tracked-file-exception pattern: the session tracker and any specs or plans written for this session. Everything else — the worktrees, their contents, any local-only artifacts — is gitignored. Pushing the workspace branch carries the durable session thinking (tracker, specs, plans) across machines, while the worktrees themselves stay local and are recreated on resume.
+Session content — tracker, specs, plans — lives at the top of the workspace worktree and is tracked on the session branch. Pushing the branch carries the durable session thinking across machines. `/complete-work` reads the content into release notes, then removes the files from the branch before the final PR so main's top level stays free of session-scoped files.
+
+The `work-sessions/` folder itself is fully gitignored at the workspace root — nothing at the launcher level is tracked. The tracking happens inside each session's worktree, on the session branch, where it naturally belongs.
 
 The workspace worktree is where Claude runs when working on this session. It contains a real `repos/` directory (not a symlink), with each project worktree nested inside it. From inside the workspace worktree, all project worktrees are accessible at `repos/{repo-name}/` — the same path convention skills use everywhere else.
 
@@ -59,7 +61,7 @@ The workspace `.gitignore` has a single `repos` line (no trailing slash) that co
 
 ## The Session Tracker
 
-The session tracker is `work-sessions/{name}/session.md`. It is a single markdown file with two halves: YAML frontmatter holds the machine state, and the body holds human content.
+The session tracker is `work-sessions/{name}/workspace/session.md`. It is a single markdown file with two halves: YAML frontmatter holds the machine state, and the body holds human content.
 
 ```markdown
 ---
