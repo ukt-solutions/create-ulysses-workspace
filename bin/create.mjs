@@ -1,5 +1,14 @@
 #!/usr/bin/env node
 
+const [major, minor] = process.versions.node.split('.').map(Number);
+if (major < 20 || (major === 20 && minor < 9)) {
+  console.error(`create-ulysses-workspace requires Node.js 20.9 or later.`);
+  console.error(`  You have:  ${process.versions.node}`);
+  console.error(`  Required:  >=20.9.0`);
+  console.error(`  Try installing a newer Node via nvm, fnm, or the Node website.`);
+  process.exit(1);
+}
+
 import { runPrompts } from '../lib/prompts.mjs';
 import { scaffold } from '../lib/scaffold.mjs';
 import { initGit, cloneRepos } from '../lib/git.mjs';
