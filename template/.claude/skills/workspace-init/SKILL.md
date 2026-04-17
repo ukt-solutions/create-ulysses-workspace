@@ -11,13 +11,13 @@ This skill runs once. After completion, it sets `workspace.initialized: true` in
 
 ## Prerequisites
 
-- `.workspace-update/` payload directory must exist (staged by `npx create-ulysses-workspace --init`)
-- If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx create-ulysses-workspace --init` to stage the template."
+- `.workspace-update/` payload directory must exist (staged by `npx @ulysses/create-workspace --init`)
+- If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx @ulysses/create-workspace --init` to stage the template."
 - `workspace.json` must exist
 
 ## Gate
 
-If `workspace.json` has `"initialized": true` AND `.workspace-update/` exists with `"action": "init"` in `.workspace-update/.manifest.json`, warn: "Workspace is already initialized. Did you mean to run `npx create-ulysses-workspace --upgrade` instead?" Do not proceed unless the user explicitly confirms they want to re-initialize.
+If `workspace.json` has `"initialized": true` AND `.workspace-update/` exists with `"action": "init"` in `.workspace-update/.manifest.json`, warn: "Workspace is already initialized. Did you mean to run `npx @ulysses/create-workspace --upgrade` instead?" Do not proceed unless the user explicitly confirms they want to re-initialize.
 
 If `workspace.json` has `"initialized": true` and no `.workspace-update/` payload exists, report: "Workspace already initialized. Use /workspace-update for template updates, or /maintenance to check integrity."
 

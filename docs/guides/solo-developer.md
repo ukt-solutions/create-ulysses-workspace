@@ -9,7 +9,7 @@ You use Claude Code for your projects. Maybe you have one repo, maybe a few. You
 Open a terminal and scaffold a new workspace:
 
 ```bash
-npx create-ulysses-workspace --init my-workspace
+npx @ulysses/create-workspace --init my-workspace
 cd my-workspace
 ```
 
