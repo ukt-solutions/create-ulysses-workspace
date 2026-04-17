@@ -51,7 +51,7 @@ Root-level files are an explicit choice. Content lands here when you deliberatel
 
 `shared-context/{user}/` contains one person's working context. This is the default destination for everything captured outside of an active work session. Standalone braindumps, ongoing reference material, personal notes.
 
-Session-scoped state (the session tracker, specs, plans) does NOT live in shared-context. It lives in `work-sessions/{name}/` — each session is self-contained. Inside a session, `/handoff` and `/braindump` route to the session tracker body in `work-sessions/{name}/session.md` rather than creating new shared-context files. Outside of a session, they land in `shared-context/{user}/`.
+Session-scoped state (the session tracker, specs, plans) does NOT live in shared-context. It lives in `work-sessions/{name}/` — each session is self-contained. Inside a session, `/handoff` and `/braindump` route to the session tracker body in `work-sessions/{name}/workspace/session.md` rather than creating new shared-context files. Outside of a session, they land in `shared-context/{user}/`.
 
 User-scoped files persist across work sessions. They are your ongoing reference material — naming ideas, sabbatical plans, competitive analysis. They stay until you promote them, move them, or delete them.
 
@@ -59,7 +59,7 @@ User-scoped files persist across work sessions. They are your ongoing reference 
 
 Three capture skills feed the shared context system. Each serves a different purpose:
 
-**`/handoff`** captures workstream state — what was done, what is in progress, what comes next. It is structured and actionable. When called during an active work session, it updates the session tracker's body at `work-sessions/{name}/session.md` rather than creating a new file. Use it when someone (including your future self) needs to pick up where you left off.
+**`/handoff`** captures workstream state — what was done, what is in progress, what comes next. It is structured and actionable. When called during an active work session, it updates the session tracker's body at `work-sessions/{name}/workspace/session.md` rather than creating a new file. Use it when someone (including your future self) needs to pick up where you left off.
 
 **`/braindump`** captures reasoning and exploration — why a decision was made, what alternatives were considered, what the tradeoffs are. It is more freeform than a handoff. Use it when the conversation produced insights worth preserving, even if no code was written. The signal to braindump is hearing "we decided..." — that phrase means a decision just happened.
 
@@ -106,9 +106,9 @@ Shared context files follow naming conventions rather than a directory hierarchy
 
 Session-scoped files live in `work-sessions/{name}/`, not in shared-context:
 
-- Session trackers: `work-sessions/{name}/session.md`
-- Specs: `work-sessions/{name}/design-{topic}.md`
-- Plans: `work-sessions/{name}/plan-{topic}.md`
+- Session trackers: `work-sessions/{name}/workspace/session.md`
+- Specs: `work-sessions/{name}/workspace/design-{topic}.md`
+- Plans: `work-sessions/{name}/workspace/plan-{topic}.md`
 
 The principle is one topic per file. A handoff about authentication and a braindump about database migration are two files, not two sections in one file. Different topics have different lifecycles, different audiences, and different promotion paths. Keeping them separate means each can be promoted, archived, or deleted independently.
 
