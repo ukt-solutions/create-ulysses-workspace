@@ -20,7 +20,7 @@ state: ephemeral
 lifecycle: active
 type: braindump
 topic: auth-redesign
-author: myron
+author: alice
 updated: 2026-04-05
 ---
 ```

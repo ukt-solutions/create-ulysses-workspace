@@ -89,7 +89,7 @@ node .claude/scripts/create-work-session.mjs \
   --session-name "fix-auth" \
   --branch "bugfix/fix-auth" \
   --repo "my-app,my-api" \
-  --user "myron" \
+  --user "alice" \
   --description "Fix authentication timeout"
 ```
 

@@ -71,7 +71,7 @@ description: Fix authentication timeout on mobile
 status: active
 branch: bugfix/fix-auth
 created: 2026-04-13T10:00:00.000Z
-user: myron
+user: alice
 repos:
   - my-app
   - my-api
@@ -81,7 +81,7 @@ chatSessions:
     names: []
     started: 2026-04-13T10:00:00.000Z
     ended: null
-author: myron
+author: alice
 updated: 2026-04-13
 ---
 
