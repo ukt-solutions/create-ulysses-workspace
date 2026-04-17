@@ -58,6 +58,14 @@ The `/release` skill's synthesis cycle is the natural pressure valve. It distill
 
 **What goes wrong:** Twelve ephemerals in your user directory, eight of which reference features that shipped two versions ago. Claude reads them during context gathering and surfaces outdated information. `/maintenance` flags them as stale but cannot delete them without your approval.
 
+## Discussion Sessions Don't Need /start-work
+
+**The practice:** If you are starting a conversation just to think through a problem — design exploration, architecture brainstorming, scope discussion — you do not need to formalize it as a work session. Just talk. If something worth capturing emerges, run `/braindump` at the end.
+
+**Why it matters:** `/start-work` provisions a session because work needs structure: a branch, a worktree, a tracker, eventually a PR. Discussion produces none of those — it produces understanding. Forcing a discussion through the session lifecycle creates a session folder, a branch, and a tracker that will never be merged anywhere. The system formalizes the *capture*, not the start.
+
+**What goes wrong:** You run `/start-work` for a 30-minute architecture chat and end up with a `feature/discuss-auth-strategy` branch and a worktree you do not need. At the end you either run `/complete-work` on a session with no commits (awkward) or abandon the session and clean it up later (annoying). Easier path: skip the lifecycle, talk freely, capture what is worth keeping.
+
 ## Don't Skip Capture on Discussion Sessions
 
 **The practice:** If a conversation produced insights, decisions, or design direction — even if no code was written, no branch was created — capture it. Run `/braindump` before ending the conversation.

@@ -14,7 +14,7 @@ Rules live in `.claude/rules/` and are tracked in git. Every `.md` file in this 
 
 ## Mandatory Rules
 
-Five rules ship as active by default. These encode the core conventions that make the workspace function correctly:
+Six rules ship as active by default. These encode the core conventions that make the workspace function correctly:
 
 **coherent-revisions.md** — When revising any document or code, rewrite the affected section from start to finish so the result reads as a single coherent piece. Never patch or inject content between existing blocks. This applies to everything: docs, specs, code, context files, release notes, commit messages. The rule exists because injected revisions create fragmented output where the seams between old and new content are visible.
 
@@ -22,13 +22,15 @@ Five rules ship as active by default. These encode the core conventions that mak
 
 **honest-pushback.md** — Three sections that enforce intellectual honesty. First, Claude must challenge assumptions and push back when something seems wrong — no sycophantic agreement. Second, "No Retry Loops" — if a fix fails twice with the same result, stop and research before trying again. Third, "Verify, Don't Assume" — when evidence is available (logs, database, UI, API responses), check it instead of guessing. Claude asks once whether to verify proactively, then remembers the preference for the session.
 
-**workspace-structure.md** — Documents the directory layout, shared context levels, naming conventions, and structural rules (root stays on main, only local-only and scratchpad are writable from root). Includes a mandatory override for spec/plan locations — specs go at the top of the active session worktree as `work-sessions/{name}/workspace/design-{topic}.md` and plans as `work-sessions/{name}/workspace/plan-{topic}.md`, explicitly overriding any default paths from external skills.
-
 **memory-guidance.md** — Controls Claude's auto-memory system. Defines what to remember (architecture decisions, patterns that caused bugs, user corrections) and what not to remember (temporary state, file contents, anything already in shared context). During active work sessions, session-specific information goes in the session tracker body at `work-sessions/{name}/workspace/session.md`, while cross-session insights go in auto-memory.
+
+**work-item-tracking.md** — Defines the workspace's stance on issue tracking: when a tracker is configured in `workspace.json`, all work items live in the tracker (not in a local mirror), and skills read and write through a pluggable adapter at `.claude/scripts/trackers/{type}.mjs`. The default `github-issues` adapter ships in the template; others can be added by dropping in a new module. The rule also describes when to create issues, how sessions link to them via `workItem:` frontmatter, and what state belongs in the tracker versus the session.
+
+**workspace-structure.md** — Documents the directory layout, shared context levels, naming conventions, and structural rules (root stays on main, only local-only and scratchpad are writable from root). Includes a mandatory override for spec/plan locations — specs go at the top of the active session worktree as `work-sessions/{name}/workspace/design-{topic}.md` and plans as `work-sessions/{name}/workspace/plan-{topic}.md`, explicitly overriding any default paths from external skills.
 
 ## Optional Rules
 
-Six additional rules ship in a deactivated state. These are available for teams that want them but not enforced by default:
+Eight additional rules ship in a deactivated state. These are available for teams that want them but not enforced by default:
 
 **superpowers-workflow.md.skip** — Enforces a research-before-implementation workflow. Requires reviewing existing codebase patterns, searching documentation, and researching best practices before writing code. Designed for teams using the Superpowers plugin.
 
@@ -41,6 +43,10 @@ Six additional rules ship in a deactivated state. These are available for teams 
 **agent-rules.md.skip** — Conventions for subagent dispatch and coordination.
 
 **cloud-infrastructure.md.skip** — Cloud-specific conventions for infrastructure work.
+
+**local-dev-environment.md.skip** — Maintains a `local-only-dev-environment.md` file inside `shared-context/locked/` that captures machine-specific context (services, ports, credentials, CLI commands, env vars, paths, infrastructure). The file is gitignored but front-of-mind in locked, so Claude sees the local setup on every turn without it ever being shared.
+
+**product-integrity.md.skip** — Guards against personal biases being baked into product decisions. When a proposed feature directly mirrors a personal struggle, or when "I need this" is the primary justification, the rule prompts Claude to flag it and suggest keeping the change local-only or user-scoped until external feedback confirms general value. Useful for tools built by their own users.
 
 ## The .skip Pattern
 
