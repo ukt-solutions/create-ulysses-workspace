@@ -1,6 +1,6 @@
-# create-ulysses-workspace
+# @ulysses/create-workspace
 
-[![npm version](https://img.shields.io/npm/v/create-ulysses-workspace.svg)](https://www.npmjs.com/package/create-ulysses-workspace)
+[![npm version](https://img.shields.io/npm/v/@ulysses/create-workspace.svg)](https://www.npmjs.com/package/@ulysses/create-workspace)
 
 > Rules, skills, and hooks that steer Claude Code through real work. Sessions you can pause and resume, multi-repo with versioning, shared context that survives chat boundaries.
 
@@ -8,16 +8,16 @@
 
 ```bash
 # npm
-npm create ulysses-workspace@latest
+npm create @ulysses/workspace@latest
 
 # yarn
-yarn create ulysses-workspace
+yarn create @ulysses/workspace
 
 # pnpm
-pnpm create ulysses-workspace
+pnpm create @ulysses/workspace
 
 # bun
-bun create ulysses-workspace
+bun create @ulysses/workspace
 ```
 
 Then:
@@ -65,9 +65,9 @@ A scaffolded workspace with:
 
 | Command | What it does |
 | --- | --- |
-| `npm create ulysses-workspace@latest` | Interactive scaffolder (recommended) |
-| `npx create-ulysses-workspace --init [dir]` | Non-interactive fresh install (pass dir directly) |
-| `npx create-ulysses-workspace --upgrade [dir]` | Apply template updates to an existing workspace |
+| `npm create @ulysses/workspace@latest` | Interactive scaffolder (recommended) |
+| `npx @ulysses/create-workspace --init [dir]` | Non-interactive fresh install (pass dir directly) |
+| `npx @ulysses/create-workspace --upgrade [dir]` | Apply template updates to an existing workspace |
 
 > **Why two forms?** `npm create <pkg>` resolves to `npx create-<pkg>`, but it consumes the `--init` flag for itself (npm's own subcommand alias). Use the bare `npm create` form for interactive scaffolding; use `npx` directly when you want to pass `--init <dir>` non-interactively.
 

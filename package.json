@@ -1,5 +1,5 @@
 {
-  "name": "create-ulysses-workspace",
+  "name": "@ulysses/create-workspace",
   "version": "0.12.0",
   "description": "A workspace convention for Claude Code: sessions, handoffs, and shared context as files in git",
   "keywords": [
@@ -26,7 +26,7 @@
     "node": ">=20.9.0"
   },
   "bin": {
-    "create-ulysses-workspace": "./bin/create.mjs"
+    "create-workspace": "./bin/create.mjs"
   },
   "files": [
     "bin/",
