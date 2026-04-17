@@ -1,6 +1,6 @@
 {
   "name": "create-ulysses-workspace",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Scaffold a convention-over-configuration workspace for Claude Code",
   "type": "module",
   "bin": {
