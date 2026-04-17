@@ -4,23 +4,10 @@
 # worktree, where project worktrees live as siblings.
 repos
 
-# Work sessions — the folder and worktrees are local, but the session tracker,
-# specs, and plans are tracked so durable thinking travels across machines.
-#
-# The pattern is intentionally subtle: git cannot re-include files beneath an
-# ignored parent directory, so naive `work-sessions/` + `!` negations silently
-# fail. Instead:
-#   - `work-sessions/**` ignores every descendant at every depth
-#   - `!work-sessions/*/` re-includes each session folder as a walkable dir
-#   - `!work-sessions/*/session.md` (and friends) re-includes the specific
-#     tracked files inside each session folder
-# Nested contents like `work-sessions/{name}/workspace/...` stay ignored
-# because they are matched by `**` and not re-included.
-work-sessions/**
-!work-sessions/*/
-!work-sessions/*/session.md
-!work-sessions/*/design-*.md
-!work-sessions/*/plan-*.md
+# Work sessions — the folder is local-only at the workspace root.
+# Session content (tracker, specs, plans) lives inside each session's
+# workspace worktree at the top of the session branch, not on main.
+work-sessions/
 
 # Disposable workspace-scoped scratchpad (session log, hook debug output)
 workspace-scratchpad/

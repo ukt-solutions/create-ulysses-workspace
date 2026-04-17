@@ -14,6 +14,7 @@ import {
   readSessionTracker,
   updateSessionTracker,
   sessionFilePath,
+  sessionWorktreePath,
   getWorkspacePaths,
 } from './_utils.mjs';
 
@@ -50,22 +51,25 @@ if (pointer && sessionId) {
 
     // Append a safety-net note to the session.md body so the next chat
     // can see that a previous chat ended without capturing explicitly.
+    // The tracker lives inside the session worktree on the session branch,
+    // so the auto-commit must run from inside the worktree.
     const trackerPath = sessionFilePath(mainRoot, pointer.name);
     if (existsSync(trackerPath)) {
       const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
       const safetyEntry = `\n### Session ended (${timestamp})\n\nReason: ${reason}. Chat session ${sessionId || 'unknown'}.\n`;
       appendFileSync(trackerPath, safetyEntry);
 
-      // Auto-commit so the safety capture survives even if the user doesn't
-      // explicitly handoff. Best-effort — non-fatal if the commit fails.
+      // Auto-commit from inside the worktree. Best-effort — non-fatal if
+      // the commit fails (hook blocked, nothing to commit, etc.).
       try {
-        const relPath = trackerPath.startsWith(mainRoot + '/')
-          ? trackerPath.slice(mainRoot.length + 1)
-          : trackerPath;
-        execSync(`git add "${relPath}"`, { cwd: mainRoot, stdio: 'pipe' });
-        execSync(`git commit -m "chore: session-end safety capture for ${pointer.name}"`, { cwd: mainRoot, stdio: 'pipe' });
+        const worktreeCwd = sessionWorktreePath(mainRoot, pointer.name);
+        execSync('git add session.md', { cwd: worktreeCwd, stdio: 'pipe' });
+        execSync(
+          `git commit -m "chore: session-end safety capture for ${pointer.name}"`,
+          { cwd: worktreeCwd, stdio: 'pipe' }
+        );
       } catch {
-        // Non-fatal — nothing changed, hook blocked, etc.
+        // Non-fatal
       }
     }
   }

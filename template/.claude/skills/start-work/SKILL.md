@@ -8,16 +8,19 @@ description: Begin or resume a work session. Creates a self-contained work-sessi
 Begin or resume a persistent work session. Each session lives in its own `work-sessions/{name}/` folder containing one workspace worktree, nested project worktrees, and a unified `session.md` tracker. Sessions can run in parallel from separate terminals.
 
 ## Parameters
-- `/start-work` (no param) — check for active sessions, then resume or start new
+- `/start-work` (no param) — list your active sessions, then resume or start new
 - `/start-work blank` — start new work from scratch
 - `/start-work handoff` — list shared context to resume from
+- `/start-work all` — list active sessions across all users (for shared debugging or multi-user workspaces)
 
 ## Flow: No Parameter
 
-1. Walk `work-sessions/` — each `work-sessions/{name}/session.md` is one session. Read frontmatter for status, description, branch, repos.
-2. If sessions exist with status `active` or `paused`, present them:
+1. Read the current user from `.claude/settings.local.json` → `workspace.user`. If unset, behave as `/start-work all` (no user filter). If the user invoked `/start-work all`, also skip filtering.
+2. Walk `work-sessions/` — each `work-sessions/{name}/workspace/session.md` is one session. Read frontmatter for `status`, `description`, `branch`, `repos`, and `user`.
+3. Filter to sessions whose `status` is `active` or `paused`. When a current user is known and the user did not pass `all`, additionally filter to sessions whose `user` field matches the current user (or is missing — unscoped legacy sessions stay visible to everyone).
+4. If matching sessions exist, present them:
    ```
-   Active work sessions:
+   Your active work sessions:
      1. migrate-tool (active, last chat ended 2h ago)
         "Rewriting the migration module"
         Branch: bugfix/migrate-rewrite | Repos: my-app
@@ -26,13 +29,13 @@ Begin or resume a persistent work session. Each session lives in its own `work-s
 
    Which one?
    ```
-3. User picks one → resume flow
-4. User picks "new" → blank flow
-5. If no sessions exist: proceed as `blank`
+5. User picks one → resume flow
+6. User picks "new" → blank flow
+7. If no matching sessions exist but other users have active/paused sessions, note it briefly before falling through to `blank`: "No active sessions for you. {N} session(s) belong to other users — run `/start-work all` to see them." If no sessions exist at all, proceed silently as `blank`.
 
 ## Flow: Resume
 
-1. Read the selected session tracker at `work-sessions/{name}/session.md`
+1. Read the selected session tracker at `work-sessions/{name}/workspace/session.md`
 2. Verify worktrees exist:
    - Workspace: `work-sessions/{name}/workspace/`
    - For each repo in `repos:` frontmatter: `work-sessions/{name}/workspace/repos/{repo}/`
@@ -109,7 +112,7 @@ The script creates:
 - Session folder at `work-sessions/{session-name}/`
 - Workspace worktree at `work-sessions/{session-name}/workspace/` with a real `repos/` directory inside
 - Project worktree per repo nested at `work-sessions/{session-name}/workspace/repos/{repo}/`
-- Unified session tracker at `work-sessions/{session-name}/session.md` (frontmatter + body)
+- Unified session tracker at `work-sessions/{session-name}/workspace/session.md` (frontmatter + body)
 - Active-session pointer at `work-sessions/{session-name}/workspace/.claude/.active-session.json`
 - Copies `settings.local.json` into the worktree if it exists at the workspace root
 
@@ -139,10 +142,11 @@ Check: has the current conversation included substantive discussion (design deci
 
 If yes:
 1. Summarize the prior discussion — key decisions, requirements established, approaches chosen/rejected, constraints identified
-2. Write the summary into `work-sessions/{session-name}/session.md`'s body, in a `## Pre-session context` or `## Progress` section
-3. Auto-commit:
+2. Write the summary into `work-sessions/{session-name}/workspace/session.md`'s body, in a `## Pre-session context` or `## Progress` section
+3. Auto-commit from inside the worktree so the capture lands on the session branch:
    ```bash
-   git add work-sessions/{session-name}/session.md
+   cd work-sessions/{session-name}/workspace
+   git add session.md
    git commit -m "chore: capture pre-session discussion for {session-name}"
    ```
 
@@ -193,6 +197,6 @@ When /start-work is called after work has already begun:
 - Each session lives in a single self-contained folder at `work-sessions/{name}/`
 - The workspace worktree contains a real `repos/` directory with nested project worktrees — no symlink
 - `session.md` is the single source of truth: frontmatter is machine state (status, branch, chatSessions), body is human content (decisions, progress)
-- Session trackers, specs, and plans inside `work-sessions/{name}/` are tracked in git (via the gitignored-folder-with-tracked-files pattern), so pushing the workspace branch carries durable session thinking across machines
+- Session trackers, specs, and plans live at the top of the session worktree and are tracked on the session branch. Pushing the branch carries durable session thinking across machines. `/complete-work` removes them from the branch before the final PR so main's top level stays free of session artifacts
 - Worktrees and local artifacts are gitignored — recreate them on first resume on each machine
 - Auto-committing session state is a workflow artifact — this intentionally bypasses normal commit conventions

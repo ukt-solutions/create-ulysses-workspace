@@ -17,12 +17,13 @@ Capture discussion reasoning, exploration results, and design rationale into sha
 
 When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
 
-- Default behavior: append reasoning and decisions to the session tracker body at `work-sessions/{session-name}/session.md`
+- Default behavior: append reasoning and decisions to the session tracker body at `work-sessions/{session-name}/workspace/session.md`
 - Add a new section to the tracker body (Context, Exploration, Decisions, Implications) — do NOT touch the frontmatter
-- Auto-commit from the workspace root:
+- Auto-commit from inside the worktree so the update lands on the session branch:
   ```bash
-  git -C {workspace-root} add work-sessions/{session-name}/session.md
-  git -C {workspace-root} commit -m "braindump: update {session-name} tracker"
+  cd work-sessions/{session-name}/workspace
+  git add session.md
+  git commit -m "braindump: update {session-name} tracker"
   ```
 
 When called from the workspace root (no active session):

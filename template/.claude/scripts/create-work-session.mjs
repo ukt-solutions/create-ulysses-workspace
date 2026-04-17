@@ -77,9 +77,11 @@ try {
   // hooks running inside the worktree know which session is in scope.
   writeActiveSessionPointer(wsWorktree, { name: sessionName, rootPath: root });
 
-  // Write the unified session.md tracker. Frontmatter holds machine state;
-  // body holds human content. Hooks and skills update the frontmatter via
-  // the session-frontmatter helper; humans update the body directly.
+  // Write the unified session.md tracker inside the worktree (at the top of
+  // the session branch) and commit it on the branch as the branch's first
+  // commit above main. Frontmatter holds machine state; body holds human
+  // content. Hooks and skills update the frontmatter via session-frontmatter
+  // helpers; humans update the body directly.
   const now = new Date().toISOString();
   const today = now.slice(0, 10);
   createSessionTracker(
@@ -100,6 +102,11 @@ try {
     },
     `\n# Work Session: ${sessionName}\n\n${description}\n\n## Progress\n\n(Updated as the session progresses)\n`
   );
+  execSync('git add session.md', { cwd: wsWorktree, stdio: 'pipe' });
+  execSync(`git commit -m "chore: initialize session tracker for ${sessionName}"`, {
+    cwd: wsWorktree,
+    stdio: 'pipe',
+  });
 
   // Paths for the success payload, relative to the workspace root
   const rel = (p) => p.startsWith(root + '/') ? p.slice(root.length + 1) : p;
