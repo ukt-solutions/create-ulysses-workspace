@@ -26,7 +26,7 @@ Show ALL candidates from all sources in a single coded table. The user should se
 | AM1  | feedback_no_injection_rev...  | Redundant — coherent-revisions rule     | Drop from memory  |
 | AM2  | project_create_claude_work... | Stale — references deleted spec         | Drop or update    |
 | AM3  | feedback_subagent_perms...    | Personal setup quirk                    | Keep as memory    |
-| LOC1 | local-only-naming-ideas.md    | Team should see naming options          | Promote to myron/ |
+| LOC1 | local-only-naming-ideas.md    | Team should see naming options          | Promote to alice/ |
 | LOC2 | local-only-release-checkli... | Personal task tracker                   | Keep local        |
 | LOR1 | local-only-dogfood-sync.md    | Dogfood-specific, not for template      | Keep local        |
 ```

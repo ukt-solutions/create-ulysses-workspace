@@ -17,7 +17,7 @@ When a workspace has an issue tracker configured, all work items — bugs, featu
   "workspace": {
     "tracker": {
       "type": "github-issues",
-      "repo": "ukt-solutions/ulysses-workspace"
+      "repo": "your-org/your-workspace"
     }
   }
 }

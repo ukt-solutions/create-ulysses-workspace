@@ -60,7 +60,7 @@ my-workspace/
 │       └── plan-auth.md        # Plan — tracked, consumed into release notes
 ├── shared-context/             # Team memory (tracked in git)
 │   ├── locked/                 # Team truths — always loaded
-│   ├── myron/                  # User-scoped context
+│   ├── alice/                  # User-scoped context
 │   └── milestones.md           # Team-visible ephemeral
 ├── workspace-scratchpad/       # Disposable files (gitignored)
 ├── .claude/                    # Configuration (tracked in git)

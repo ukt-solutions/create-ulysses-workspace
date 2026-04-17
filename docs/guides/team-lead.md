@@ -93,7 +93,7 @@ Keep these files concise. The target for all of `shared-context/locked/` is unde
 
 ## Step 4: Activate Optional Rules
 
-Review the rules in `.claude/rules/`. Five are active by default. Six are available but deactivated (`.skip` extension):
+Review the rules in `.claude/rules/`. Six are active by default. Eight are available but deactivated (`.skip` extension):
 
 ```bash
 ls .claude/rules/

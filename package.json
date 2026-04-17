@@ -1,8 +1,30 @@
 {
   "name": "create-ulysses-workspace",
-  "version": "0.11.0",
-  "description": "Scaffold a convention-over-configuration workspace for Claude Code",
+  "version": "0.12.0",
+  "description": "A workspace convention for Claude Code: sessions, handoffs, and shared context as files in git",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "workspace",
+    "scaffold",
+    "monorepo",
+    "agent",
+    "cli"
+  ],
+  "homepage": "https://github.com/ukt-solutions/create-ulysses-workspace#readme",
+  "bugs": {
+    "url": "https://github.com/ukt-solutions/create-ulysses-workspace/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ukt-solutions/create-ulysses-workspace.git"
+  },
+  "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "bin": {
     "create-ulysses-workspace": "./bin/create.mjs"
   },
@@ -11,9 +33,11 @@
     "lib/",
     "template/"
   ],
+  "scripts": {
+    "audit:tarball": "node scripts/audit-tarball.mjs",
+    "prepublishOnly": "npm run audit:tarball"
+  },
   "dependencies": {
     "prompts": "^2.4.2"
-  },
-  "keywords": ["claude", "claude-code", "workspace", "scaffolder"],
-  "license": "MIT"
+  }
 }
