@@ -14,7 +14,7 @@ Finalize the active work session. Handles all project repos (code changes, relea
 Read the active-session pointer from `.claude/.active-session.json` in the current worktree.
 If no active session: "No active work session. Nothing to complete."
 
-Read the full session tracker at `work-sessions/{session-name}/session.md` (use the frontmatter helper in `.claude/lib/session-frontmatter.mjs` — scripts and hooks use `_utils.mjs` which wraps it).
+Read the full session tracker at `work-sessions/{session-name}/workspace/session.md` (use the frontmatter helper in `.claude/lib/session-frontmatter.mjs` — scripts and hooks use `_utils.mjs` which wraps it).
 
 Determine paths:
 - Session folder: `work-sessions/{session-name}/`
@@ -42,11 +42,11 @@ If the user declines or there's nothing to capture, skip.
 
 Formally read ALL sources before synthesizing — do not write release notes from memory alone:
 
-1. **Session tracker** at `work-sessions/{session-name}/session.md` — read the full body (frontmatter is machine state, body is human content)
+1. **Session tracker** at `work-sessions/{session-name}/workspace/session.md` — read the full body (frontmatter is machine state, body is human content)
 
-2. **Session-scoped specs/plans** in the session folder:
-   - `work-sessions/{session-name}/design-*.md` files
-   - `work-sessions/{session-name}/plan-*.md` files
+2. **Session-scoped specs/plans** at the top of the session worktree:
+   - `work-sessions/{session-name}/workspace/design-*.md` files
+   - `work-sessions/{session-name}/workspace/plan-*.md` files
    - Read each one fully
 
 3. **Handoffs** — any shared-context entries referencing this branch:
@@ -113,6 +113,22 @@ If a repo has no commits beyond the base, skip release notes for it.
 The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 11. Before that happens, make sure everything worth preserving has landed in release notes.
 
 No separate "consume spec and plan" commit is needed for the project repos — specs and plans now live in the session folder, not in the project worktrees. The project worktrees only carry source code changes.
+
+### Step 6c: Remove session artifacts from the workspace branch
+
+Session content (tracker, specs, plans) lives at the top of the workspace worktree on the session branch. Its purpose was synthesis into release notes in Step 5 — that work is now done. Remove the files from the branch before the final push so main's top level stays free of session artifacts:
+
+```bash
+cd work-sessions/{session-name}/workspace
+git rm -f session.md 2>/dev/null || true
+git rm -f design-*.md 2>/dev/null || true
+git rm -f plan-*.md 2>/dev/null || true
+git commit -m "chore: remove session artifacts before PR" 2>/dev/null || true
+```
+
+The `|| true` guards keep this idempotent — if a file is already gone (e.g., a session without specs), the step is a no-op. The commit is skipped when there's nothing staged.
+
+This commit persists in the branch's history. On squash merge or rebase merge, branch history collapses to one clean commit on main with no session artifacts. On merge commits, branch history is reachable but the final tree on main shows no session content.
 
 ### Step 6b: Version bump (if applicable)
 
