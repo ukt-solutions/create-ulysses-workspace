@@ -120,6 +120,19 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     }
   }
 
+  async function ensureMilestone({ title, description = '', dueOn = null } = {}) {
+    if (!title) throw new Error('ensureMilestone: title is required');
+    const listStdout = gh(['api', `repos/${repo}/milestones?state=all&per_page=100`]);
+    const existing = JSON.parse(listStdout).find(m => m.title === title);
+    if (existing) return normalizeMilestone(existing);
+
+    const args = ['api', `repos/${repo}/milestones`, '-X', 'POST', '-f', `title=${title}`];
+    if (description) args.push('-f', `description=${description}`);
+    if (dueOn) args.push('-f', `due_on=${dueOn}`);
+    const created = JSON.parse(gh(args));
+    return normalizeMilestone(created);
+  }
+
   return {
     listAssignedToMe,
     listUnassigned,
@@ -129,7 +142,19 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     comment,
     closeIssue,
     ensureLabels,
+    ensureMilestone,
     get identity() { return `github-issues:${repo}`; },
+  };
+}
+
+function normalizeMilestone(raw) {
+  return {
+    number: raw.number,
+    title: raw.title,
+    description: raw.description || '',
+    state: raw.state, // 'open' | 'closed'
+    dueOn: raw.due_on || null,
+    url: raw.html_url,
   };
 }
 

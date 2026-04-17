@@ -76,11 +76,19 @@ For (4): exit — no changes.
    ```
    Creates the six standard labels: `bug`, `feat`, `chore`, `P1`, `P2`, `P3`.
 
-6. **Optional: create milestones.** Ask if the user wants a starter milestone list (e.g., `Backlog`, `v0.1 — Alpha`, `v1.0 — Launch`). If yes, for each one:
+6. **Optional: create milestones.** Ask if the user wants a starter milestone list (e.g., `Backlog`, `v0.1 — Alpha`, `v1.0 — Launch`). If yes, call the adapter for each — idempotent, so re-running setup won't duplicate:
    ```bash
-   gh api repos/{slug}/milestones -X POST -f title="Backlog" -f description="Triaged later"
+   node --input-type=module -e "
+     import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+     import { readFileSync } from 'node:fs';
+     const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+     const t = createTracker(ws.workspace.tracker);
+     await t.ensureMilestone({ title: 'Backlog', description: 'Triage later' });
+     await t.ensureMilestone({ title: 'v0.1 — Alpha' });
+     await t.ensureMilestone({ title: 'v1.0 — Launch' });
+   "
    ```
-   Skip if the user declines — milestones can be added anytime via the GitHub UI or `gh api`.
+   Skip if the user declines — milestones can be added anytime by calling `tracker.ensureMilestone(...)` or via the GitHub UI.
 
 7. **Verify:**
    ```bash

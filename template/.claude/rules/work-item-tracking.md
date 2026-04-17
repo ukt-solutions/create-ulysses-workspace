@@ -43,6 +43,10 @@ const issue = await tracker.claim('gh:42');           // throws AlreadyAssignedE
 const created = await tracker.createIssue({ title, body, labels: ['feat', 'P2'], milestone: 'Backlog' });
 await tracker.comment('gh:42', 'paused here; see branch X');
 await tracker.closeIssue('gh:42', { comment: 'shipped in PR #99' });
+
+// Setup-time: idempotent milestone / label creation
+await tracker.ensureLabels();                          // creates bug/feat/chore/P1/P2/P3 if absent
+await tracker.ensureMilestone({ title: 'Backlog', description: 'Triage later' });
 ```
 
 All skills that touch work items use this interface. Adapters are not called directly.

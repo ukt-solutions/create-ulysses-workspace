@@ -140,5 +140,51 @@ function buildSpawn(responses) {
   catch (e) { if (/gh is on fire/.test(e.message)) ok(); else fail(`wrong error: ${e.message}`); }
 }
 
+// ensureMilestone returns existing milestone without POST when title matches.
+{
+  const calls = [];
+  const spawnFn = (cmd, args) => {
+    calls.push(args.join(' '));
+    const key = args.join(' ');
+    if (key === 'api repos/foo/bar/milestones?state=all&per_page=100') {
+      return { status: 0, stdout: JSON.stringify([
+        { number: 1, title: 'Backlog', description: 'Triage later', state: 'open', due_on: null, html_url: 'https://github.com/foo/bar/milestone/1' },
+      ]), stderr: '' };
+    }
+    return { status: 1, stdout: '', stderr: `no mock: ${key}` };
+  };
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  const ms = await t.ensureMilestone({ title: 'Backlog' });
+  const posted = calls.some(c => c.includes('-X POST'));
+  if (ms.title === 'Backlog' && ms.number === 1 && !posted) ok();
+  else fail(`ensureMilestone should return existing without POST: posted=${posted}, ms=${JSON.stringify(ms)}`);
+}
+
+// ensureMilestone creates when title does not exist.
+{
+  const spawnFn = (cmd, args) => {
+    const key = args.join(' ');
+    if (key === 'api repos/foo/bar/milestones?state=all&per_page=100') {
+      return { status: 0, stdout: JSON.stringify([]), stderr: '' };
+    }
+    if (key.startsWith('api repos/foo/bar/milestones -X POST')) {
+      return { status: 0, stdout: JSON.stringify({ number: 2, title: 'v0.1', description: 'alpha', state: 'open', due_on: null, html_url: 'https://github.com/foo/bar/milestone/2' }), stderr: '' };
+    }
+    return { status: 1, stdout: '', stderr: `no mock: ${key}` };
+  };
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  const ms = await t.ensureMilestone({ title: 'v0.1', description: 'alpha' });
+  if (ms.title === 'v0.1' && ms.number === 2 && ms.description === 'alpha') ok();
+  else fail(`ensureMilestone should create when absent: ${JSON.stringify(ms)}`);
+}
+
+// ensureMilestone rejects missing title.
+{
+  const spawnFn = () => ({ status: 0, stdout: '[]', stderr: '' });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  try { await t.ensureMilestone({}); fail('should have thrown'); }
+  catch (e) { if (/title is required/.test(e.message)) ok(); else fail(`wrong error: ${e.message}`); }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
