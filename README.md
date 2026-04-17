@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ukt-solutions/create-workspace/main/docs/assets/logo.png" alt="Ulysses Workspace" width="220">
+  <img src="https://raw.githubusercontent.com/ukt-solutions/create-ulysses-workspace/main/docs/assets/logo.png" alt="Ulysses Workspace" width="220">
 </p>
 
 # @ulysses/create-workspace
@@ -79,25 +79,25 @@ A scaffolded workspace with:
 
 Start here:
 
-- **[Solo Developer Guide](https://github.com/ukt-solutions/create-workspace/blob/main/docs/guides/solo-developer.md)** — recommended starting point
-- **[Team Lead Guide](https://github.com/ukt-solutions/create-workspace/blob/main/docs/guides/team-lead.md)**
-- **[New Team Member Guide](https://github.com/ukt-solutions/create-workspace/blob/main/docs/guides/new-team-member.md)**
+- **[Solo Developer Guide](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/guides/solo-developer.md)** — recommended starting point
+- **[Team Lead Guide](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/guides/team-lead.md)**
+- **[New Team Member Guide](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/guides/new-team-member.md)**
 
-The eleven [chapters](https://github.com/ukt-solutions/create-workspace/blob/main/docs/) cover the model in depth — concepts, the toolkit, the release lifecycle, behavioral patterns:
+The eleven [chapters](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/) cover the model in depth — concepts, the toolkit, the release lifecycle, behavioral patterns:
 
 | Part | Chapter | Topic |
 |------|---------|-------|
-| Concepts | [01](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/01-what-is-a-workspace.md) | What Is a Workspace |
-| | [02](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/02-work-sessions.md) | Work Sessions |
-| | [03](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/03-shared-context.md) | Shared Context |
-| The Toolkit | [04](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/04-claude-md.md) | CLAUDE.md |
-| | [05](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/05-rules.md) | Rules |
-| | [06](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/06-skills.md) | Skills |
-| | [07](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/07-hooks-and-scripts.md) | Hooks and Scripts |
-| | [08](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/08-agents.md) | Agents |
-| Lifecycle | [09](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/09-the-release-cycle.md) | The Release Cycle |
-| | [10](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/10-installation-and-upgrades.md) | Installation and Upgrades |
-| Practice | [11](https://github.com/ukt-solutions/create-workspace/blob/main/docs/chapters/11-behavioral-patterns.md) | Behavioral Patterns |
+| Concepts | [01](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/01-what-is-a-workspace.md) | What Is a Workspace |
+| | [02](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/02-work-sessions.md) | Work Sessions |
+| | [03](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/03-shared-context.md) | Shared Context |
+| The Toolkit | [04](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/04-claude-md.md) | CLAUDE.md |
+| | [05](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/05-rules.md) | Rules |
+| | [06](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/06-skills.md) | Skills |
+| | [07](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/07-hooks-and-scripts.md) | Hooks and Scripts |
+| | [08](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/08-agents.md) | Agents |
+| Lifecycle | [09](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/09-the-release-cycle.md) | The Release Cycle |
+| | [10](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/10-installation-and-upgrades.md) | Installation and Upgrades |
+| Practice | [11](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/11-behavioral-patterns.md) | Behavioral Patterns |
 
 ## Status
 
