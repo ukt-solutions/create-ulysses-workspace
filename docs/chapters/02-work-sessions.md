@@ -75,7 +75,7 @@ user: alice
 repos:
   - my-app
   - my-api
-workItem: 3
+workItem: gh:42
 chatSessions:
   - id: aa3c952e-dbff-4055-8bcc-e5f217618d57
     names: []
@@ -92,7 +92,7 @@ updated: 2026-04-13
 Decisions made, work completed, blockers hit. Updated across chats.
 ```
 
-Machine state lives in the frontmatter: the current status (`active`, `paused`), the branch, the list of repos, the `workItem` link back to `open-work.md`, the chat sessions that have contributed to this work session. Hooks and scripts read and update these fields via a small parser at `.claude/lib/session-frontmatter.mjs` that rewrites only the fields that changed, leaving every other byte of the file untouched.
+Machine state lives in the frontmatter: the current status (`active`, `paused`), the branch, the list of repos, the `workItem` linkage to a configured tracker (an adapter-prefixed ID like `gh:42` for GitHub Issues), and the chat sessions that have contributed to this work session. Hooks and scripts read and update these fields via a small parser at `.claude/lib/session-frontmatter.mjs` that rewrites only the fields that changed, leaving every other byte of the file untouched.
 
 Human content lives in the body: decisions, progress, next steps, captured reasoning from `/handoff` and `/braindump`. This is what `/complete-work` synthesizes into release notes at the end of the session.
 
