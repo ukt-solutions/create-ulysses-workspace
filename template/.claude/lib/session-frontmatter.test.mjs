@@ -36,7 +36,7 @@ description: Fix the auth timeout on mobile
 status: active
 branch: bugfix/fix-auth
 created: 2026-04-13T05:33:50.000Z
-user: myron
+user: alice
 repos:
   - my-app
   - my-api
@@ -50,7 +50,7 @@ chatSessions:
     names: []
     started: 2026-04-13T08:00:00.000Z
     ended: null
-author: myron
+author: alice
 updated: 2026-04-13
 ---
 
@@ -149,7 +149,7 @@ console.log('Test 6: remove a field');
   const updated = updateSessionContent(SAMPLE, { workItem: undefined });
   const parsed = parseSessionContent(updated);
   assertEq(parsed.fields.workItem, undefined, 'workItem removed');
-  assertEq(parsed.fields.user, 'myron', 'user preserved');
+  assertEq(parsed.fields.user, 'alice', 'user preserved');
 }
 
 // === Test 7: update repos (flat list) ===

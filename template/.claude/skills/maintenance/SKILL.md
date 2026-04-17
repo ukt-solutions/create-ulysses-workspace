@@ -75,13 +75,13 @@ Active recommendations. Flags problems and suggests fixes, but asks before actin
 /maintenance results:
 
 Issues (3):
-  ✗ shared-context/myron/old-handoff.md references branch feature/old
+  ✗ shared-context/alice/old-handoff.md references branch feature/old
     but that branch was deleted
   ✗ 2 inflight files exist but no active work session (orphaned?)
   ✗ Locked context is 12.3KB (target: <10KB)
 
 Warnings (2):
-  ⚠ shared-context/myron/workspace-analytics.md not updated in 8 days
+  ⚠ shared-context/alice/workspace-analytics.md not updated in 8 days
   ⚠ Worktree work-sessions/old-feature/workspace has no commits in 5 days
 
 Cleanup suggestions (2):
