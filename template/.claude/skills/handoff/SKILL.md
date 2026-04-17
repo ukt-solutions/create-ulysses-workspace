@@ -15,14 +15,15 @@ Save structured workstream state to shared context. Usable anytime, any number o
 
 When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
 
-- Default behavior: update the session tracker body at `work-sessions/{session-name}/session.md`
+- Default behavior: update the session tracker body at `work-sessions/{session-name}/workspace/session.md`
 - Rewrite the tracker's `## Progress` section with current state (coherent-revisions rule)
 - Do NOT touch the frontmatter — it's machine state managed by hooks and scripts
 - Skip the naming and scoping questions — the tracker is already scoped to this session
-- Auto-commit the update from the workspace root (the session tracker lives at the workspace-root level, not inside the worktree):
+- Auto-commit from inside the worktree so the update lands on the session branch:
   ```bash
-  git -C {workspace-root} add work-sessions/{session-name}/session.md
-  git -C {workspace-root} commit -m "handoff: update {session-name} tracker"
+  cd work-sessions/{session-name}/workspace
+  git add session.md
+  git commit -m "handoff: update {session-name} tracker"
   ```
 
 When called from the workspace root (no active session):

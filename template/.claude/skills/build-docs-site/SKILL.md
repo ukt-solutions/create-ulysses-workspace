@@ -99,7 +99,7 @@ For shared context:
 - Walk `shared-context/` for handoffs, braindumps, locked team knowledge, release notes
 
 For work-session history:
-- Walk `work-sessions/*/session.md` for any currently-active session trackers — their bodies may contain decisions not yet consumed into release notes
+- Walk `work-sessions/*/workspace/session.md` for any currently-active session trackers — their bodies may contain decisions not yet consumed into release notes
 - Check git history for previously-completed session trackers that were synthesized into release notes by `/complete-work`
 
 For existing project documentation (from Phase 1 Q2):

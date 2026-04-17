@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 import {
   getWorkspaceRoot,
+  getMainRoot,
   readJSON,
   readSessionTracker,
   updateSessionTracker,
@@ -27,7 +28,10 @@ if (!sessionName || !repo) {
   process.exit(1);
 }
 
-const root = getWorkspaceRoot(import.meta.url);
+// Promote to the launcher root via the active-session pointer so session
+// paths resolve correctly whether the script is invoked from the launcher
+// or from inside a worktree.
+const root = getMainRoot(getWorkspaceRoot(import.meta.url));
 const config = readJSON(join(root, 'workspace.json'));
 const tracker = readSessionTracker(root, sessionName);
 

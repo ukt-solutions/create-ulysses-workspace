@@ -232,7 +232,7 @@ ls work-sessions/ 2>/dev/null
 For each active worktree or session folder found:
 1. Determine the session name from the branch name or directory name
 2. Ask: "Found worktree for branch `{branch}` at `{path}`. Formalize as work session '{suggested-name}'? [Y/n]"
-3. If confirmed, invoke `node .claude/scripts/create-work-session.mjs --session-name {name} --branch {branch} --repo {repo} --user {user}` to set up the standard layout. For existing worktrees that are already on the right branch, the script will refuse — in that case, move the worktree manually under `work-sessions/{name}/workspace/repos/{repo}/` using `git -C repos/{repo} worktree move`, then write the `work-sessions/{name}/session.md` tracker by hand with the helper.
+3. If confirmed, invoke `node .claude/scripts/create-work-session.mjs --session-name {name} --branch {branch} --repo {repo} --user {user}` to set up the standard layout. For existing worktrees that are already on the right branch, the script will refuse — in that case, move the worktree manually under `work-sessions/{name}/workspace/repos/{repo}/` using `git -C repos/{repo} worktree move`, then write the `work-sessions/{name}/workspace/session.md` tracker by hand with the helper (from inside the worktree so the initial commit lands on the session branch).
 4. **Search Claude chat history for sessions that touched this branch** — scan conversation logs for commits or file edits on this branch, and synthesize what was being worked on into the session.md body
 5. Ask the user to describe the current state and next steps, add to the tracker body
 

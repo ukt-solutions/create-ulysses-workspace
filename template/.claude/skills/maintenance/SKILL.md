@@ -23,7 +23,7 @@ Scan all shared-context files against each other:
 - **Contradictions** — file A says "user-scoped is default" but file B says "root is default"
 
 ### 2. Frontmatter integrity
-For each shared-context `.md` file and each `work-sessions/*/session.md`:
+For each shared-context `.md` file and each `work-sessions/*/workspace/session.md`:
 - Valid frontmatter? (state, lifecycle, type, topic, author, updated; plus name/status/branch/repos for session trackers)
 - `branch` field references a branch that still exists?
 - `repo`/`repos` field references repos that exist in workspace.json?

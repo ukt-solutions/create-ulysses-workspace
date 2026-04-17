@@ -155,6 +155,39 @@ The `/workspace-update` skill applies the staged changes interactively:
 
 The two-stage approach (CLI stages, skill applies) means upgrades are never automatic or silent. You see every change before it takes effect.
 
+## Upgrading to v0.10.0 (in-worktree session layout)
+
+v0.10.0 moves session content — the tracker, specs, and plans — inside the workspace worktree. The files now live at the top of each session branch as `session.md`, `design-*.md`, and `plan-*.md`, alongside `CLAUDE.md`. They travel with the branch via `git push` and get removed by `/complete-work` before the final PR so main stays free of session artifacts. The `work-sessions/` folder itself is fully gitignored at the workspace root in v0.10.0 — no more exception pattern for tracked session files.
+
+The upgrade is automated end-to-end via `/workspace-update`. The migrator `migrate-session-layout.mjs` ships in the v0.10.0 payload. `/workspace-update` invokes it between the pre- and post-update maintenance passes.
+
+### What the migrator does
+
+For each active session's workspace worktree, the migrator:
+1. Copies the launcher-side `session.md` into the worktree as a top-level `session.md`, and does the same for any `design-*.md` and `plan-*.md` files.
+2. `git rm`'s every cross-session tracker ghost that the session branch inherited from main (v0.8.0 branches commonly carried other sessions' `work-sessions/*/session.md` paths in their tree).
+3. Commits `chore: migrate session content into worktree` on the session branch.
+
+For the launcher on main, the migrator collapses the `.gitignore` "Work sessions" block to a single `work-sessions/` line, runs `git rm --cached` on every launcher-tracked `work-sessions/*/session.md|design-*|plan-*`, bumps `workspace.json`'s `templateVersion` to `0.10.0`, and commits on main.
+
+The migrator is idempotent — running it again on an already-migrated session or workspace is a no-op.
+
+### Manual invocation
+
+If you want to run the migrator directly instead of through `/workspace-update`:
+
+```bash
+# Migrate every active session at once:
+node .claude/scripts/migrate-session-layout.mjs --all
+
+# Migrate the launcher side (gitignore, rm --cached, version bump):
+node .claude/scripts/migrate-session-layout.mjs --main
+```
+
+Running both in order gets you to v0.10.0 layout. The order matters — session branches are migrated first (so their content moves to the top of each worktree and ghost paths are removed), then the launcher commit cleans up main.
+
+After the upgrade, each active session branch needs a one-time `git rebase main` to pick up the new tooling. The rebase should be conflict-free in principle because both sides deleted the same tracker paths.
+
 ## Upgrading to v0.8.0 (one-time manual procedure)
 
 v0.8.0 restructures the on-disk layout so each work session lives in a single self-contained folder at `work-sessions/{name}/`. This replaces the scattered old layout where session state was spread across `repos/{name}___wt-*/`, `.claude-scratchpad/.work-session-*.json`, and `shared-context/{user}/inflight/`. It also eliminates the `repos/` symlink that caused the v0.5.1 destructive gitignore bug.
