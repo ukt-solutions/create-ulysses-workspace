@@ -304,23 +304,31 @@ For repos with no remote at all (user chose "keep local"): skip push entirely. T
 cd repos/{repo} && git merge --ff-only {branch}
 ```
 
-### Step 10: Update open-work.md and sync tracker
+### Step 10: Close the linked issue on the tracker
 
-If the session tracker has a `workItem:` field, update the corresponding item in `shared-context/open-work.md`:
-- Set status to `done`
-- Auto-commit:
-  ```bash
-  cd {main-workspace-root}
-  git add shared-context/open-work.md
-  git commit -m "chore: mark work item #{id} as done"
-  git push origin main
-  ```
+If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, close the linked issue via the adapter after all PRs have merged:
 
-If `workspace.json` has a `tracker.sync` script configured, run it to sync the updated open-work.md to the external tracker:
-```bash
-node {tracker.sync}
+```javascript
+import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+import { readFileSync } from 'node:fs';
+const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+if (ws.workspace?.tracker) {
+  const tracker = createTracker(ws.workspace.tracker);
+  const comment = [
+    `**Completed by @${currentUser}**`,
+    '',
+    'Merged PRs:',
+    ...mergedPrs.map(p => `- ${p.repo}: ${p.url}`),
+    '',
+    releaseSummary, // 1-3 sentence synthesis of what shipped, drawn from release notes
+  ].join('\n');
+  await tracker.closeIssue(workItem, { comment });
+}
 ```
-Report the result. If the script fails, report the error but don't block cleanup.
+
+If `workItem:` is unset, skip the close — this was a blank session.
+
+If the close call fails (tracker unreachable, auth expired), report the error in the unified summary but do not block Step 11 cleanup. The issue can be closed manually via the GitHub UI; no data is at risk.
 
 ### Step 11: Cleanup
 

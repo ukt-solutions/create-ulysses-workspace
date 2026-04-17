@@ -88,14 +88,13 @@ Step 8: Scan Claude chat history
 Step 9: Preserve local preferences from CLAUDE.md.bak
 Step 10: Create locked team knowledge
 Step 11: Formalize existing worktrees as work sessions
-Step 12: Populate open-work.md from discovered items
-Step 13: Set up issue tracker sync
-Step 14: Configure user identity
-Step 15: Clean root directory
-Step 16: Clean up payload and pre-migration artifacts
-Step 17: Verify — self-contradiction check
-Step 18: Set up workspace remote
-Step 19: Mark initialized, report
+Step 12: Set up issue tracker
+Step 13: Configure user identity
+Step 14: Clean root directory
+Step 15: Clean up payload and pre-migration artifacts
+Step 16: Verify — self-contradiction check
+Step 17: Set up workspace remote
+Step 18: Mark initialized, report
 
 Adjust this plan, reorder, skip steps, or add things?"
 ```
@@ -104,7 +103,7 @@ Adapt the plan to what was actually found. Only include relevant steps. Wait for
 
 ### Step 5: Install template components from payload
 
-Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 19 after the payload is deleted.
+Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 18 after the payload is deleted.
 
 Install components from `.workspace-update/.claude/` to `.claude/`. For each component directory — skills, hooks, agents, rules, scripts:
 
@@ -240,47 +239,23 @@ For each active worktree or session folder found:
 
 **Commit:** `git commit -m "feat: formalize existing worktrees as work sessions"`
 
-### Step 12: Populate open-work.md
+### Step 12: Set up issue tracker
 
-Create `shared-context/open-work.md` with one table per repo from workspace.json. Populate it from all sources discovered during init:
+Ask: "Want to link this workspace to an issue tracker? This enables atomic assignment for `/start-work` and real-time status across the team. (GitHub Issues recommended if your workspace repo is on GitHub.)"
 
-1. **From braindumps and handoffs** (Steps 7-9): scan extracted content for action items, bugs, feature requests, TODOs. Each becomes a work item.
-2. **From formalized worktrees** (Step 11): each in-progress session becomes a work item with status `in-progress` and its branch populated.
-3. **From Claude chat history** (Step 8): unresolved questions, noted bugs, planned features mentioned in conversations.
-4. **From the user**: "Any other work items to add? Bugs you know about, features planned?"
+- **Yes:** invoke `/setup-tracker` — it handles the full flow (pick backend, configure `workspace.json`, initialize labels, create milestones).
+- **No:** skip. Tracking stays disabled; `/start-work` falls back to describe-the-work mode.
 
-Present the populated table for review before committing. Let the user adjust priorities, remove items, or add more.
+The user can run `/setup-tracker` anytime later. This step replaces the old "Populate open-work.md" step — there is no longer a local tracker file. Work items live in the configured tracker from day one.
 
-```markdown
----
-state: ephemeral
-lifecycle: active
-type: reference
-topic: open-work
-updated: {today}
----
+If you discovered candidate work items during earlier steps (bugs in braindumps, TODOs in chat history, in-progress worktrees from Step 11), surface them now as a list:
 
-# Open Work
+"Found {N} candidate work items during init. Once a tracker is configured, create issues for them via `/start-work` → 'Something new'? The list:
+  - ..."
 
-## {repo-name}
+Do NOT batch-create issues automatically — the user should review and prune the list.
 
-| # | Type | Pri | Status | Branch | Title | Context |
-|---|------|-----|--------|--------|-------|---------|
-```
-
-**Commit:** `git commit -m "feat: populate open-work.md from discovered items"`
-
-### Step 13: Set up issue tracker sync
-
-Ask: "Do you use an issue tracker for this project? (GitHub Issues, Linear, Jira, Notion, or none)"
-
-**If none:** Skip. open-work.md is the only tracker.
-
-**If yes:** Run `/setup-tracker` — it handles the full tracker configuration flow (identify system, research integration, set up access, build sync script, configure workspace.json, test). That skill can also be run standalone anytime after init.
-
-If the tracker setup is complex or requires access the user doesn't have right now, note it as a follow-up item in open-work.md itself and move on — the user can run `/setup-tracker` later.
-
-### Step 14: Configure user identity
+### Step 13: Configure user identity
 
 Ask: "What name should be used for your user-scoped context? [{system-username}]"
 Save to `.claude/settings.local.json`:
@@ -292,7 +267,7 @@ Save to `.claude/settings.local.json`:
 }
 ```
 
-### Step 15: Clean root directory
+### Step 14: Clean root directory
 
 The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (`.claude/`, `shared-context/`). The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created the first time something writes to them — they won't exist yet unless a repo has already been cloned.
 
@@ -310,7 +285,7 @@ Report: "Moved {N} items to workspace-scratchpad/unmigrated/: {list}."
 
 **Commit:** `git commit -m "chore: clean root — move non-template items to unmigrated"`
 
-### Step 16: Clean up payload and pre-migration artifacts
+### Step 15: Clean up payload and pre-migration artifacts
 
 - **Delete `.workspace-update/` directory entirely**
 - **Remove any `@.workspace-update/` lines from CLAUDE.md**
@@ -320,7 +295,7 @@ Report: "Moved {N} items to workspace-scratchpad/unmigrated/: {list}."
 
 **Commit:** `git commit -m "chore: clean up payload and pre-migration artifacts"`
 
-### Step 17: Verify — self-contradiction check
+### Step 16: Verify — self-contradiction check
 
 Read EVERY created and activated file:
 - Every `.claude/rules/*.md` (not .skip)
@@ -338,7 +313,7 @@ Fix ALL issues found. This step must not be rushed.
 
 **Commit:** `git commit -m "fix: resolve self-contradictions from init"`
 
-### Step 18: Set up workspace remote
+### Step 17: Set up workspace remote
 
 Check if the workspace git repo already has a remote:
 ```bash
@@ -369,7 +344,7 @@ git remote -v
 - Create via `gh repo create {org}/{name} --private` and add as remote
 - Do NOT push yet — user merges the branch first
 
-### Step 19: Mark initialized and report
+### Step 18: Mark initialized and report
 
 Update workspace.json:
 - Set `initialized: true`
@@ -427,11 +402,11 @@ This session is done. Start a fresh Claude Code session and run /start-work to b
 - Execute confidently. Report after each major step completes.
 - Commit after each major step — granular history on the branch.
 - Ask the user only for decisions that require judgment.
-- **Capture the `templateVersion` from `.manifest.json` early** (Step 5) before the payload is deleted in Step 16.
+- **Capture the `templateVersion` from `.manifest.json` early** (Step 5) before the payload is deleted in Step 15.
 - **Root directory cleanliness is non-negotiable.** Non-template items go to unmigrated.
 - **Every expected behavior that fails must be reported.**
 - **Don't suggest starting work at the end.** Tell the user to restart Claude Code and run /start-work in a fresh session.
-- The verification step (Step 17) is mandatory — read every file, check thoroughly.
+- The verification step (Step 16) is mandatory — read every file, check thoroughly.
 - **Build manifests before long operations.** Chat history scanning (Step 8) and worktree formalization (Step 11) can be interrupted by auto-compaction. Write a manifest to `workspace-scratchpad/` before starting so progress survives.
 - **Never re-fetch content that already exists.** Always check shared-context and rules for existing extractions before accessing external sources.
 - This skill is idempotent — safe to run if interrupted and restarted.
