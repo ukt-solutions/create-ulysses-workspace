@@ -20,11 +20,13 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - `/start-work [handoff|blank]` — begin a work session
 - `/handoff [name]` — save workstream state
 - `/braindump [name]` — capture discussion/reasoning
+- `/aside [--quick] <thought>` — capture a drive-by idea without interrupting current work
 - `/pause-work` — suspend work, push, draft PR
 - `/complete-work` — finalize branch, release notes, real PR
 - `/promote` — move personal memory to shared context
 - `/release [version]` — combine unreleased notes into versioned doc
 - `/sync-work` — push branches without ceremony
 - `/workspace-update` — apply template updates (runs maintenance before/after)
-- `/setup-tracker` — configure issue tracker sync for open-work.md
+- `/setup-tracker` — wire this workspace to an issue tracker (GitHub Issues shipped; others pluggable)
 - `/maintenance [audit|cleanup]` — workspace health checks and cleanup
+- `/build-docs-site` — build a comprehensive Docusaurus documentation site for a project

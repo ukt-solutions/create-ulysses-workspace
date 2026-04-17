@@ -28,7 +28,7 @@ This is how `/start-work` knows about existing sessions — the hook has already
 
 **Fires:** When a Claude Code conversation ends.
 
-**Does:** Records the chat session's end timestamp in the active session marker. This timestamp is used by history reconstruction — when you resume a session, the system checks whether work was captured between the previous chat's end and the tracker's last update.
+**Does:** Records the chat session's end timestamp in the active session tracker. This timestamp is used by history reconstruction — when you resume a session, the system checks whether work was captured between the previous chat's end and the tracker's last update.
 
 ### pre-compact
 
@@ -89,13 +89,13 @@ node .claude/scripts/create-work-session.mjs \
   --session-name "fix-auth" \
   --branch "bugfix/fix-auth" \
   --repo "my-app,my-api" \
-  --user "myron" \
+  --user "alice" \
   --description "Fix authentication timeout"
 ```
 
 ### cleanup-work-session.mjs
 
-Removes everything a work session created: workspace worktree, all project worktrees, local branches in all repos, workspace branch, and session marker.
+Removes everything a work session created: workspace worktree, all project worktrees, local branches in all repos, workspace branch, and the session folder.
 
 ```bash
 node .claude/scripts/cleanup-work-session.mjs \

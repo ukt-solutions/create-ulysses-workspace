@@ -20,7 +20,7 @@ state: ephemeral
 lifecycle: active
 type: braindump
 topic: auth-redesign
-author: myron
+author: alice
 updated: 2026-04-05
 ---
 ```
@@ -114,6 +114,19 @@ The principle is one topic per file. A handoff about authentication and a braind
 
 If you cannot name a file cleanly, you are probably conflating topics. The name forces clarity.
 
+## When You Don't Want Preservation
+
+Not every file should be tracked. Sometimes you genuinely want disposable scratch space — output you will read once and discard, debug logs from a one-off troubleshoot, intermediate analysis you do not want cluttering git history.
+
+`workspace-scratchpad/` is the answer. It is gitignored, lazy-created, and lives at the workspace root. Hooks write debug output here. Skills drop intermediate state here. You can drop comparison files, scratch notes, or experimental snippets here when you do not need them to survive a workstation switch.
+
+The split is simple:
+
+- **Should it survive a workstation switch?** → `shared-context/` (tracked in git)
+- **Will I read it once and discard?** → `workspace-scratchpad/` (gitignored)
+
+Pre-branch specs and plans go in `shared-context/`, not scratchpad — they are early-stage thinking that you want preserved across machines and visible to teammates. Once a work session starts, they move to the workspace worktree at `work-sessions/{name}/workspace/design-*.md` and `plan-*.md`, where they travel with the session branch.
+
 ---
 
 ## Key Takeaways
@@ -123,3 +136,4 @@ If you cannot name a file cleanly, you are probably conflating topics. The name 
 - `/handoff`, `/braindump`, and `/aside` are the capture skills that feed shared context.
 - Content flows upward via `/promote` and `/release` — ephemeral knowledge gets distilled into team truths.
 - Locked means positioned for attention, not permanent. Use `local-only-` files in locked for temporary front-of-mind content.
+- For things you genuinely do not want preserved, use `workspace-scratchpad/` instead — gitignored and lazy-created.
