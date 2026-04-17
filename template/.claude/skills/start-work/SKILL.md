@@ -71,30 +71,73 @@ If no gap is found, skip silently.
 
 ## Flow: Blank (new session)
 
-1. Check if `shared-context/open-work.md` exists and has open items. If so, present them grouped by milestone (highest priority first within each group):
+1. **Check for a configured tracker.** Read `workspace.tracker` from `workspace.json`.
+
+2. **If no tracker is configured:** Ask: "No tracker configured. Want to run `/setup-tracker` first, or start a blank session (no issue linkage)?" If setup-tracker: invoke that skill, then re-enter this flow. If blank: proceed to the description-only path (step 6 below) with no `workItem:` linkage.
+
+3. **Fetch the candidate list via the adapter.** Build the adapter and pull two lists — issues assigned to the current user first, falling back to all unassigned issues if the assigned list is empty:
+   ```javascript
+   import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+   import { readFileSync } from 'node:fs';
+   const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+   const tracker = createTracker(ws.workspace.tracker);
+   const assigned = await tracker.listAssignedToMe();
+   const candidates = assigned.length > 0 ? assigned : await tracker.listUnassigned();
+   const fallbackNote = assigned.length === 0 ? '(fallback — no issues assigned to you; showing unassigned)' : '';
    ```
-   Open work items:
 
-   v0.1 — Alpha:
-     1. [P1 bug] Auth timeout on mobile (#3)
-     2. [P1 feat] JWT refresh logic (#8)
-
-   v0.2 — Beta:
-     3. [P2 feat] Full-text search (#5)
-
+4. **Present the list.** Group by milestone when the adapter provides one; sort by priority label (P1 before P2 before P3) within each group:
+   ```
+   {fallbackNote}
    Backlog:
-     4. [P3 chore] Remove deprecated endpoints (#7)
+     1. [P1 bug] Auth timeout on mobile (gh:3)
+     2. [P1 feat] JWT refresh logic (gh:8)
 
-     [N] Something not on this list
+   v0.1:
+     3. [P2 feat] Full-text search (gh:5)
+
+     [N] Something new
 
    Which one, or describe something new?
    ```
-2. If user picks an existing item: use its title, type, milestone, and repo. Generate session name from the title.
-3. If user describes something new: ask milestone (default to the workspace's `defaultMilestone`) and add it to `open-work.md` as a new item with the next available ID.
-4. Determine type: feature, bugfix, or chore (from the work item or user description)
-5. Ask which repo(s) — present numbered list from workspace.json, allow selecting multiple (e.g., "1,3" or "all"). Pre-select the repo from the work item if it's from a specific table.
-6. Propose branch: "How about `{prefix}/{session-name}`?"
-7. Wait for confirmation
+   Accept a number or "N".
+
+5. **User picked an existing issue.**
+   - If it came from the unassigned fallback list, atomically claim it:
+     ```javascript
+     try {
+       await tracker.claim(issue.id);
+     } catch (e) {
+       if (e.code === 'ALREADY_ASSIGNED') {
+         console.log(`${issue.id} was just claimed by ${e.assignees.join(', ')}. Refreshing list.`);
+         // Re-enter step 3 — someone else grabbed the ticket between fetch and claim.
+         return restart();
+       }
+       throw e;
+     }
+     ```
+   - If it came from the assigned-to-me list, skip the claim call (already mine).
+   - Generate the session name from the issue title (kebab-case slug, max ~40 chars).
+   - Remember `workItem: {issue.id}` for the session tracker.
+
+6. **User picked "Something new" (or fell through from step 2 with no tracker).**
+   - Ask for a description, type (`bug` / `feat` / `chore`), priority (`P1` / `P2` / `P3`), optional milestone.
+   - If a tracker is configured, create the issue and self-assign:
+     ```javascript
+     const newIssue = await tracker.createIssue({
+       title: description,
+       body: `Created at /start-work by ${user}.`,
+       labels: [type, priority],
+       milestone: milestone || null,
+     });
+     await tracker.claim(newIssue.id);
+     ```
+     Remember `workItem: {newIssue.id}` for the session tracker.
+   - If no tracker: proceed without a `workItem:` linkage — the session is a pure blank.
+
+7. **Pick repo(s)** — present numbered list from workspace.json, allow multi-select (e.g., `1,3` or `all`).
+
+8. **Propose branch:** `{prefix}/{session-name}` where prefix comes from type (`feature/` for feat, `bugfix/` for bug, `chore/` for chore). Wait for confirmation.
 
 ### Create work session
 
@@ -116,23 +159,11 @@ The script creates:
 - Active-session pointer at `work-sessions/{session-name}/workspace/.claude/.active-session.json`
 - Copies `settings.local.json` into the worktree if it exists at the workspace root
 
+If a `workItem:` was set in step 5 or 6, write it into the tracker's frontmatter via the session-frontmatter helper after creation. This is what `/pause-work` and `/complete-work` use to locate the linked issue.
+
 Register this chat in the tracker's `chatSessions` frontmatter. For new sessions, the session-start hook has already fired (before /start-work was invoked) but the session folder didn't exist yet. Find the current chat's UUID from the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/` and add the entry manually via the session-frontmatter helper. Subsequent chats on this session will be registered automatically by the hook.
 
-### Update open-work.md
-
-Update the work item's status to `in-progress` and populate its Branch field with the session branch. The table uses the 8-column milestone-aware format:
-```markdown
-| 3 | bug | P1 | v0.1 | in-progress | bugfix/fix-auth | Auth timeout on mobile |
-```
-If the session tracker has a `workItem:` field (set during the blank flow), use that to find the row. Auto-commit:
-```bash
-git add shared-context/open-work.md
-git commit -m "chore: mark work item #{id} as in-progress"
-```
-
-Also record the `workItem:` in the session.md frontmatter so `/complete-work` and `/pause-work` know which item to update.
-
-If `workspace.tracker.sync` is configured, optionally run the sync script to push the status change to the external tracker (ask the user first — they may prefer to batch sync at /complete-work time).
+The tracker already reflects the correct state — assignment happened in step 5 or 6 via `adapter.claim()`. Do not write to any local file mirror. There is no `open-work.md`.
 
 ### Capture prior conversation context
 
@@ -196,7 +227,8 @@ When /start-work is called after work has already begun:
 - All repos (workspace + project repos) get the same branch name for traceability
 - Each session lives in a single self-contained folder at `work-sessions/{name}/`
 - The workspace worktree contains a real `repos/` directory with nested project worktrees — no symlink
-- `session.md` is the single source of truth: frontmatter is machine state (status, branch, chatSessions), body is human content (decisions, progress)
+- `session.md` is the single source of truth for session state: frontmatter is machine state (status, branch, chatSessions, workItem), body is human content (decisions, progress)
+- The `workItem:` field in session frontmatter holds the adapter-prefixed issue ID (e.g., `gh:42`) — the tracker itself is authoritative for status, assignment, and labels
 - Session trackers, specs, and plans live at the top of the session worktree and are tracked on the session branch. Pushing the branch carries durable session thinking across machines. `/complete-work` removes them from the branch before the final PR so main's top level stays free of session artifacts
 - Worktrees and local artifacts are gitignored — recreate them on first resume on each machine
 - Auto-committing session state is a workflow artifact — this intentionally bypasses normal commit conventions

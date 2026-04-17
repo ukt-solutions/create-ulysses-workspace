@@ -26,12 +26,33 @@ Rewrite the `## Progress` section of `work-sessions/{session-name}/workspace/ses
 
 This is a coherent rewrite of the Progress section, not an append (coherent-revisions rule). Leave the frontmatter alone — the session-end hook will mark this chat's `ended` timestamp automatically when the chat closes.
 
-### Step 3: Update frontmatter status and open-work.md
+### Step 3: Update frontmatter status and post pause comment on tracker
 
 Use the session-frontmatter helper to set `status: paused` in the tracker's frontmatter.
 
-If the tracker has a `workItem:` field, update the corresponding item in `shared-context/open-work.md`:
-- Set status to `paused`
+If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, post a pause comment on the linked issue via the adapter:
+
+```javascript
+import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+import { readFileSync } from 'node:fs';
+const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+if (ws.workspace?.tracker) {
+  const tracker = createTracker(ws.workspace.tracker);
+  const progressBody = /* the ## Progress section of session.md, as written in Step 2 */;
+  const body = [
+    `**Session paused by @${currentUser}** (${branch})`,
+    '',
+    progressBody,
+    '',
+    `Resume with \`/start-work\` from any worktree on \`${branch}\`.`,
+  ].join('\n');
+  await tracker.comment(workItem, body);
+}
+```
+
+If `workItem:` is unset, skip the comment — this is a blank session with no tracker linkage.
+
+If the comment fails (tracker unreachable, auth expired), report the error but do not block the pause. The pause state lives locally in the session tracker regardless.
 
 ### Step 4: Commit and push workspace
 
