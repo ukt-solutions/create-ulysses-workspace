@@ -1,3 +1,4 @@
+import '../lib/require-node.mjs';
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync, statSync, rmSync } from 'fs';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';

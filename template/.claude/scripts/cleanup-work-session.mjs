@@ -11,6 +11,7 @@
 // Workspace-first removal silently deletes the nested project worktrees'
 // .git files and leaves orphan worktree records in the project repos.
 // The safe order keeps both sides of the relationship in sync.
+import '../lib/require-node.mjs';
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
