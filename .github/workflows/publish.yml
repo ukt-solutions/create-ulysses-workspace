@@ -1,0 +1,76 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # for gh release create
+      id-token: write    # for OIDC trusted publishing to npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm to latest (OIDC trusted publishing requires npm >= 11.5.1)
+        run: npm install -g npm@latest
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version=$(node -p "require('./package.json').version")
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "ERROR: tag '$tag_version' does not match package.json version '$pkg_version'"
+            exit 1
+          fi
+          echo "Verified: $pkg_version"
+
+      - name: Determine dist-tag from tag suffix
+        id: tag
+        run: |
+          tag_name="${GITHUB_REF_NAME}"
+          if [[ "$tag_name" =~ -beta\. ]]; then
+            echo "dist=beta" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$tag_name" =~ -canary\. ]]; then
+            echo "dist=canary" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$tag_name" =~ -next\. ]]; then
+            echo "dist=next" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist=latest" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        run: npm publish --tag ${{ steps.tag.outputs.dist }} --access public
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes_file="release-notes/v${version}.md"
+          prerelease_flag=""
+          if [ "${{ steps.tag.outputs.is_prerelease }}" = "true" ]; then
+            prerelease_flag="--prerelease"
+          fi
+          if [ -f "$notes_file" ]; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --notes-file "$notes_file" \
+              --title "v${version}" \
+              $prerelease_flag
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --title "v${version}" \
+              $prerelease_flag
+          fi
