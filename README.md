@@ -8,20 +8,24 @@
 
 > Rules, skills, and hooks that steer Claude Code through real work. Sessions you can pause and resume, multi-repo with versioning, shared context that survives chat boundaries.
 
+> **Beta.** Currently shipping as `0.13.0-beta.x` under the `@beta` dist-tag. Conventions and CLI flags are stable; the `latest` tag will appear when `0.13.0` cuts. Beta testers welcome — please [open an issue](https://github.com/ukt-solutions/create-ulysses-workspace/issues) if anything's confusing.
+
+Requires Node 20.9 or later.
+
 ## Quick start
 
 ```bash
 # npm
-npm create @ulysses-ai/workspace@latest
+npm create @ulysses-ai/workspace@beta
 
 # yarn
-yarn create @ulysses-ai/workspace
+yarn create @ulysses-ai/workspace@beta
 
 # pnpm
-pnpm create @ulysses-ai/workspace
+pnpm create @ulysses-ai/workspace@beta
 
 # bun
-bun create @ulysses-ai/workspace
+bun create @ulysses-ai/workspace@beta
 ```
 
 Then:
@@ -32,6 +36,30 @@ claude
 /workspace-init
 /start-work
 ```
+
+## Migrate an existing project
+
+Already have a project directory? Run `--init` from inside it with no target argument:
+
+```bash
+cd my-existing-project
+npx @ulysses-ai/create-workspace@beta --init
+```
+
+The scaffolder treats the current directory as the workspace root. If a `CLAUDE.md` already exists, it's backed up to `CLAUDE.md.bak` and replaced with the workspace template — your old content is preserved for `/workspace-init` to extract from.
+
+Then run `claude` and `/workspace-init`. The skill discovers any repos already present, asks which to register in `workspace.json`, prompts for any additional repos to add, extracts documentation from existing sources, and formalizes any in-progress git worktrees as work sessions. Then `/start-work` to begin.
+
+## Upgrade an existing workspace
+
+When a new template version ships, upgrade in place:
+
+```bash
+cd my-workspace
+npx @ulysses-ai/create-workspace@beta --upgrade
+```
+
+This stages the new template payload to `.workspace-update/` without changing anything yet. Open Claude Code and run `/workspace-update` — the skill applies each change interactively (asks how to resolve any file you've customized) and runs a maintenance audit before and after.
 
 ## Why "Ulysses"?
 
@@ -69,9 +97,9 @@ A scaffolded workspace with:
 
 | Command | What it does |
 | --- | --- |
-| `npm create @ulysses-ai/workspace@latest` | Interactive scaffolder (recommended) |
-| `npx @ulysses-ai/create-workspace --init [dir]` | Non-interactive fresh install (pass dir directly) |
-| `npx @ulysses-ai/create-workspace --upgrade [dir]` | Apply template updates to an existing workspace |
+| `npm create @ulysses-ai/workspace@beta` | Interactive scaffolder (recommended) |
+| `npx @ulysses-ai/create-workspace@beta --init [dir]` | Non-interactive fresh install (pass dir directly) |
+| `npx @ulysses-ai/create-workspace@beta --upgrade [dir]` | Apply template updates to an existing workspace |
 
 > **Why two forms?** `npm create <pkg>` resolves to `npx create-<pkg>`, but it consumes the `--init` flag for itself (npm's own subcommand alias). Use the bare `npm create` form for interactive scaffolding; use `npx` directly when you want to pass `--init <dir>` non-interactively.
 

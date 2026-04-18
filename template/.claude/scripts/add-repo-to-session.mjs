@@ -2,6 +2,7 @@
 // Add a project repo to an existing work session mid-flight. Creates a
 // nested project worktree inside the workspace worktree's repos/ dir and
 // appends the new repo to the session tracker's `repos:` list.
+import '../lib/require-node.mjs';
 import { execSync } from 'child_process';
 import { join } from 'path';
 import {

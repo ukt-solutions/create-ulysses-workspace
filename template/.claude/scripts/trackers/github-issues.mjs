@@ -2,6 +2,7 @@
 // Issue IDs are opaque strings of the form "gh:N" — adapters outside this file
 // don't need to parse them; routing is handled by interface.mjs.
 
+import '../../lib/require-node.mjs';
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
 import { AlreadyAssignedError } from './interface.mjs';
 
