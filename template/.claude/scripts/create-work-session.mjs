@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Create a work session: workspace worktree + nested project worktrees +
 // session.md tracker. Produces a self-contained work-sessions/{name}/ folder.
+import '../lib/require-node.mjs';
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync, copyFileSync } from 'fs';
 import { join, resolve } from 'path';

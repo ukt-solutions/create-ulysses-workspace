@@ -7,6 +7,7 @@
 // Usage:
 //   node .claude/scripts/migrate-open-work.mjs <path-to-open-work.md> [workspace-json-path]
 
+import '../lib/require-node.mjs';
 import { readFileSync } from 'node:fs';
 import { createTracker } from './trackers/interface.mjs';
 
