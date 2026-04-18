@@ -6,7 +6,7 @@ Migrate rules, memory, and handoffs from Notion pages into the claude-workspace 
 
 - The workspace must have a working Notion MCP server configured in `.mcp.json`
 - Run this recipe BEFORE removing the MCP server
-- The scaffolder (`npx @ulysses/create-workspace --init`) should have already been run to install the template structure
+- The scaffolder (`npx @ulysses-ai/create-workspace --init`) should have already been run to install the template structure
 
 ## Detection
 

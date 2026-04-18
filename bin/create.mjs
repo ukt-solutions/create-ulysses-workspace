@@ -2,7 +2,7 @@
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 20 || (major === 20 && minor < 9)) {
-  console.error(`@ulysses/create-workspace requires Node.js 20.9 or later.`);
+  console.error(`@ulysses-ai/create-workspace requires Node.js 20.9 or later.`);
   console.error(`  You have:  ${process.versions.node}`);
   console.error(`  Required:  >=20.9.0`);
   console.error(`  Try installing a newer Node via nvm, fnm, or the Node website.`);
@@ -25,8 +25,8 @@ async function main() {
   if (migrateFlag) {
     console.error('  --migrate is deprecated. Use --init (fresh install) or --upgrade (template update).');
     console.error('');
-    console.error('  Fresh install:    npx @ulysses/create-workspace --init [target-dir]');
-    console.error('  Template update:  npx @ulysses/create-workspace --upgrade [target-dir]');
+    console.error('  Fresh install:    npx @ulysses-ai/create-workspace --init [target-dir]');
+    console.error('  Template update:  npx @ulysses-ai/create-workspace --upgrade [target-dir]');
     console.error('');
     process.exit(1);
   }
