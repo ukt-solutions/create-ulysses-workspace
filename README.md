@@ -2,9 +2,9 @@
   <img src="https://raw.githubusercontent.com/ukt-solutions/create-ulysses-workspace/main/docs/assets/logo.png" alt="Ulysses Workspace" width="220">
 </p>
 
-# @ulysses/create-workspace
+# @ulysses-ai/create-workspace
 
-[![npm version](https://img.shields.io/npm/v/@ulysses/create-workspace.svg)](https://www.npmjs.com/package/@ulysses/create-workspace)
+[![npm version](https://img.shields.io/npm/v/@ulysses-ai/create-workspace.svg)](https://www.npmjs.com/package/@ulysses-ai/create-workspace)
 
 > Rules, skills, and hooks that steer Claude Code through real work. Sessions you can pause and resume, multi-repo with versioning, shared context that survives chat boundaries.
 
@@ -12,16 +12,16 @@
 
 ```bash
 # npm
-npm create @ulysses/workspace@latest
+npm create @ulysses-ai/workspace@latest
 
 # yarn
-yarn create @ulysses/workspace
+yarn create @ulysses-ai/workspace
 
 # pnpm
-pnpm create @ulysses/workspace
+pnpm create @ulysses-ai/workspace
 
 # bun
-bun create @ulysses/workspace
+bun create @ulysses-ai/workspace
 ```
 
 Then:
@@ -69,9 +69,9 @@ A scaffolded workspace with:
 
 | Command | What it does |
 | --- | --- |
-| `npm create @ulysses/workspace@latest` | Interactive scaffolder (recommended) |
-| `npx @ulysses/create-workspace --init [dir]` | Non-interactive fresh install (pass dir directly) |
-| `npx @ulysses/create-workspace --upgrade [dir]` | Apply template updates to an existing workspace |
+| `npm create @ulysses-ai/workspace@latest` | Interactive scaffolder (recommended) |
+| `npx @ulysses-ai/create-workspace --init [dir]` | Non-interactive fresh install (pass dir directly) |
+| `npx @ulysses-ai/create-workspace --upgrade [dir]` | Apply template updates to an existing workspace |
 
 > **Why two forms?** `npm create <pkg>` resolves to `npx create-<pkg>`, but it consumes the `--init` flag for itself (npm's own subcommand alias). Use the bare `npm create` form for interactive scaffolding; use `npx` directly when you want to pass `--init <dir>` non-interactively.
 
