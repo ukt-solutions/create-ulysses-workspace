@@ -19,6 +19,9 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Upgrade npm to latest (OIDC trusted publishing requires npm >= 11.5.1)
+        run: npm install -g npm@latest
+
       - name: Verify tag matches package.json version
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
