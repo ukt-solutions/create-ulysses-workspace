@@ -13,6 +13,7 @@
 //   node migrate-session-layout.mjs --main
 //   node migrate-session-layout.mjs --all --main     (runs all sessions then main)
 //   Optional: --root PATH to override auto-detection
+import '../lib/require-node.mjs';
 import { execSync } from 'child_process';
 import {
   readFileSync,

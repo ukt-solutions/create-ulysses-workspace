@@ -1,6 +1,7 @@
 // Tracker adapter interface. Skills import only from this module.
 // See design-tracker-abstraction.md for the full Issue shape and method contracts.
 
+import '../../lib/require-node.mjs';
 import { createGithubAdapter } from './github-issues.mjs';
 
 export class AlreadyAssignedError extends Error {
