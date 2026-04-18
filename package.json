@@ -1,6 +1,6 @@
 {
   "name": "@ulysses/create-workspace",
-  "version": "0.12.3",
+  "version": "0.13.0-beta.0",
   "description": "A workspace convention for Claude Code: sessions, handoffs, and shared context as files in git",
   "keywords": [
     "claude",
