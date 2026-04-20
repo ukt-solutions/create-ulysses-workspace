@@ -62,7 +62,7 @@ Active recommendations. Flags problems and suggests fixes, but asks before actin
 - This is the capture-time cross-check, run retroactively instead of inline
 
 ### 7. Health metrics
-- Total size of `shared-context/locked/` — flag if over 10KB target
+- Size of `shared-context/locked/` relative to the active model's context window — flag if over 5% (yellow) or 15% (red). Absolute byte count is a weak proxy; contradictions, stale references, and duplicated coverage across files matter more than total size.
 - Number of ephemeral files — flag if accumulating without resolution
 - Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
   - Sessions without capture
@@ -78,7 +78,7 @@ Issues (3):
   ✗ shared-context/alice/old-handoff.md references branch feature/old
     but that branch was deleted
   ✗ 2 inflight files exist but no active work session (orphaned?)
-  ✗ Locked context is 12.3KB (target: <10KB)
+  ✗ Locked context is 18% of model context window (red threshold: 15%)
 
 Warnings (2):
   ⚠ shared-context/alice/workspace-analytics.md not updated in 8 days
