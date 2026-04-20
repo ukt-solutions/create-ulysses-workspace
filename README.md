@@ -131,6 +131,15 @@ The eleven [chapters](https://github.com/ukt-solutions/create-ulysses-workspace/
 
 In active pre-1.0 development. Used as dogfood and validated against external workspaces. Conventions and CLI flags are stable; small refinements continue. v1.0 will mark a stability commitment.
 
+## Feedback
+
+Beta testers, early adopters, and anyone curious — feedback of any shape is genuinely wanted.
+
+- **Bugs, rough edges, "this didn't do what I expected"** → [open an issue](https://github.com/ukt-solutions/create-ulysses-workspace/issues/new)
+- **Design questions, "why does it work this way?", ideas for new skills or rules** → [start a discussion](https://github.com/ukt-solutions/create-ulysses-workspace/discussions)
+
+First-hand reports of the scaffold-and-go-for-it experience are the single most useful thing at this stage — especially anything that surprised you, tripped you up, or felt like friction the CLI could have caught.
+
 ## License
 
 MIT
