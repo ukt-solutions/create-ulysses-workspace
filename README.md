@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ukt-solutions/create-ulysses-workspace/main/docs/assets/logo.png" alt="Ulysses Workspace" width="220">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ukt-solutions/create-ulysses-workspace/main/docs/assets/logo-dark.png">
+    <img src="https://raw.githubusercontent.com/ukt-solutions/create-ulysses-workspace/main/docs/assets/logo.png" alt="Ulysses Workspace" width="220">
+  </picture>
 </p>
 
 # @ulysses-ai/create-workspace
