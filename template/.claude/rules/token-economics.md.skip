@@ -1,6 +1,6 @@
 # Token Economics
 
-Activate this rule for token-aware behavior — cost-conscious model selection, context efficiency, and waste reduction.
+Activate this rule for token-aware behavior — cost-conscious model selection, context efficiency, command discipline, and waste detection.
 
 ## Model Selection
 
@@ -18,14 +18,29 @@ Activate this rule for token-aware behavior — cost-conscious model selection, 
 - If a tool result is large and mostly irrelevant, note what matters and move on
 - Prefer exact file paths over glob searches when you know where things are
 
-## Waste Detection
+## Command Discipline
 
-- Flag when context is heavy with resolved discussions that could be compacted
-- Suggest /braindump to offload discussion into files, freeing context for work
-- Note when subagent context is bloated relative to the task size
-- If locked context exceeds the 10KB target, mention it
+The single biggest source of session bloat is bash output you didn't bound. The model has to read every line that comes back, and there's no after-the-fact way to truncate it.
+
+- Don't run unbounded commands. Pipe to `head`, `tail`, or `grep` first.
+- For test runs, prefer scoped invocations: `npm test path/to/file.test.mjs` over bare `npm test`. If you only need failures, pipe through `grep -E "FAIL|✗|Error"`.
+- For `find` and `grep -r` / `rg -r`, always supply a constraint (`-name`, `-path`, `--include`, `-g`). Bare `find ~/` against home is almost never what you want.
+- For inspecting a large file, write to a tmp file and grep into it rather than `cat`ing the whole thing into context.
+- For long-running processes (servers, watchers), use `run_in_background: true` and stream with the Monitor tool — don't let stdout pile up in a single tool result.
+- Do not claim a task is done before running its tests. The cost of a forgotten test run is a follow-up cycle that bloats the session more than the test would have.
+
+## Ghost-Token Detection
+
+"Ghost tokens" are context spend you can't see in any single tool result — structural bloat that accumulates across the session. Watch for:
+
+- **Unused skills.** A loaded skill that you never invoke costs input tokens every turn. If a workspace ships skills you don't use in the current task, that's silent overhead.
+- **Oversized locked context.** `shared-context/locked/` is injected into every session and every subagent. If it grows past 5% of the active model's context window, flag it (yellow); past 15%, treat as red. Absolute byte count is a weak proxy — duplicated coverage and stale references matter more.
+- **Unused MCP servers.** Each MCP server's tool list is in your prompt whether you call it or not. If a server is registered but never used in this workspace's flow, surface it for cleanup.
+- **Resolved discussions still in context.** If the conversation has worked through a long debate that's now settled, that text is still occupying the window. Suggest `/braindump` to offload it into a file.
+- **Subagent context bloat.** A subagent prompt that ships more context than the task requires wastes tokens twice — once for the subagent, once for the dispatching model that wrote the prompt.
 
 ## Compaction Awareness
 
-- When approaching compaction threshold, prioritize capturing over continuing
-- After compaction, avoid re-reading files that were already discussed — check shared-context first
+- When approaching the compaction threshold, prioritize capturing over continuing. A `/braindump` or `/handoff` *before* compaction preserves reasoning that gets summarized away.
+- After compaction, avoid re-reading files that were already discussed — check `shared-context/` and the session tracker first.
+- The `PreCompact` hook will prompt for capture; treat that prompt as a real checkpoint, not a dismissable nag.
