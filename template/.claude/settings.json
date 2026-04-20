@@ -66,6 +66,11 @@
             "type": "command",
             "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/repo-write-detection.mjs",
             "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"$CLAUDE_PROJECT_DIR\"; else echo \"$CLAUDE_PROJECT_DIR\"; fi)\"/.claude/hooks/bash-output-advisory.mjs",
+            "timeout": 5000
           }
         ]
       }
