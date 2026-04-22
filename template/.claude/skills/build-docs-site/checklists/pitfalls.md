@@ -121,15 +121,15 @@ If the build fails on `cls is not defined`, manually add `cls` to the import lin
 
 ---
 
-## 3. Playwright viewport screenshot quirks
+## 3. Automated viewport screenshots can lie
 
 ### Symptom
 
-Playwright viewport-cropped screenshots of diagram regions come back blank, even though the diagrams render correctly when you visit the page in a real browser.
+Viewport-cropped screenshots of diagram regions come back blank from the browser automation tool, even though the diagrams render correctly when you load the page in a real browser.
 
 ### Cause
 
-Best guess: scroll position and viewport sizing interact in Playwright's screenshot path such that the diagram region falls outside the captured viewport even when the visible browser shows it. Never fully diagnosed — the workaround is sufficient.
+Scroll position and viewport sizing interact with the automated screenshot path such that the diagram region falls outside the captured frame even when the visible browser shows it. The exact interaction varies by tool and rarely rewards deep diagnosis — the workaround below is always sufficient.
 
 ### Fix
 
@@ -140,7 +140,7 @@ Best guess: scroll position and viewport sizing interact in Playwright's screens
    await page.screenshot({ fullPage: true });
    ```
 
-2. **DOM inspection via `browser_evaluate`** (fastest, most authoritative):
+2. **DOM inspection via the automation tool's evaluate hook** (fastest, most authoritative):
    ```js
    const rect = document.querySelector('.dx-fill-primary');
    console.log({
