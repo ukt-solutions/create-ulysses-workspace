@@ -2,6 +2,11 @@
 
 All notable changes to `@ulysses-ai/create-workspace` are documented here. Entries are written for users installing the package, not contributors — see the repository history for implementation detail.
 
+## v0.13.0-beta.5 — 2026-04-22
+
+- Replaced the `release-notes/v{version}.md` + `archive/` pattern with a single `CHANGELOG.md` at each project repo's root. The `/release` skill now prepends a concise, user-facing entry to `CHANGELOG.md` and deletes the consumed branch notes under `release-notes/unreleased/` — the long tail of per-version docs no longer accumulates in public repos.
+- `release-notes/unreleased/` remains the intermediate capture zone for `/complete-work`; the directory is emptied every `/release` run.
+
 ## v0.13.0-beta.4 — 2026-04-22
 
 - Generalized viewport-screenshot pitfall guidance in the `build-docs-site` skill so it no longer names Playwright specifically. The underlying issue and its workaround (full-page screenshots or DOM inspection via the automation tool's evaluate hook) apply to any browser automation tool.
