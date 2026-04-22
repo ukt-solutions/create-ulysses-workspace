@@ -298,7 +298,7 @@ Reuse aggressively — if the same concept appears in multiple chapters, import 
 
 - **CSS variables in SVG fill don't paint reliably** — always use `className={cls.fill.X}`, never `fill={...}`. The primitives already do this.
 - **Bulk migration regressions** — if you wrote chapter components with `fill={colors.X}` and need to migrate, run `python3 .claude/skills/build-docs-site/scripts/bulk-fill-migration.py {chapters-dir}`. The script handles duplicate `className=`, missing imports, and reports variable-bound fills for manual review.
-- **Playwright viewport screenshots lie** — if a screenshot is blank, use DOM inspection via `browser_evaluate` before assuming the diagram is broken.
+- **Automated viewport screenshots can lie** — if a screenshot from the browser automation tool comes back blank, inspect the DOM via the tool's evaluate hook before assuming the diagram is broken.
 - **Arrowhead markers don't theme-switch** — acceptable cosmetic mismatch, or render two markers with media query switching.
 - **SSR for browser-only diagrams** — wrap any diagram that uses browser APIs in `<BrowserOnly>` with a function child. The primitives don't need this; it only matters if a chapter component uses `window` or `document`.
 
