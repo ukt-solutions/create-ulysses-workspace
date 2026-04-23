@@ -2,6 +2,19 @@
 
 All notable changes to `@ulysses-ai/create-workspace` are documented here. Entries are written for users installing the package, not contributors — see the repository history for implementation detail.
 
+## v0.14.0-beta.0 — 2026-04-23
+
+- New `TodoWrite` ↔ `session.md` mirror. From `/start-work` onward, a lifecycle-aware checklist appears in Claude Code with `Start work`/`Complete work` bookends and an optional `> Linked: gh:42 — …` reference when the session is tied to a tracker issue. Tasks persist across chats, machines, and pause/resume cycles via a new `## Tasks` section in `session.md`, round-tripped by `.claude/scripts/sync-tasks.mjs`. Five skills (`/start-work`, `/pause-work`, `/complete-work`, `/handoff`, `/braindump`) flush at lifecycle moments so the durable store stays coherent.
+- `/release` is now the sole owner of version bumps. `/complete-work` no longer touches `package.json`, eliminating a pre-existing double-bump that left versions disagreeing with the latest `CHANGELOG.md` entry between feature merge and release.
+- Branch notes written by `/complete-work` now live in the workspace repo at `release-notes/unreleased/{repo-name}/` instead of inside project repos. `/release` reads from the workspace and writes only `CHANGELOG.md` into project repos — internal retrospection no longer leaks to public package repositories.
+- Hook commands in `template/.claude/settings.json` now fall back to `$PWD` when `CLAUDE_PROJECT_DIR` is unset. Resilient to ACP adapter spawn paths (e.g. some Zed configurations) that omit the env var, with no change to the common path where Claude Code CLI or the Agent SDK already sets it. The Windows `cygpath` wrapper is preserved.
+
+### Known issues
+
+- Dogfood workspaces may have an older `.claude/lib/` that is missing `require-node.mjs`. A follow-up `chore` or one-shot `/workspace-update` catches it up.
+- GitHub's web renderer displays the new `- [-]` in-progress checkbox marker as literal text rather than an interactive checkbox. `session.md` is usually read in editors (Obsidian, JetBrains, etc.) where the marker renders correctly.
+- Workspaces upgrading from a pre-v0.14 `/complete-work` may have leftover `release-notes/unreleased/branch-release-*.md` files in project repos from the old flow. Not auto-migrated; remove manually or via a follow-up chore.
+
 ## v0.13.0-beta.5 — 2026-04-22
 
 - Replaced the `release-notes/v{version}.md` + `archive/` pattern with a single `CHANGELOG.md` at each project repo's root. The `/release` skill now prepends a concise, user-facing entry to `CHANGELOG.md` and deletes the consumed branch notes under `release-notes/unreleased/` — the long tail of per-version docs no longer accumulates in public repos.
