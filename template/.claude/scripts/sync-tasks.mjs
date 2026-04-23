@@ -1,6 +1,8 @@
 // Mirror TodoWrite ↔ session.md ## Tasks section.
 // Round-trips a flat task list across chats by persisting it on the session branch.
 
+import { readFileSync, writeFileSync, renameSync } from 'fs';
+
 const IRREGULARS = {
   // Pre-built map for verbs whose gerund isn't a clean suffix transform.
   // Add entries as needed; the rule of thumb is "if the test catches it, fix here".
@@ -113,4 +115,43 @@ export function renderTasksSection({ linked, todos }) {
   }
   lines.push('');
   return lines.join('\n');
+}
+
+export function writeTasksToSession(filePath, taskState) {
+  const original = readFileSync(filePath, 'utf-8');
+  const newSection = renderTasksSection(taskState);
+  const updated = spliceTasksSection(original, newSection);
+
+  // Atomic write: temp file in same dir + rename.
+  const tmp = filePath + '.tmp-sync-tasks';
+  writeFileSync(tmp, updated);
+  renameSync(tmp, filePath);
+}
+
+function spliceTasksSection(content, newSection) {
+  const lines = content.split('\n');
+  const startIdx = lines.findIndex(l => l.trim() === '## Tasks');
+
+  if (startIdx === -1) {
+    // Insert before ## Progress if present, else append before EOF.
+    const progressIdx = lines.findIndex(l => l.trim() === '## Progress');
+    if (progressIdx !== -1) {
+      const before = lines.slice(0, progressIdx).join('\n').replace(/\n+$/, '\n');
+      const after = lines.slice(progressIdx).join('\n');
+      return before + '\n' + newSection + '\n' + after;
+    }
+    // No Progress section — append at end.
+    return content.replace(/\n*$/, '\n\n') + newSection;
+  }
+
+  // Find end of existing ## Tasks section (next ## heading or EOF).
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    if (lines[i].startsWith('## ')) { endIdx = i; break; }
+  }
+
+  const before = lines.slice(0, startIdx).join('\n');
+  const after = endIdx < lines.length ? lines.slice(endIdx).join('\n') : '';
+  const beforeTrimmed = before.replace(/\n+$/, '\n');
+  return beforeTrimmed + '\n' + newSection + (after ? '\n' + after : '');
 }
