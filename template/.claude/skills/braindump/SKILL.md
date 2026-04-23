@@ -72,6 +72,21 @@ updated: {YYYY-MM-DD}
 3. If multiple topics: "I see discussion about {topic-1} and {topic-2}. Split into separate braindumps?"
 4. Proceed with named flow for each
 
+## Include task snapshot
+
+If an active session exists (detected via `.claude/.active-session.json`), include a `## Tasks at capture time` section in the braindump artifact with a snapshot of the current `TodoWrite` state:
+
+```markdown
+## Tasks at capture time
+
+- [x] Start work
+- [x] Reproduce on iOS Safari
+- [ ] Identify race condition
+- [ ] Complete work
+```
+
+Use the same GFM checkbox format as `session.md`'s `## Tasks` section (just `content` and `status` per task — no `activeForm` field, no blockquote line) and render it inline in the braindump. Do NOT call `sync-tasks.mjs --write` — braindumps are snapshots, not the canonical store.
+
 ## Updating Existing Braindumps
 
 When updating, rewrite as a fresh snapshot (coherent-revisions rule). The updated braindump should read as if written in one pass.
