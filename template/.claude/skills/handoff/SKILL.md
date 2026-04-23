@@ -84,6 +84,21 @@ updated: {YYYY-MM-DD}
    - If no: ask for a single name that covers both
 4. Proceed with the named flow for each handoff
 
+## Include task snapshot
+
+If an active session exists (detected via `.claude/.active-session.json`), include a `## Tasks at capture time` section in the handoff artifact with a snapshot of the current `TodoWrite` state:
+
+```markdown
+## Tasks at capture time
+
+- [x] Start work
+- [x] Reproduce on iOS Safari
+- [ ] Identify race condition
+- [ ] Complete work
+```
+
+Use the same GFM checkbox format as `session.md`'s `## Tasks` section (just `content` and `status` per task — no `activeForm` field, no blockquote line) and render it inline in the handoff. Do NOT call `sync-tasks.mjs --write` — handoffs are snapshots, not the canonical store.
+
 ## Updating Existing Handoffs
 
 When updating an existing handoff, rewrite it as a fresh snapshot of current understanding (coherent-revisions rule). Don't append below the old content. The updated handoff should read as if written in one pass reflecting the current state.

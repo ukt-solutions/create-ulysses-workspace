@@ -54,7 +54,28 @@ If `workItem:` is unset, skip the comment — this is a blank session with no tr
 
 If the comment fails (tracker unreachable, auth expired), report the error but do not block the pause. The pause state lives locally in the session tracker regardless.
 
-### Step 4: Commit and push workspace
+### Step 4: Flush task list to session.md
+
+Before the commit picks it up, flush current `TodoWrite` state to `## Tasks` per the `task-list-mirroring` rule:
+
+```bash
+cd work-sessions/{session-name}/workspace
+echo '<JSON-of-current-todos>' | node .claude/scripts/sync-tasks.mjs --write session.md
+```
+
+The `<JSON-of-current-todos>` is the same shape Claude has been maintaining via `TodoWrite`:
+
+```json
+{
+  "todos": [
+    { "content": "...", "activeForm": "...", "status": "pending|in_progress|completed" }
+  ]
+}
+```
+
+The helper enforces the bookend invariant — pass whatever current state you have, including any missing or misplaced bookends, and the helper will normalize.
+
+### Step 5: Commit and push workspace
 
 ```bash
 # From the workspace worktree
@@ -64,7 +85,7 @@ git commit -m "handoff: pause {session-name}"
 git push -u origin {branch}
 ```
 
-### Step 5: Push project repos
+### Step 6: Push project repos
 
 ```bash
 # For each repo in the tracker's repos:
@@ -72,7 +93,7 @@ cd work-sessions/{session-name}/workspace/repos/{repo}
 git push -u origin {branch}
 ```
 
-### Step 6: Create draft PRs
+### Step 7: Create draft PRs
 
 ```bash
 # For each repo in the tracker's repos:
@@ -85,7 +106,7 @@ gh pr create --draft --title "context: {session-name} (paused)" --body "Workspac
 
 If PRs already exist, update them to draft status if needed.
 
-### Step 7: Confirm
+### Step 8: Confirm
 
 "Session '{session-name}' paused. Resume anytime with /start-work."
 

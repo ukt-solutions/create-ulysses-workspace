@@ -5,11 +5,13 @@ description: Prepend a new CHANGELOG.md entry per project repo by synthesizing u
 
 # Release
 
-Synthesize `release-notes/unreleased/branch-release-notes-*.md` into a concise, user-facing entry at the top of each project repo's `CHANGELOG.md`. Delete the consumed branch notes — they are an intermediate artifact, not long-term public record. In parallel, promote resolved workspace shared-context into locked team knowledge.
+Synthesize unreleased branch notes (in the **workspace** repo) into a concise, user-facing entry at the top of each project repo's `CHANGELOG.md`. Delete the consumed branch notes from the workspace. Bump the project repo's `package.json` version. In parallel, promote resolved workspace shared-context into locked team knowledge.
 
 ## Why this shape
 
-Per-version release-notes files accumulate into a long tail of dogfood-retrospective docs that bloat public repos. A single `CHANGELOG.md` with one concise entry per version is what users of a published package actually want. Branch notes remain the input format for `/complete-work` (they capture per-session detail at the right moment), but they should not survive past `/release` in the public repo.
+Branch notes are detailed dogfood-retrospective artifacts that should not bloat public project repos. By keeping them in the workspace repo until release time, the project repo stays lean — it only ever sees code commits and `CHANGELOG.md` entries. A single `CHANGELOG.md` with one concise entry per version is what users of a published package actually want. Branch notes remain the input format for `/complete-work` (they capture per-session detail at the right moment), but they live in the workspace and are consumed-then-deleted by `/release`.
+
+Versions are bumped here, not in `/complete-work`, because version semantics describe what shipped — accumulated changes since the last release — not the timing of any individual feature merge.
 
 ## Parameters
 - `/release {version}` — create a release entry for a specific version
@@ -26,13 +28,15 @@ Check `workspace.json` for `releaseMode`:
 - **ask**: "Process all repos together or individually?"
 
 **Step 2: Read unreleased notes**
-For each target repo:
+Branch notes live in the **workspace** repo, written there by `/complete-work`. For each target repo, list the workspace's unreleased subdirectory for that project:
 ```bash
-ls repos/{repo}/release-notes/unreleased/
+ls release-notes/unreleased/{repo}/
 ```
 Read all `branch-release-notes-*.md` and `branch-release-questions-*.md` files.
 
-If no unreleased files exist: "No unreleased notes found for {repo}. Nothing to release."
+If no unreleased files exist for a target repo: "No unreleased notes found for {repo}. Nothing to release."
+
+The frontmatter `repo:` field on each branch-notes file confirms which project repo the notes belong to — match that to the directory name as a sanity check. Notes mismatched on `repo:` are a sign of manual file moves; surface to the user.
 
 **Step 3: Group and organize**
 Group notes by `type:` frontmatter (feature, fix, chore). Within each group, order chronologically by date. This ordering drives bullet sequence in the synthesized entry.
@@ -65,20 +69,23 @@ Prepend a new section at the top of the changelog body (after the header, before
 
 The entry stays short. If a change needs more detail, reference the repo's docs or a dedicated design doc — do not inline session-level retrospection into the public changelog.
 
-**Step 6: Delete consumed branch notes**
+**Step 6: Delete consumed branch notes from the workspace**
 ```bash
-rm repos/{repo}/release-notes/unreleased/branch-release-*
+rm release-notes/unreleased/{repo}/branch-release-*
+# If the directory is now empty, remove it too:
+rmdir release-notes/unreleased/{repo} 2>/dev/null || true
 ```
-The branch notes were an intermediate capture; their content is now in the CHANGELOG entry and their raw form in git history. No long-term archive is kept in the project repo.
+The branch notes were an intermediate capture; their content is now in the CHANGELOG entry and their raw form in git history. They do not survive into the project repo.
 
-**Step 7: Commit the release entry**
+**Step 7: Commit the CHANGELOG entry to the project repo**
 ```bash
 cd repos/{repo}
-git add CHANGELOG.md release-notes/unreleased/
+git add CHANGELOG.md
 git commit -m "docs: v{version} changelog entry"
 ```
+This commit lands on the project repo's source clone (which stays on its default branch). The user pushes it when ready — `/release` does not push automatically.
 
-**Step 7b: Bump package.json version**
+**Step 7b: Bump package.json version (project repo)**
 If the project repo has a `package.json` with a `version` field, update it to match the release version:
 ```bash
 cd repos/{repo}
@@ -87,6 +94,14 @@ git add package.json
 git commit -m "chore: bump version to v{version}"
 ```
 Skip this step if the repo has no package.json or no version field.
+
+**Step 7c: Commit the consumed-notes deletion in the workspace**
+```bash
+# From the workspace root
+git add release-notes/unreleased/
+git commit -m "release: consume {repo} branch notes for v{version}"
+```
+Workspace and project repos have separate commits — they are separate git histories.
 
 **Step 8: Consume project-scoped specs**
 Project-scoped specs and plans in `shared-context/{user}/` (ongoing) that are fully covered by this release:
@@ -119,8 +134,9 @@ Process ephemeral shared-context entries:
 ## Notes
 
 - Release entries live in `CHANGELOG.md` at the project repo root — one file, one concise entry per version. No `release-notes/v*.md`, no `release-notes/archive/`.
-- `release-notes/unreleased/` remains the intermediate capture zone for `/complete-work`. It is emptied every `/release` run.
-- The public repo stays lean. Detailed per-branch retrospection exists in git history (commit messages, branch note content in the branch's commits) but is not surfaced as standalone long-term files.
-- Context synthesis happens in the WORKSPACE repo — both get separate commits.
-- Per-repo is the default — each repo has its own release cadence.
+- Branch notes live in the WORKSPACE at `release-notes/unreleased/{repo}/`. `/complete-work` writes them; `/release` consumes and deletes them. They never reach project repos.
+- Versions are bumped here, not in `/complete-work`. This keeps the version semantics aligned with what actually shipped (accumulated changes since last release).
+- The public repo stays lean. Detailed per-branch retrospection exists in workspace git history (the consumed-notes commit) but is not surfaced as standalone files in either repo.
+- Context synthesis happens in the WORKSPACE repo — Step 7c (consumed-notes) and Step 9 (shared-context synthesis) are separate workspace commits.
+- Per-repo is the default — each project repo has its own release cadence.
 - The coherent-revisions rule applies: write the CHANGELOG entry from scratch, don't concatenate branch notes.

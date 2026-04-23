@@ -38,7 +38,18 @@ If conflicts arise in any repo, STOP and present them to the user. Do not auto-r
 Run `/braindump` to capture any final discussion/reasoning to the session tracker body.
 If the user declines or there's nothing to capture, skip.
 
-### Step 4: Gather source material
+### Step 4: Flush task list to session.md
+
+Before reading sources for synthesis, flush current `TodoWrite` state to `## Tasks` per the `task-list-mirroring` rule. This ensures the synthesis in Step 6 sees the final state:
+
+```bash
+cd work-sessions/{session-name}/workspace
+echo '<JSON-of-current-todos>' | node .claude/scripts/sync-tasks.mjs --write session.md
+```
+
+Mark `Complete work` as `in_progress` in the JSON before flushing — the rest of this skill IS the act of completing.
+
+### Step 5: Gather source material
 
 Formally read ALL sources before synthesizing — do not write release notes from memory alone:
 
@@ -62,20 +73,24 @@ Formally read ALL sources before synthesizing — do not write release notes fro
    git log origin/{repo-branch}..HEAD --oneline
    ```
 
-### Step 5: Synthesize release notes
+### Step 6: Synthesize release notes
+
+Branch notes are written to the **workspace** repo, not the project repo. They are an internal retrospection artifact consumed by `/release` at release time; the project repo only ever receives a `CHANGELOG.md` entry. This separation keeps dogfood content out of public project repos between feature merge and the next release cut.
 
 For each repo in the tracker's `repos:` list that has commits beyond the base branch:
 
 ```bash
 cd work-sessions/{session-name}/workspace/repos/{repo}
 COMMIT_ID=$(git rev-parse --short HEAD)
-mkdir -p release-notes/unreleased
+cd ../..  # back to the workspace worktree
+mkdir -p release-notes/unreleased/{repo-name}
 ```
 
-**File 1: `release-notes/unreleased/branch-release-notes-{COMMIT_ID}.md`**
+**File 1: `release-notes/unreleased/{repo-name}/branch-release-notes-{COMMIT_ID}.md`** (relative to the workspace worktree)
 ```markdown
 ---
 branch: {branch}
+repo: {repo-name}
 type: {feature|fix|chore}
 author: {user}
 date: {YYYY-MM-DD}
@@ -87,10 +102,11 @@ date: {YYYY-MM-DD}
 Written from scratch per coherent-revisions rule.}
 ```
 
-**File 2: `release-notes/unreleased/branch-release-questions-{COMMIT_ID}.md`**
+**File 2: `release-notes/unreleased/{repo-name}/branch-release-questions-{COMMIT_ID}.md`**
 ```markdown
 ---
 branch: {branch}
+repo: {repo-name}
 author: {user}
 date: {YYYY-MM-DD}
 ---
@@ -100,23 +116,22 @@ date: {YYYY-MM-DD}
 {Only genuinely open questions — not things resolved during implementation.}
 ```
 
-Commit per repo:
+The `repo:` frontmatter field is what `/release` uses to know which project repo's `CHANGELOG.md` should consume each note. The directory name is the same as the field for redundancy.
+
+After all repos are processed, commit once on the workspace branch:
 ```bash
+cd work-sessions/{session-name}/workspace
 git add release-notes/unreleased/
 git commit -m "docs: add release notes for {branch}"
 ```
 
 If a repo has no commits beyond the base, skip release notes for it.
 
-### Step 6: Consume session-scoped sources
+### Step 7: Remove session artifacts from the workspace branch
 
-The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 11. Before that happens, make sure everything worth preserving has landed in release notes.
+The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 12. Before that happens, make sure everything worth preserving has landed in release notes (Step 6) — once Step 6 has run, the tracker, specs, and plans have served their purpose.
 
-No separate "consume spec and plan" commit is needed for the project repos — specs and plans now live in the session folder, not in the project worktrees. The project worktrees only carry source code changes.
-
-### Step 6c: Remove session artifacts from the workspace branch
-
-Session content (tracker, specs, plans) lives at the top of the workspace worktree on the session branch. Its purpose was synthesis into release notes in Step 5 — that work is now done. Remove the files from the branch before the final push so main's top level stays free of session artifacts:
+Session content lives at the top of the workspace worktree on the session branch. Remove these files from the branch before the final push so main's top level stays free of session artifacts:
 
 ```bash
 cd work-sessions/{session-name}/workspace
@@ -130,35 +145,11 @@ The `|| true` guards keep this idempotent — if a file is already gone (e.g., a
 
 This commit persists in the branch's history. On squash merge or rebase merge, branch history collapses to one clean commit on main with no session artifacts. On merge commits, branch history is reachable but the final tree on main shows no session content.
 
-### Step 6b: Version bump (if applicable)
+> **No version bump here.** Versions are bumped at release time by `/release`, which consumes accumulated unreleased branch notes into a single `CHANGELOG.md` entry per project repo. `/complete-work` only writes branch notes; it does not modify any project repo's `package.json`. This avoids version drift when multiple feature branches land between releases.
 
-For each repo in the tracker's `repos:`, check if the repo has versioning:
-```bash
-cd work-sessions/{session-name}/workspace/repos/{repo}
-cat package.json 2>/dev/null | grep '"version"'
-```
+### Step 8: Detect remote type per repo
 
-If no `package.json` or no `version` field: skip this repo — no versioning to manage.
-
-If the repo has a version, determine the appropriate bump from the release notes just written:
-
-1. Read the `type:` field from the branch release notes created in Step 5
-2. Determine the bump:
-   - `type: fix` or `type: chore` → **patch** (auto-bump, no confirmation needed)
-   - `type: feature` → **minor** (present to user: "This session adds new functionality. Suggested bump: {current} → {next-minor}. Confirm or adjust?")
-   - Breaking changes detected (schema changes, removed APIs, convention changes) → **major** (present to user: "This session includes breaking changes. Suggested bump: {current} → {next-major}. Confirm or adjust?")
-
-3. Apply the bump:
-   ```bash
-   git add package.json
-   git commit -m "chore: bump version to {new-version}"
-   ```
-
-The user can override any suggestion. Accept their decision.
-
-### Step 7: Detect remote type per repo
-
-For each repo in the tracker's `repos:` plus the workspace repo, determine the remote type. This drives how Step 8 and Step 9 push and merge.
+For each repo in the tracker's `repos:` plus the workspace repo, determine the remote type. This drives how Step 9 and Step 10 push and merge.
 
 ```bash
 cd work-sessions/{session-name}/workspace/repos/{repo}
@@ -167,14 +158,14 @@ git remote get-url origin 2>&1
 
 Classify the result:
 
-- **GitHub remote** — URL contains `github.com` or `gh repo view` succeeds against origin → use the PR flow (Step 8a, Step 9a).
-- **Local / bare remote** — URL is a filesystem path (starts with `/`, `./`, `file://`, or points at a `.git` bare mirror) → use the local merge flow (Step 8b, Step 9b).
-- **Other remote** (e.g., GitLab, Bitbucket, self-hosted) — no `gh` support → fall back to the local merge flow (Step 8b, Step 9b), and mention it in the final summary.
+- **GitHub remote** — URL contains `github.com` or `gh repo view` succeeds against origin → use the PR flow (Step 9a, Step 10a).
+- **Local / bare remote** — URL is a filesystem path (starts with `/`, `./`, `file://`, or points at a `.git` bare mirror) → use the local merge flow (Step 9b, Step 10b).
+- **Other remote** (e.g., GitLab, Bitbucket, self-hosted) — no `gh` support → fall back to the local merge flow (Step 9b, Step 10b), and mention it in the final summary.
 - **No remote at all** — "No remote configured for {repo}. Want me to create one on GitHub, add an existing URL, or keep the session local (push/merge inside the local clone only)?" Act on the user's choice. Never silently skip push.
 
-### Step 8: Push all repos
+### Step 9: Push all repos
 
-#### Step 8a: GitHub remotes
+#### Step 9a: GitHub remotes
 
 ```bash
 # Each project repo with a GitHub remote
@@ -188,7 +179,7 @@ git commit -m "chore: finalize context for {session-name}"
 git push -u origin {branch}
 ```
 
-#### Step 8b: Local/bare remotes
+#### Step 9b: Local/bare remotes
 
 ```bash
 # Push the feature branch to the bare remote so it exists there
@@ -202,11 +193,11 @@ git commit -m "chore: finalize context for {session-name}"
 git push -u origin {branch}
 ```
 
-The push shape is the same as 8a — what differs is the merge mechanics in Step 9b.
+The push shape is the same as 9a — what differs is the merge mechanics in Step 10b.
 
-### Step 9: Merge and present unified summary
+### Step 10: Merge and present unified summary
 
-#### Step 9a: GitHub remotes — create PRs, unified summary, merge
+#### Step 10a: GitHub remotes — create PRs, unified summary, merge
 
 Create one PR per project repo plus one workspace PR:
 
@@ -258,7 +249,7 @@ cd repos/{repo} && git pull origin {repo-branch}
 cd {main-workspace-root} && git pull origin main
 ```
 
-#### Step 9b: Local / bare / other remotes — local merge flow
+#### Step 10b: Local / bare / other remotes — local merge flow
 
 No PRs are created — these remotes don't have a PR concept (or we don't have a client wired up for them). Present an adjusted summary:
 
@@ -304,7 +295,7 @@ For repos with no remote at all (user chose "keep local"): skip push entirely. T
 cd repos/{repo} && git merge --ff-only {branch}
 ```
 
-### Step 10: Close the linked issue on the tracker
+### Step 11: Close the linked issue on the tracker
 
 If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, close the linked issue via the adapter after all PRs have merged:
 
@@ -328,9 +319,9 @@ if (ws.workspace?.tracker) {
 
 If `workItem:` is unset, skip the close — this was a blank session.
 
-If the close call fails (tracker unreachable, auth expired), report the error in the unified summary but do not block Step 11 cleanup. The issue can be closed manually via the GitHub UI; no data is at risk.
+If the close call fails (tracker unreachable, auth expired), report the error in the unified summary but do not block Step 12 cleanup. The issue can be closed manually via the GitHub UI; no data is at risk.
 
-### Step 11: Cleanup
+### Step 12: Cleanup
 
 Run the cleanup helper script from the main workspace root:
 ```bash
@@ -342,7 +333,7 @@ The script tears down in the **mandatory** order:
 2. Remove the workspace worktree from the workspace repo
 3. `git worktree prune` on each project repo (belt-and-suspenders for orphan records)
 4. Delete local branches in all repos
-5. `rm -rf work-sessions/{session-name}/` — the tracker, specs, plans, and any local-only artifacts vanish. Their content was already archived into release notes in Step 5.
+5. `rm -rf work-sessions/{session-name}/` — the tracker, specs, plans, and any local-only artifacts vanish. Their content was already archived into release notes in Step 6.
 
 Workspace-first removal silently deletes the nested project worktrees' `.git` files and leaves orphan worktree records in the project repos. The script enforces the safe order.
 
@@ -362,8 +353,9 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 - **Revert** — undo the changes (with confirmation)
 
 ## Notes
-- Release notes live in the PROJECT repo worktrees — never the workspace
+- Branch release notes live in the WORKSPACE repo at `release-notes/unreleased/{repo-name}/` — never in project repos. Project repos only ever see code commits and (at release time) `CHANGELOG.md` entries written by `/release`.
 - The session tracker's body is the primary source for release note synthesis — it captures the full session history alongside specs and plans
 - All repos get PRed and merged together — one approval for all
+- Version bumps happen in `/release`, not `/complete-work` — this avoids version drift when multiple feature branches land between releases
 - The teardown order is mandatory: project worktrees first, then workspace worktree, then prune, then delete the session folder
 - Context consumption, cleanup, and auto-committing release notes are intentional workflow behavior — these bypass normal commit conventions by design
