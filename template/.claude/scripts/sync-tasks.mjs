@@ -71,9 +71,10 @@ export function parseTasksSection(sessionMdContent) {
       continue;
     }
 
-    const checkboxMatch = trimmed.match(/^- \[([ x])\] (.+)$/);
+    const checkboxMatch = trimmed.match(/^- \[([ x\-])\] (.+)$/);
     if (checkboxMatch) {
-      const status = checkboxMatch[1] === 'x' ? 'completed' : 'pending';
+      const marker = checkboxMatch[1];
+      const status = marker === 'x' ? 'completed' : marker === '-' ? 'in_progress' : 'pending';
       const content = checkboxMatch[2].trim();
       todos.push({ content, activeForm: toActiveForm(content), status });
     }
@@ -113,7 +114,7 @@ export function renderTasksSection({ linked, todos }) {
     lines.push('');
   }
   for (const t of safe) {
-    const box = t.status === 'completed' ? '[x]' : '[ ]';
+    const box = t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[-]' : '[ ]';
     lines.push(`- ${box} ${t.content}`);
   }
   lines.push('');

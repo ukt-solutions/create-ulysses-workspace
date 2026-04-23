@@ -23,8 +23,10 @@ Anchored after `## Pre-session context` (if present) and before `## Progress`:
 
 - The heading is exactly `## Tasks`.
 - Optional first line is a blockquote `> Linked: {workItem-id} — {issue-title}`. Present iff `workItem:` is set in frontmatter.
-- Each task is one GFM checkbox line (`- [ ]` pending, `- [x]` completed). No nesting.
+- Each task is one checkbox line. Three statuses: `- [ ]` pending, `- [-]` in_progress, `- [x]` completed. No nesting.
 - The bookends `Start work` and `Complete work` are always present, at positions 1 and N.
+
+The `- [-]` marker is non-standard GFM — GitHub's web renderer shows it as literal text rather than a checkbox. That's acceptable because `session.md` lives on session branches and is mostly read in editors (where Obsidian, JetBrains, and similar renderers do treat `[-]` as in-progress). The tradeoff buys lossless `in_progress` round-trip across chats.
 
 ## Helper invocations
 

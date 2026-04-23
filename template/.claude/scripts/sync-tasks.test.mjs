@@ -261,7 +261,7 @@ withTempSession(SESSION_WITH_TASKS, (file) => {
     ],
   });
   const after = readFileSync(file, 'utf-8');
-  assert(after.includes('- [ ] New task'), 'replaced with new task');
+  assert(after.includes('- [-] New task'), 'replaced with new task (in_progress → [-])');
   assert(!after.includes('- [ ] Old task'), 'old task removed');
   assert(after.includes('original progress text'), 'preserves Progress body');
   const taskHeadingCount = (after.match(/^## Tasks$/gm) || []).length;
@@ -282,6 +282,23 @@ withTempSession(FRESH_SESSION, (file) => {
   assertEq(round.todos.length, 4, 'round-trip todos length (with bookends)');
   assertEq(round.todos[1].content, 'Reproduce', 'round-trip middle task content');
   assertEq(round.todos[2].status, 'pending', 'round-trip middle task status');
+});
+
+console.log('\n# in_progress round-trip');
+
+withTempSession(FRESH_SESSION, (file) => {
+  const input = {
+    linked: null,
+    todos: [
+      { content: 'Doing thing', activeForm: 'Doing thing', status: 'in_progress' },
+    ],
+  };
+  writeTasksToSession(file, input);
+  const after = readFileSync(file, 'utf-8');
+  assert(after.includes('- [-] Doing thing'), 'in_progress renders as [-]');
+  const round = parseTasksSection(after);
+  const middle = round.todos.find(t => t.content === 'Doing thing');
+  assertEq(middle.status, 'in_progress', 'in_progress round-trips losslessly');
 });
 
 import { execFileSync } from 'child_process';
@@ -305,7 +322,7 @@ withTempSession(FRESH_SESSION, (file) => {
     encoding: 'utf-8',
   });
   const written = readFileSync(file, 'utf-8');
-  assert(written.includes('- [ ] Test thing'), 'CLI --write rendered task');
+  assert(written.includes('- [-] Test thing'), 'CLI --write rendered task (in_progress → [-])');
 
   const out = execFileSync('node', [SCRIPT_PATH, '--read', file], {
     encoding: 'utf-8',
