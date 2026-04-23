@@ -285,6 +285,10 @@ withTempSession(FRESH_SESSION, (file) => {
 });
 
 import { execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const SCRIPT_PATH = join(dirname(fileURLToPath(import.meta.url)), 'sync-tasks.mjs');
 
 console.log('\n# CLI');
 
@@ -296,14 +300,14 @@ withTempSession(FRESH_SESSION, (file) => {
       { content: 'Complete work', activeForm: 'Completing work', status: 'pending' },
     ],
   });
-  execFileSync('node', ['template/.claude/scripts/sync-tasks.mjs', '--write', file], {
+  execFileSync('node', [SCRIPT_PATH, '--write', file], {
     input,
     encoding: 'utf-8',
   });
   const written = readFileSync(file, 'utf-8');
   assert(written.includes('- [ ] Test thing'), 'CLI --write rendered task');
 
-  const out = execFileSync('node', ['template/.claude/scripts/sync-tasks.mjs', '--read', file], {
+  const out = execFileSync('node', [SCRIPT_PATH, '--read', file], {
     encoding: 'utf-8',
   });
   const parsed = JSON.parse(out);
@@ -314,7 +318,7 @@ withTempSession(FRESH_SESSION, (file) => {
 withTempSession('not a session file\n', (file) => {
   let threw = false;
   try {
-    execFileSync('node', ['template/.claude/scripts/sync-tasks.mjs', '--read', file], {
+    execFileSync('node', [SCRIPT_PATH, '--read', file], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
