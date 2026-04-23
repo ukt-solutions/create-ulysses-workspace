@@ -28,5 +28,88 @@ assertEq(toActiveForm('Complete work'),                 'Completing work',      
 assertEq(toActiveForm('Reproduce on iOS Safari'),       'Reproducing on iOS Safari',      'e-drop multi-word');
 assertEq(toActiveForm('Fix bug'),                       'Fixing bug',                     'simple');
 
+import { parseTasksSection } from './sync-tasks.mjs';
+
+const SAMPLE_WITH_TASKS = `---
+type: session-tracker
+name: demo
+---
+
+# Work Session
+
+## Tasks
+
+> Linked: gh:42 — Auth timeout on mobile
+
+- [x] Start work
+- [x] Reproduce on iOS Safari
+- [ ] Identify race condition
+- [ ] Complete work
+
+## Progress
+
+(stuff)
+`;
+
+const SAMPLE_NO_TASKS = `---
+type: session-tracker
+name: demo
+---
+
+# Work Session
+
+## Progress
+
+(stuff)
+`;
+
+const SAMPLE_NO_LINK = `---
+type: session-tracker
+name: demo
+---
+
+## Tasks
+
+- [x] Start work
+- [ ] Complete work
+`;
+
+console.log('\n# parseTasksSection');
+assertEq(
+  parseTasksSection(SAMPLE_WITH_TASKS).linked,
+  { id: 'gh:42', title: 'Auth timeout on mobile' },
+  'parses linked blockquote'
+);
+assertEq(
+  parseTasksSection(SAMPLE_WITH_TASKS).todos.length,
+  4,
+  'parses 4 todos'
+);
+assertEq(
+  parseTasksSection(SAMPLE_WITH_TASKS).todos[0],
+  { content: 'Start work', activeForm: 'Starting work', status: 'completed' },
+  'first todo completed'
+);
+assertEq(
+  parseTasksSection(SAMPLE_WITH_TASKS).todos[2],
+  { content: 'Identify race condition', activeForm: 'Identifying race condition', status: 'pending' },
+  'pending todo'
+);
+assertEq(
+  parseTasksSection(SAMPLE_NO_TASKS),
+  { linked: null, todos: [] },
+  'missing section returns empty'
+);
+assertEq(
+  parseTasksSection(SAMPLE_NO_LINK).linked,
+  null,
+  'no blockquote → linked: null'
+);
+assertEq(
+  parseTasksSection(SAMPLE_NO_LINK).todos.length,
+  2,
+  'no blockquote → still parses todos'
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

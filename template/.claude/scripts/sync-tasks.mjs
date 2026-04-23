@@ -32,3 +32,47 @@ export function toActiveForm(content) {
 
   return gerund + rest;
 }
+
+const TASKS_HEADING = '## Tasks';
+const LINK_PREFIX = '> Linked:';
+
+export function parseTasksSection(sessionMdContent) {
+  const lines = sessionMdContent.split('\n');
+  const startIdx = lines.findIndex(l => l.trim() === TASKS_HEADING);
+  if (startIdx === -1) return { linked: null, todos: [] };
+
+  // Section runs until the next "## " heading or EOF.
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    if (lines[i].startsWith('## ')) { endIdx = i; break; }
+  }
+
+  const sectionLines = lines.slice(startIdx + 1, endIdx);
+  let linked = null;
+  const todos = [];
+
+  for (const line of sectionLines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith(LINK_PREFIX)) {
+      const rest = trimmed.slice(LINK_PREFIX.length).trim();
+      const dashIdx = rest.indexOf(' — ');
+      if (dashIdx === -1) {
+        linked = { id: rest, title: null };
+      } else {
+        linked = { id: rest.slice(0, dashIdx).trim(), title: rest.slice(dashIdx + 3).trim() };
+      }
+      continue;
+    }
+
+    const checkboxMatch = trimmed.match(/^- \[([ x])\] (.+)$/);
+    if (checkboxMatch) {
+      const status = checkboxMatch[1] === 'x' ? 'completed' : 'pending';
+      const content = checkboxMatch[2].trim();
+      todos.push({ content, activeForm: toActiveForm(content), status });
+    }
+  }
+
+  return { linked, todos };
+}
