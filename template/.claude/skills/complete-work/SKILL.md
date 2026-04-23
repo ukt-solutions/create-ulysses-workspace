@@ -75,18 +75,22 @@ Formally read ALL sources before synthesizing — do not write release notes fro
 
 ### Step 6: Synthesize release notes
 
+Branch notes are written to the **workspace** repo, not the project repo. They are an internal retrospection artifact consumed by `/release` at release time; the project repo only ever receives a `CHANGELOG.md` entry. This separation keeps dogfood content out of public project repos between feature merge and the next release cut.
+
 For each repo in the tracker's `repos:` list that has commits beyond the base branch:
 
 ```bash
 cd work-sessions/{session-name}/workspace/repos/{repo}
 COMMIT_ID=$(git rev-parse --short HEAD)
-mkdir -p release-notes/unreleased
+cd ../..  # back to the workspace worktree
+mkdir -p release-notes/unreleased/{repo-name}
 ```
 
-**File 1: `release-notes/unreleased/branch-release-notes-{COMMIT_ID}.md`**
+**File 1: `release-notes/unreleased/{repo-name}/branch-release-notes-{COMMIT_ID}.md`** (relative to the workspace worktree)
 ```markdown
 ---
 branch: {branch}
+repo: {repo-name}
 type: {feature|fix|chore}
 author: {user}
 date: {YYYY-MM-DD}
@@ -98,10 +102,11 @@ date: {YYYY-MM-DD}
 Written from scratch per coherent-revisions rule.}
 ```
 
-**File 2: `release-notes/unreleased/branch-release-questions-{COMMIT_ID}.md`**
+**File 2: `release-notes/unreleased/{repo-name}/branch-release-questions-{COMMIT_ID}.md`**
 ```markdown
 ---
 branch: {branch}
+repo: {repo-name}
 author: {user}
 date: {YYYY-MM-DD}
 ---
@@ -111,23 +116,22 @@ date: {YYYY-MM-DD}
 {Only genuinely open questions — not things resolved during implementation.}
 ```
 
-Commit per repo:
+The `repo:` frontmatter field is what `/release` uses to know which project repo's `CHANGELOG.md` should consume each note. The directory name is the same as the field for redundancy.
+
+After all repos are processed, commit once on the workspace branch:
 ```bash
+cd work-sessions/{session-name}/workspace
 git add release-notes/unreleased/
 git commit -m "docs: add release notes for {branch}"
 ```
 
 If a repo has no commits beyond the base, skip release notes for it.
 
-### Step 7: Consume session-scoped sources
+### Step 7: Remove session artifacts from the workspace branch
 
-The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 12. Before that happens, make sure everything worth preserving has landed in release notes.
+The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 12. Before that happens, make sure everything worth preserving has landed in release notes (Step 6) — once Step 6 has run, the tracker, specs, and plans have served their purpose.
 
-No separate "consume spec and plan" commit is needed for the project repos — specs and plans now live in the session folder, not in the project worktrees. The project worktrees only carry source code changes.
-
-### Step 7c: Remove session artifacts from the workspace branch
-
-Session content (tracker, specs, plans) lives at the top of the workspace worktree on the session branch. Its purpose was synthesis into release notes in Step 6 — that work is now done. Remove the files from the branch before the final push so main's top level stays free of session artifacts:
+Session content lives at the top of the workspace worktree on the session branch. Remove these files from the branch before the final push so main's top level stays free of session artifacts:
 
 ```bash
 cd work-sessions/{session-name}/workspace
@@ -141,31 +145,7 @@ The `|| true` guards keep this idempotent — if a file is already gone (e.g., a
 
 This commit persists in the branch's history. On squash merge or rebase merge, branch history collapses to one clean commit on main with no session artifacts. On merge commits, branch history is reachable but the final tree on main shows no session content.
 
-### Step 7b: Version bump (if applicable)
-
-For each repo in the tracker's `repos:`, check if the repo has versioning:
-```bash
-cd work-sessions/{session-name}/workspace/repos/{repo}
-cat package.json 2>/dev/null | grep '"version"'
-```
-
-If no `package.json` or no `version` field: skip this repo — no versioning to manage.
-
-If the repo has a version, determine the appropriate bump from the release notes just written:
-
-1. Read the `type:` field from the branch release notes created in Step 6
-2. Determine the bump:
-   - `type: fix` or `type: chore` → **patch** (auto-bump, no confirmation needed)
-   - `type: feature` → **minor** (present to user: "This session adds new functionality. Suggested bump: {current} → {next-minor}. Confirm or adjust?")
-   - Breaking changes detected (schema changes, removed APIs, convention changes) → **major** (present to user: "This session includes breaking changes. Suggested bump: {current} → {next-major}. Confirm or adjust?")
-
-3. Apply the bump:
-   ```bash
-   git add package.json
-   git commit -m "chore: bump version to {new-version}"
-   ```
-
-The user can override any suggestion. Accept their decision.
+> **No version bump here.** Versions are bumped at release time by `/release`, which consumes accumulated unreleased branch notes into a single `CHANGELOG.md` entry per project repo. `/complete-work` only writes branch notes; it does not modify any project repo's `package.json`. This avoids version drift when multiple feature branches land between releases.
 
 ### Step 8: Detect remote type per repo
 
@@ -373,8 +353,9 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 - **Revert** — undo the changes (with confirmation)
 
 ## Notes
-- Release notes live in the PROJECT repo worktrees — never the workspace
+- Branch release notes live in the WORKSPACE repo at `release-notes/unreleased/{repo-name}/` — never in project repos. Project repos only ever see code commits and (at release time) `CHANGELOG.md` entries written by `/release`.
 - The session tracker's body is the primary source for release note synthesis — it captures the full session history alongside specs and plans
 - All repos get PRed and merged together — one approval for all
+- Version bumps happen in `/release`, not `/complete-work` — this avoids version drift when multiple feature branches land between releases
 - The teardown order is mandatory: project worktrees first, then workspace worktree, then prune, then delete the session folder
 - Context consumption, cleanup, and auto-committing release notes are intentional workflow behavior — these bypass normal commit conventions by design
