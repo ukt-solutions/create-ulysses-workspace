@@ -284,5 +284,46 @@ withTempSession(FRESH_SESSION, (file) => {
   assertEq(round.todos[2].status, 'pending', 'round-trip middle task status');
 });
 
+import { execFileSync } from 'child_process';
+
+console.log('\n# CLI');
+
+withTempSession(FRESH_SESSION, (file) => {
+  const input = JSON.stringify({
+    todos: [
+      { content: 'Start work', activeForm: 'Starting work', status: 'completed' },
+      { content: 'Test thing', activeForm: 'Testing thing', status: 'in_progress' },
+      { content: 'Complete work', activeForm: 'Completing work', status: 'pending' },
+    ],
+  });
+  execFileSync('node', ['template/.claude/scripts/sync-tasks.mjs', '--write', file], {
+    input,
+    encoding: 'utf-8',
+  });
+  const written = readFileSync(file, 'utf-8');
+  assert(written.includes('- [ ] Test thing'), 'CLI --write rendered task');
+
+  const out = execFileSync('node', ['template/.claude/scripts/sync-tasks.mjs', '--read', file], {
+    encoding: 'utf-8',
+  });
+  const parsed = JSON.parse(out);
+  assertEq(parsed.todos.length, 3, 'CLI --read returns 3 todos');
+  assertEq(parsed.todos[1].content, 'Test thing', 'CLI --read content');
+});
+
+withTempSession('not a session file\n', (file) => {
+  let threw = false;
+  try {
+    execFileSync('node', ['template/.claude/scripts/sync-tasks.mjs', '--read', file], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    threw = true;
+    assert(e.stderr.includes('Not a session') || e.stderr.includes('frontmatter'), 'errors on non-session file');
+  }
+  assert(threw, 'CLI throws on non-session file');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

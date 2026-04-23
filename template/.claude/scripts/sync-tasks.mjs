@@ -2,6 +2,9 @@
 // Round-trips a flat task list across chats by persisting it on the session branch.
 
 import { readFileSync, writeFileSync, renameSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { readSessionFile } from '../lib/session-frontmatter.mjs';
+import { createTracker } from './trackers/interface.mjs';
 
 const IRREGULARS = {
   // Pre-built map for verbs whose gerund isn't a clean suffix transform.
@@ -154,4 +157,77 @@ function spliceTasksSection(content, newSection) {
   const after = endIdx < lines.length ? lines.slice(endIdx).join('\n') : '';
   const beforeTrimmed = before.replace(/\n+$/, '\n');
   return beforeTrimmed + '\n' + newSection + (after ? '\n' + after : '');
+}
+
+export async function resolveLinked(filePath, { tracker } = {}) {
+  const { fields } = readSessionFile(filePath);
+  if (!fields.workItem) return null;
+  const id = fields.workItem;
+  if (!tracker) return { id, title: null };
+  try {
+    const issue = await tracker.getIssue(id);
+    return { id, title: issue?.title || null };
+  } catch {
+    return { id, title: null };
+  }
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const mode = args[0];
+  const filePath = args[1];
+
+  if (!mode || !filePath || (mode !== '--read' && mode !== '--write')) {
+    console.error('Usage: sync-tasks.mjs --read|--write <session.md>');
+    process.exit(2);
+  }
+
+  let fields;
+  try {
+    fields = readSessionFile(filePath).fields;
+  } catch (e) {
+    console.error(`Not a session file: ${e.message}`);
+    process.exit(2);
+  }
+  if (fields.type !== 'session-tracker') {
+    console.error(`Not a session-tracker file (type=${fields.type})`);
+    process.exit(2);
+  }
+
+  let tracker = null;
+  try {
+    const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+    if (ws.workspace?.tracker) tracker = createTracker(ws.workspace.tracker);
+  } catch {
+    // No workspace.json or no tracker configured — skip.
+  }
+
+  if (mode === '--read') {
+    const content = readFileSync(filePath, 'utf-8');
+    const parsed = parseTasksSection(content);
+    if (!parsed.linked) {
+      parsed.linked = await resolveLinked(filePath, { tracker });
+    }
+    process.stdout.write(JSON.stringify(parsed, null, 2) + '\n');
+    return;
+  }
+
+  const stdin = await readStdin();
+  const input = JSON.parse(stdin);
+  const linked = input.linked ?? await resolveLinked(filePath, { tracker });
+  writeTasksToSession(filePath, { linked, todos: input.todos || [] });
+}
+
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    process.stdin.setEncoding('utf-8');
+    process.stdin.on('data', chunk => { data += chunk; });
+    process.stdin.on('end', () => resolve(data));
+    process.stdin.on('error', reject);
+  });
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch(e => { console.error(e); process.exit(1); });
 }
