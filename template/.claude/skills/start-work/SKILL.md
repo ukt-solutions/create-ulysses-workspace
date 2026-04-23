@@ -53,8 +53,14 @@ Begin or resume a persistent work session. Each session lives in its own `work-s
    - `names` is a list of all names the chat has had (users can rename). Append, never replace.
    - `ended` is set by the session-end hook when the chat closes.
 4. Update the tracker `status:` to `active` if it was `paused`
-5. Run history reconstruction (see below)
-6. Tell user: "Resuming {name}. Work from `work-sessions/{name}/workspace/`."
+5. Restore the task list from `## Tasks` per the `task-list-mirroring` rule:
+   ```bash
+   cd work-sessions/{name}/workspace
+   node .claude/scripts/sync-tasks.mjs --read session.md
+   ```
+   Pass the parsed `todos` array to `TodoWrite` so the live UI matches the durable state. If the section is missing (legacy session predating this feature), seed it first via `--write` with an empty `todos` array — the helper will insert the bookends.
+6. Run history reconstruction (see below)
+7. Tell user: "Resuming {name}. Work from `work-sessions/{name}/workspace/`."
 
 ### History Reconstruction
 
@@ -164,6 +170,32 @@ If a `workItem:` was set in step 5 or 6, write it into the tracker's frontmatter
 Register this chat in the tracker's `chatSessions` frontmatter. For new sessions, the session-start hook has already fired (before /start-work was invoked) but the session folder didn't exist yet. Find the current chat's UUID from the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/` and add the entry manually via the session-frontmatter helper. Subsequent chats on this session will be registered automatically by the hook.
 
 The tracker already reflects the correct state — assignment happened in step 5 or 6 via `adapter.claim()`. Do not write to any local file mirror. There is no `open-work.md`.
+
+### Seed the task list
+
+After session creation, seed the `## Tasks` section in the new tracker so `TodoWrite` has something to mirror. See the `task-list-mirroring` rule for the schema.
+
+```bash
+# Build the seed from inside the worktree so the helper resolves workspace.json correctly.
+cd work-sessions/{session-name}/workspace
+echo '{"todos": []}' | node .claude/scripts/sync-tasks.mjs --write session.md
+```
+
+The helper auto-inserts the `Start work` (completed) and `Complete work` (pending) bookends, and resolves the tracker title from `workItem:` if set.
+
+Then call `TodoWrite` with the same seed so the live UI matches:
+
+```javascript
+// Pseudocode — call the actual TodoWrite tool.
+TodoWrite({
+  todos: [
+    { content: 'Start work',    activeForm: 'Starting work',    status: 'completed' },
+    { content: 'Complete work', activeForm: 'Completing work',  status: 'pending'   },
+  ]
+});
+```
+
+The auto-commit at the end of "Capture prior conversation context" picks up the new section — no separate commit needed.
 
 ### Capture prior conversation context
 
