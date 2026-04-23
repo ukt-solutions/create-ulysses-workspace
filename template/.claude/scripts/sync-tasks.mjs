@@ -76,3 +76,41 @@ export function parseTasksSection(sessionMdContent) {
 
   return { linked, todos };
 }
+
+const START_BOOKEND = { content: 'Start work', activeForm: 'Starting work', status: 'completed' };
+const END_BOOKEND   = { content: 'Complete work', activeForm: 'Completing work', status: 'pending' };
+
+export function enforceBookends(todos) {
+  const middle = [];
+  let foundStart = null;
+  let foundEnd = null;
+  for (const t of todos) {
+    if (t.content === 'Start work') foundStart = t;
+    else if (t.content === 'Complete work') foundEnd = t;
+    else middle.push(t);
+  }
+  return [
+    foundStart || { ...START_BOOKEND },
+    ...middle,
+    foundEnd || { ...END_BOOKEND },
+  ];
+}
+
+export function renderTasksSection({ linked, todos }) {
+  const safe = enforceBookends(todos);
+  const lines = ['## Tasks', ''];
+  if (linked) {
+    if (linked.title) {
+      lines.push(`> Linked: ${linked.id} — ${linked.title}`);
+    } else {
+      lines.push(`> Linked: ${linked.id}`);
+    }
+    lines.push('');
+  }
+  for (const t of safe) {
+    const box = t.status === 'completed' ? '[x]' : '[ ]';
+    lines.push(`- ${box} ${t.content}`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}

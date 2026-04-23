@@ -111,5 +111,81 @@ assertEq(
   'no blockquote → still parses todos'
 );
 
+import { renderTasksSection, enforceBookends } from './sync-tasks.mjs';
+
+console.log('\n# enforceBookends');
+assertEq(
+  enforceBookends([]).map(t => t.content),
+  ['Start work', 'Complete work'],
+  'empty list → bookends inserted'
+);
+assertEq(
+  enforceBookends([
+    { content: 'Do thing', activeForm: 'Doing thing', status: 'pending' },
+  ]).map(t => t.content),
+  ['Start work', 'Do thing', 'Complete work'],
+  'middle task gets wrapped in bookends'
+);
+assertEq(
+  enforceBookends([
+    { content: 'Complete work', activeForm: 'Completing work', status: 'pending' },
+    { content: 'Do thing', activeForm: 'Doing thing', status: 'pending' },
+    { content: 'Start work', activeForm: 'Starting work', status: 'completed' },
+  ]).map(t => t.content),
+  ['Start work', 'Do thing', 'Complete work'],
+  'misplaced bookends moved to ends'
+);
+assertEq(
+  enforceBookends([{ content: 'Start work', activeForm: 'Starting work', status: 'completed' }])[0].status,
+  'completed',
+  'preserves Start work status when present'
+);
+assertEq(
+  enforceBookends([])[0].status,
+  'completed',
+  'inserted Start work defaults to completed'
+);
+assertEq(
+  enforceBookends([])[1].status,
+  'pending',
+  'inserted Complete work defaults to pending'
+);
+
+console.log('\n# renderTasksSection');
+assertEq(
+  renderTasksSection({
+    linked: null,
+    todos: [
+      { content: 'Start work', activeForm: 'Starting work', status: 'completed' },
+      { content: 'Do thing', activeForm: 'Doing thing', status: 'pending' },
+      { content: 'Complete work', activeForm: 'Completing work', status: 'pending' },
+    ],
+  }),
+  '## Tasks\n\n- [x] Start work\n- [ ] Do thing\n- [ ] Complete work\n',
+  'no link → no blockquote'
+);
+assertEq(
+  renderTasksSection({
+    linked: { id: 'gh:42', title: 'Auth timeout on mobile' },
+    todos: [
+      { content: 'Start work', activeForm: 'Starting work', status: 'completed' },
+      { content: 'Complete work', activeForm: 'Completing work', status: 'pending' },
+    ],
+  }),
+  '## Tasks\n\n> Linked: gh:42 — Auth timeout on mobile\n\n- [x] Start work\n- [ ] Complete work\n',
+  'with link → blockquote rendered'
+);
+assertEq(
+  renderTasksSection({
+    linked: { id: 'gh:42', title: null },
+    todos: [
+      { content: 'Start work', activeForm: 'Starting work', status: 'completed' },
+      { content: 'Complete work', activeForm: 'Completing work', status: 'pending' },
+    ],
+  }),
+  '## Tasks\n\n> Linked: gh:42\n\n- [x] Start work\n- [ ] Complete work\n',
+  'link with null title → bare ID'
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
