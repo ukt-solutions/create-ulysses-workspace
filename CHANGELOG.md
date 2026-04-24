@@ -2,7 +2,7 @@
 
 All notable changes to `@ulysses-ai/create-workspace` are documented here. Entries are written for users installing the package, not contributors — see the repository history for implementation detail.
 
-## v0.14.0-beta.0 — 2026-04-23
+## v0.14.0-beta.1 — 2026-04-24
 
 - New `TodoWrite` ↔ `session.md` mirror. From `/start-work` onward, a lifecycle-aware checklist appears in Claude Code with `Start work`/`Complete work` bookends and an optional `> Linked: gh:42 — …` reference when the session is tied to a tracker issue. Tasks persist across chats, machines, and pause/resume cycles via a new `## Tasks` section in `session.md`, round-tripped by `.claude/scripts/sync-tasks.mjs`. Five skills (`/start-work`, `/pause-work`, `/complete-work`, `/handoff`, `/braindump`) flush at lifecycle moments so the durable store stays coherent.
 - `/release` is now the sole owner of version bumps. `/complete-work` no longer touches `package.json`, eliminating a pre-existing double-bump that left versions disagreeing with the latest `CHANGELOG.md` entry between feature merge and release.
