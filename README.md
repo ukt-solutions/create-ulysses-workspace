@@ -89,7 +89,7 @@ Four things, in the order you'll touch them:
 A scaffolded workspace with:
 
 - **14 skills** covering the workflow lifecycle, releases, handoffs, and maintenance
-- **6 active rules** + **8 optional `.skip` rules** for behaviors you can opt into
+- **7 active rules** + **8 optional `.skip` rules** for behaviors you can opt into
 - **9 hooks** for SessionStart, SubagentStart, PreCompact, WorktreeCreate, and the rest of the small set the conventions rely on
 - A **`shared-context/`** memory system with three visibility levels: locked (team truths), root (team-visible ephemerals), user-scoped (personal)
 - Conventions for **multi-repo work sessions** with isolated git worktrees, parallelizable from separate terminals
