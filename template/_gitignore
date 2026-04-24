@@ -16,9 +16,8 @@ workspace-scratchpad/
 .claude/settings.local.json
 .claude/.active-session.json
 
-# Local-only convention (rules, context)
-.claude/rules/local-only-*
-shared-context/**/local-only-*
+# Local-only convention — machine-local state, any depth
+local-only-*
 
 # IDE
 .idea/
