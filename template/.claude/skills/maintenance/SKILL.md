@@ -44,24 +44,45 @@ For each shared-context `.md` file and each `work-sessions/*/workspace/session.m
 - Workspace repo on expected branch?
 - Orphan worktree records in project repos — run `git -C repos/{repo} worktree list` for each repo and flag any `prunable` markers. These usually come from a workspace-first teardown (the unsafe order) leaving stale admin records behind. Suggest `git worktree prune` on the affected repo.
 
+### 5. Template freshness
+
+Compare the workspace's pinned template version against the latest published on npm.
+
+Always invoke `refreshIfStale` from the audit (regardless of `workspace.versionCheck.ambient` — the user explicitly ran `/maintenance`):
+
+```javascript
+import { refreshIfStale } from './.claude/lib/freshness.mjs';
+const result = await refreshIfStale({
+  workspaceRoot: process.cwd(),
+  ttlMs: 24 * 60 * 60 * 1000,
+});
+```
+
+Report one of:
+- `outdated` → `✗ Template v{current} → v{latest} available. Run npx @ulysses-ai/create-workspace --upgrade.`
+- `current` → `✓ Template is up to date (v{latest}).`
+- `unknown` (with cache) → `⚠ Could not reach npm registry; last cached latest was v{latest} as of {checkedAt}.`
+- `unknown` (no cache) → `⚠ Could not reach npm registry; no cached version on file. Try again when online.`
+- `skipped: 'uninitialized'` → `⚠ Workspace not initialized; freshness check unavailable.`
+
 ## Cleanup
 
 Active recommendations. Flags problems and suggests fixes, but asks before acting.
 
-### 5. Stale context
+### 6. Stale context
 - Ephemeral files not updated in 7+ days — suggest resolve, update, or archive
 - `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
 - Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
 - Braindumps that overlap significantly — suggest merging (e.g., "workspace-branching.md and persistent-work-sessions.md cover the same topic")
 - Handoffs referencing deleted branches — suggest resolve or remove
 
-### 6. Context reconciliation
+### 7. Context reconciliation
 - Read recent shared-context writes (last session or last N files by updated date)
 - For each, scan other shared-context files for references that are now stale
 - Surface: "{file} says X but {newer-file} now says Y. Update {file}?"
 - This is the capture-time cross-check, run retroactively instead of inline
 
-### 7. Health metrics
+### 8. Health metrics
 - Size of `shared-context/locked/` relative to the active model's context window — flag if over 5% (yellow) or 15% (red). Absolute byte count is a weak proxy; contradictions, stale references, and duplicated coverage across files matter more than total size.
 - Number of ephemeral files — flag if accumulating without resolution
 - Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
@@ -90,11 +111,12 @@ Cleanup suggestions (2):
   ⊕ migration-recipes.md still says "/sync handles dogfood" but
     /sync was replaced by /sync-work — update?
 
-OK (4):
+OK (5):
   ✓ All CLAUDE.md skill references valid
   ✓ Workspace structure matches rule
   ✓ workspace.json repos all present
   ✓ No frontmatter errors
+  ✓ Template is up to date (v0.14.0)
 ```
 
 ## Flow

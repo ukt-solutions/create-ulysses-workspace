@@ -15,6 +15,12 @@
             "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"${CLAUDE_PROJECT_DIR:-$PWD}\"; else echo \"${CLAUDE_PROJECT_DIR:-$PWD}\"; fi)\"/.claude/hooks/session-start.mjs",
             "timeout": 30000,
             "statusMessage": "Syncing workspace..."
+          },
+          {
+            "type": "command",
+            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"${CLAUDE_PROJECT_DIR:-$PWD}\"; else echo \"${CLAUDE_PROJECT_DIR:-$PWD}\"; fi)\"/.claude/hooks/version-freshness-check.mjs",
+            "timeout": 5000,
+            "statusMessage": "Checking template freshness..."
           }
         ]
       }
