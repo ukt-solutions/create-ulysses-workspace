@@ -70,5 +70,61 @@ function fakeFetch(response) {
   assertEq(result.error.includes('ECONNREFUSED'), true, 'thrown error message preserved');
 }
 
+import { readCache, writeCache } from './registry-check.mjs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
+console.log('\n# readCache / writeCache');
+
+function withTempDir(fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'reg-cache-test-'));
+  try { fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+// readCache: missing file returns null
+withTempDir((dir) => {
+  const result = readCache(join(dir, 'missing.json'));
+  assertEq(result, null, 'missing file returns null');
+});
+
+// readCache: malformed JSON returns null
+withTempDir((dir) => {
+  const path = join(dir, 'bad.json');
+  writeFileSync(path, '{not json');
+  const result = readCache(path);
+  assertEq(result, null, 'malformed JSON returns null');
+});
+
+// readCache: valid file returns parsed object
+withTempDir((dir) => {
+  const path = join(dir, 'good.json');
+  writeFileSync(path, JSON.stringify({ latestVersion: '0.14.0', checkedAt: '2026-04-24T21:00:00Z' }));
+  const result = readCache(path);
+  assertEq(result, { latestVersion: '0.14.0', checkedAt: '2026-04-24T21:00:00Z' }, 'valid file parsed');
+});
+
+// readCache: missing required fields returns null
+withTempDir((dir) => {
+  const path = join(dir, 'partial.json');
+  writeFileSync(path, JSON.stringify({ checkedAt: '2026-04-24T21:00:00Z' }));
+  const result = readCache(path);
+  assertEq(result, null, 'missing latestVersion returns null');
+});
+
+// writeCache + readCache round-trip
+withTempDir((dir) => {
+  const path = join(dir, 'rt.json');
+  writeCache(path, { latestVersion: '0.14.0', checkedAt: '2026-04-24T21:00:00Z' });
+  assertEq(readCache(path), { latestVersion: '0.14.0', checkedAt: '2026-04-24T21:00:00Z' }, 'round-trip equal');
+});
+
+// writeCache creates parent dir if missing
+withTempDir((dir) => {
+  const path = join(dir, 'nested', 'deep', 'cache.json');
+  writeCache(path, { latestVersion: '0.14.0', checkedAt: '2026-04-24T21:00:00Z' });
+  assertEq(readCache(path)?.latestVersion, '0.14.0', 'parent dir created');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

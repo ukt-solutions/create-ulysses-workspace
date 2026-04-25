@@ -1,4 +1,6 @@
 import './require-node.mjs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 /**
  * SemVer 2.0 comparison limited to the formats this scaffolder publishes:
@@ -76,4 +78,29 @@ export async function getLatestVersion({ fetchFn = fetch, timeoutMs = DEFAULT_TI
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Read the version cache file. Returns the parsed object if it has a string
+ * `latestVersion` field; otherwise null. Treats missing file, malformed JSON,
+ * and shape mismatches all as "no cache".
+ */
+export function readCache(path) {
+  if (!existsSync(path)) return null;
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf-8'));
+    if (typeof data?.latestVersion !== 'string') return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write the version cache file, creating parent directories as needed.
+ */
+export function writeCache(path, data) {
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
 }
