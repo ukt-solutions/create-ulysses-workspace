@@ -48,3 +48,32 @@ export function compareVersions(a, b) {
   }
   return 0;
 }
+
+const REGISTRY_URL = 'https://registry.npmjs.org/@ulysses-ai/create-workspace/latest';
+const DEFAULT_TIMEOUT_MS = 3000;
+
+/**
+ * Fetch the latest version of the scaffolder from the npm registry.
+ * Returns { version, error } — exactly one of them is non-null.
+ *
+ * Caller injects fetchFn for testing. Default uses global fetch (Node 18+).
+ */
+export async function getLatestVersion({ fetchFn = fetch, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchFn(REGISTRY_URL, { signal: controller.signal });
+    if (!res.ok) {
+      return { version: null, error: `registry returned ${res.status} ${res.statusText || ''}`.trim() };
+    }
+    const body = await res.json();
+    if (typeof body?.version !== 'string') {
+      return { version: null, error: 'registry response missing version field' };
+    }
+    return { version: body.version, error: null };
+  } catch (err) {
+    return { version: null, error: err?.message || String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
