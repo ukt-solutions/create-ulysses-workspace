@@ -75,6 +75,22 @@ Also handle these non-component files from the payload:
 
 Read `toVersion` from `.workspace-update/.manifest.json` and update `templateVersion` in `workspace.json` to match.
 
+### Step 4a: Run idempotent migrators
+
+The payload may include migrator scripts at `.workspace-update/.claude/scripts/migrate-*.mjs` that bring older workspaces forward in shape. They are idempotent — safe to re-run on already-migrated workspaces. Run each one and surface its action in the upgrade summary.
+
+```bash
+node .workspace-update/.claude/scripts/migrate-claude-md-freshness-include.mjs
+```
+
+Output is JSON: `{"action":"appended"|"unchanged"|"skipped"}`.
+
+- `appended` — the workspace's `CLAUDE.md` got the `@local-only-template-freshness.md` include line added at the end.
+- `unchanged` — the line was already present.
+- `skipped` — no `CLAUDE.md` exists at the workspace root (rare; surface to the user).
+
+Add other migrators here as the template ships them.
+
 ### Step 5: Post-update verification
 
 Run `/maintenance audit` again to verify the update didn't introduce:
