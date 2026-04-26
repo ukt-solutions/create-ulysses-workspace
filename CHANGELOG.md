@@ -2,6 +2,20 @@
 
 All notable changes to `@ulysses-ai/create-workspace` are documented here. Entries are written for users installing the package, not contributors — see the repository history for implementation detail.
 
+## v0.14.0-beta.2 — 2026-04-26
+
+- **Workspace template freshness check.** Workspaces now know when the scaffolder template they were initialized from is outdated. A new SessionStart hook refreshes a 24-hour-cached check against npm and writes a `local-only-template-freshness.md` banner at the workspace root when a newer version exists; the banner is referenced from `CLAUDE.md` via `@local-only-template-freshness.md` so it surfaces under Claude Code CLI and ACP clients (Zed, JetBrains) alike. `/maintenance` reports the same delta in audit output. The check is gated by `workspace.versionCheck.ambient` in `workspace.json` (default `true` during beta; will flip to `false` at v1.0). Network behavior is conservative: offline conditions never break session start. Existing workspaces get the `@local-only-template-freshness.md` line added to `CLAUDE.md` automatically on `--upgrade` via an idempotent migrator.
+- **Shared-context index and frontmatter conventions.** Each workspace now has an auto-generated `shared-context/index.md` — a one-line catalog of every shared-context file, grouped by lifecycle level (locked / root / user). The new `build-shared-context-index.mjs` script walks shared-context, reads frontmatter, and writes the index; `--check` reports staleness for `/maintenance audit`, `--write` regenerates for cleanup. A `shared-context/.indexignore` file accepts gitignore-style path-prefix lines for content like archived release notes. Two optional frontmatter fields are introduced: `description:` (one-line summary that feeds the index, with a body-sentence and filename-slug fallback when absent) and `confidence: high|medium|low` for research and design files. `/maintenance` gains an index-integrity audit step and validates `confidence` values. Hand edits to `index.md` are overwritten — source of truth is the filesystem.
+- **Unscoped `local-only-*` gitignore convention.** The template's `_gitignore` previously scoped the `local-only-*` pattern to `.claude/rules/` and `shared-context/**/`, which let machine-local files at the workspace root (e.g., notes about a patched ACP adapter) fall through and show up as untracked. The pattern is now uniform: anything named `local-only-*`, at any depth, is ignored. New workspaces inherit it automatically; existing workspaces pick it up on next `/workspace-update`.
+
+### Known issues
+
+- The v1.0 default flip for `versionCheck.ambient` (true → false) lives in `AMBIENT_DEFAULT` in the freshness hook and in `template/workspace.json.tmpl`. No automation enforces it; it needs a manual edit at v1.0 release time.
+- `shared-context/index.md` regenerates on `/maintenance`, not on every shared-context write. If drift between maintenance runs becomes annoying, a PostToolUse hook is a follow-up.
+- About a third of bootstrapped index entries use weak fallback descriptions (filename-slug-derived). Adding `description:` to source files sharpens them; no batch backfill is mandated.
+- The freshness banner file appears at the workspace root in Finder when behind. If clutter feedback emerges, an alternative placement under `workspace-scratchpad/` is available.
+- The `/maintenance` audit assumes `process.cwd()` is the workspace root. Running it from inside a session worktree may produce inaccurate freshness/index reports — invoke from main.
+
 ## v0.14.0-beta.1 — 2026-04-24
 
 - New `TodoWrite` ↔ `session.md` mirror. From `/start-work` onward, a lifecycle-aware checklist appears in Claude Code with `Start work`/`Complete work` bookends and an optional `> Linked: gh:42 — …` reference when the session is tied to a tracker issue. Tasks persist across chats, machines, and pause/resume cycles via a new `## Tasks` section in `session.md`, round-tripped by `.claude/scripts/sync-tasks.mjs`. Five skills (`/start-work`, `/pause-work`, `/complete-work`, `/handoff`, `/braindump`) flush at lifecycle moments so the durable store stays coherent.
