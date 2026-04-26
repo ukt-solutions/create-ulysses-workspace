@@ -55,7 +55,7 @@ lifecycle: active
 type: research
 topic: vector-search-evaluation
 description: Evaluation of FAISS for shared-context — concluded NL index is sufficient at our scale.
-author: myron
+author: alex
 confidence: medium
 updated: 2026-04-25
 ---
