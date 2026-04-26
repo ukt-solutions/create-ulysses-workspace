@@ -30,6 +30,7 @@ For each shared-context `.md` file and each `work-sessions/*/workspace/session.m
 - `lifecycle: active` on a file not updated in 7+ days? (stale candidate)
 - `lifecycle: resolved` files that should have been processed by /complete-work?
 - Session tracker `status: active` but the workspace worktree at `work-sessions/{name}/workspace/` is missing? (orphaned)
+- `confidence` field present? Must be one of `high`, `medium`, `low` if set.
 
 ### 3. Workspace structure
 - Actual directory layout matches what workspace-structure rule describes?
@@ -44,7 +45,25 @@ For each shared-context `.md` file and each `work-sessions/*/workspace/session.m
 - Workspace repo on expected branch?
 - Orphan worktree records in project repos — run `git -C repos/{repo} worktree list` for each repo and flag any `prunable` markers. These usually come from a workspace-first teardown (the unsafe order) leaving stale admin records behind. Suggest `git worktree prune` on the affected repo.
 
-### 5. Template freshness
+### 5. Shared-context index integrity
+
+`shared-context/index.md` is auto-generated from frontmatter. Run the check:
+
+```bash
+node .claude/scripts/build-shared-context-index.mjs --check --root .
+```
+
+Three failure modes (script exits 1 with a JSON status):
+
+- `missing` — `shared-context/` exists but `index.md` does not. Run `--write` to create.
+- `stale` — `index.md` exists but its entries no longer match the filesystem. Causes: a file was added or deleted, a `description:` was changed, a `.indexignore` rule was added. Run `--write` to regenerate.
+- (no failure) — `current` with the entry count.
+
+Audit mode reports the status. Cleanup mode runs `--write` if stale or missing, then re-checks.
+
+While the index is being read, also flag entries with weak fallbacks: filename-slug-only descriptions (e.g., "project status" with no period) usually indicate the underlying file is missing a `description:` or has no usable opening sentence. Suggest adding `description:` to those source files — the index will pick it up on the next regeneration.
+
+### 6. Template freshness
 
 Compare the workspace's pinned template version against the latest published on npm.
 
@@ -69,20 +88,20 @@ Report one of:
 
 Active recommendations. Flags problems and suggests fixes, but asks before acting.
 
-### 6. Stale context
+### 7. Stale context
 - Ephemeral files not updated in 7+ days — suggest resolve, update, or archive
 - `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
 - Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
 - Braindumps that overlap significantly — suggest merging (e.g., "workspace-branching.md and persistent-work-sessions.md cover the same topic")
 - Handoffs referencing deleted branches — suggest resolve or remove
 
-### 7. Context reconciliation
+### 8. Context reconciliation
 - Read recent shared-context writes (last session or last N files by updated date)
 - For each, scan other shared-context files for references that are now stale
 - Surface: "{file} says X but {newer-file} now says Y. Update {file}?"
 - This is the capture-time cross-check, run retroactively instead of inline
 
-### 8. Health metrics
+### 9. Health metrics
 - Size of `shared-context/locked/` relative to the active model's context window — flag if over 5% (yellow) or 15% (red). Absolute byte count is a weak proxy; contradictions, stale references, and duplicated coverage across files matter more than total size.
 - Number of ephemeral files — flag if accumulating without resolution
 - Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
@@ -126,9 +145,10 @@ OK (5):
 3. Read workspace.json — extract repo manifest
 4. Check `.claude/rules/`, `.claude/skills/`, `.claude/agents/` against references
 5. Check git state (worktrees, branches, remotes)
-6. Read session-log.jsonl if it exists
-7. If cleanup mode: compare files pairwise for overlap, scan for stale cross-references
-8. Compile and present findings grouped by severity
+6. Run `node .claude/scripts/build-shared-context-index.mjs --check --root .` — capture status
+7. Read session-log.jsonl if it exists
+8. If cleanup mode: regenerate the shared-context index if stale; compare files pairwise for overlap; scan for stale cross-references
+9. Compile and present findings grouped by severity
 
 ## Notes
 - Audit mode is always read-only — never modifies files
