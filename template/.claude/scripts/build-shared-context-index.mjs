@@ -12,6 +12,7 @@
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
 
 const INDEX_FILENAME = 'index.md';
@@ -97,16 +98,39 @@ function isIgnored(relativePath, prefixes) {
   return false;
 }
 
+function gitIgnoredPaths(workspaceRoot, paths) {
+  if (paths.length === 0) return new Set();
+  const result = spawnSync('git', ['check-ignore', '--stdin'], {
+    cwd: workspaceRoot,
+    input: paths.join('\n'),
+    encoding: 'utf-8',
+  });
+  // Exit codes: 0 = at least one path is ignored, 1 = none ignored, 128 = not a git repo / git missing.
+  // Anything else: bail and apply no filter rather than over- or under-blocking.
+  if (result.error || (result.status !== 0 && result.status !== 1)) return new Set();
+  return new Set(
+    result.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0),
+  );
+}
+
 function buildEntries(workspaceRoot) {
   const sharedContextDir = join(workspaceRoot, 'shared-context');
   if (!existsSync(sharedContextDir)) return [];
 
   const ignorePrefixes = readIgnorePrefixes(sharedContextDir);
+  const candidates = walkMarkdown(sharedContextDir);
 
-  const files = walkMarkdown(sharedContextDir).filter((f) => {
-    const rel = relative(sharedContextDir, f).split(sep).join('/');
-    if (rel === INDEX_FILENAME) return false;
-    if (isIgnored(rel, ignorePrefixes)) return false;
+  const candidatePaths = candidates.map((f) => relative(workspaceRoot, f).split(sep).join('/'));
+  const gitIgnored = gitIgnoredPaths(workspaceRoot, candidatePaths);
+
+  const files = candidates.filter((f, i) => {
+    const relToShared = relative(sharedContextDir, f).split(sep).join('/');
+    if (relToShared === INDEX_FILENAME) return false;
+    if (isIgnored(relToShared, ignorePrefixes)) return false;
+    if (gitIgnored.has(candidatePaths[i])) return false;
     return true;
   });
 

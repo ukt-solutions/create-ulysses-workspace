@@ -5,6 +5,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { buildEntries, renderIndex, fingerprint, readDescription } from './build-shared-context-index.mjs';
 
 let failed = 0;
@@ -282,6 +283,94 @@ body
   const entries = buildEntries(root);
   assertEq(entries.length, 1, 'specific file excluded by .indexignore');
   assertEq(entries[0].relativePath, 'b.md', 'only b.md survives');
+  cleanup(root);
+}
+
+console.log('# .gitignore filtering');
+
+function gitInit(root) {
+  spawnSync('git', ['init', '-q'], { cwd: root });
+  spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root });
+}
+
+{
+  // local-only-* gitignored at workspace root → filtered from index
+  const root = setupFixture();
+  gitInit(root);
+  writeFileSync(join(root, '.gitignore'), 'local-only-*\n');
+  writeFileSync(
+    join(root, 'shared-context', 'alice', 'local-only-secret.md'),
+    `---
+description: Secret personal note.
+---
+body
+`,
+  );
+  writeFileSync(
+    join(root, 'shared-context', 'alice', 'public.md'),
+    `---
+description: Public team note.
+---
+body
+`,
+  );
+  const entries = buildEntries(root);
+  assertEq(entries.length, 1, 'gitignored local-only-* excluded');
+  assertEq(entries[0].relativePath, 'alice/public.md', 'public file survives');
+  cleanup(root);
+}
+
+{
+  // Non-git workspace falls back gracefully (no filter applied)
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'shared-context', 'a.md'),
+    `---
+description: A.
+---
+body
+`,
+  );
+  const entries = buildEntries(root);
+  assertEq(entries.length, 1, 'non-git workspace still works');
+  cleanup(root);
+}
+
+{
+  // .indexignore + .gitignore compose — both must be respected
+  const root = setupFixture();
+  gitInit(root);
+  writeFileSync(join(root, '.gitignore'), 'local-only-*\n');
+  mkdirSync(join(root, 'shared-context', 'archive'), { recursive: true });
+  writeFileSync(join(root, 'shared-context', '.indexignore'), 'archive/\n');
+  writeFileSync(
+    join(root, 'shared-context', 'archive', 'old.md'),
+    `---
+description: Archived.
+---
+body
+`,
+  );
+  writeFileSync(
+    join(root, 'shared-context', 'local-only-private.md'),
+    `---
+description: Local-only.
+---
+body
+`,
+  );
+  writeFileSync(
+    join(root, 'shared-context', 'shared.md'),
+    `---
+description: Shared.
+---
+body
+`,
+  );
+  const entries = buildEntries(root);
+  assertEq(entries.length, 1, 'both filters compose');
+  assertEq(entries[0].relativePath, 'shared.md', 'only shared.md survives');
   cleanup(root);
 }
 
