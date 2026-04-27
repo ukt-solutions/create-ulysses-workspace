@@ -338,17 +338,29 @@ const step7 = step('update-claude-md', (root, { dryRun }) => {
 
   let after = before;
 
-  // Replace the broken @shared-context/locked/ (or post-rename @workspace-context/locked/) line
-  const oldImportRe = new RegExp(
-    `^@(?:${OLD}|${NEW})/locked/?\\s*$`,
+  // Replace the broken @shared-context/locked/ (or post-rename @workspace-context/locked/) line.
+  // Match the heading + import line together so the heading text gets refreshed too.
+  // Use [ \t]* (horizontal whitespace only) so we don't accidentally consume the
+  // blank line that separates this block from the next heading.
+  const oldImportBlockRe = new RegExp(
+    `^## Team Knowledge[^\\n]*\\n@(?:${OLD}|${NEW})/locked/?[ \\t]*$`,
     'm',
   );
-  const replacement = `@${NEW}/canonical.md\n@${NEW}/index.md`;
-  if (oldImportRe.test(after)) {
-    after = after.replace(oldImportRe, replacement);
-  } else if (!hasNewImports) {
-    // Append if no anchor existed
-    after = after.trimEnd() + `\n\n## Team Knowledge\n${replacement}\n`;
+  const replacement = `## Team Knowledge\n@${NEW}/canonical.md\n@${NEW}/index.md`;
+  if (oldImportBlockRe.test(after)) {
+    after = after.replace(oldImportBlockRe, replacement);
+  } else {
+    // Fall back to single-line replacement if heading wasn't matched
+    const oldImportRe = new RegExp(
+      `^@(?:${OLD}|${NEW})/locked/?[ \\t]*$`,
+      'm',
+    );
+    if (oldImportRe.test(after)) {
+      after = after.replace(oldImportRe, `@${NEW}/canonical.md\n@${NEW}/index.md`);
+    } else if (!hasNewImports) {
+      // Append if no anchor existed
+      after = after.trimEnd() + `\n\n${replacement}\n`;
+    }
   }
 
   // Update copy in the Quick Reference area: "Shared memory lives in `shared-context/`"
@@ -412,12 +424,10 @@ const step9 = step('update-indexignore', (root, { dryRun }) => {
   }
 
   const before = readFileSync(target, 'utf-8');
-  let after = before;
-  // Update header references to old path
-  after = after.replace(/shared-context/g, 'workspace-context');
-  // Prefix-shift entries that pointed at root-level dirs which are now under shared/
-  after = after.replace(/^scaffolder-release-history\//gm, 'shared/scaffolder-release-history/');
-  // Add release-notes/ if missing
+  let after = before
+    .replace(/Shared-context/g, 'Workspace-context')
+    .replace(/shared-context/g, 'workspace-context');
+  // Add release-notes/ if missing (release-notes/ now lives inside workspace-context/)
   const lines = after.split('\n');
   const hasReleaseNotes = lines.some((l) => l.replace(/#.*/, '').trim() === 'release-notes/');
   if (!hasReleaseNotes) {

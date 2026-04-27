@@ -219,7 +219,10 @@ console.log('# full migration of pre-v0.15 layout');
   // Step 9: .indexignore
   const ii = readFileSync(join(root, 'workspace-context', '.indexignore'), 'utf-8');
   assert(ii.includes('workspace-context'), '.indexignore header updated');
-  assert(ii.includes('shared/scaffolder-release-history/'), 'scaffolder path prefix-shifted');
+  // scaffolder-release-history/ stays at workspace-context root (it's reserved),
+  // so its .indexignore entry stays as a bare prefix relative to workspace-context/
+  assert(ii.includes('scaffolder-release-history/'), 'scaffolder entry preserved');
+  assert(!ii.includes('shared/scaffolder-release-history/'), 'no incorrect prefix-shift');
   assert(ii.includes('release-notes/'), 'release-notes/ added');
 
   // Step 10: CLAUDE.local.md
