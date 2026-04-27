@@ -48,7 +48,7 @@ For each Notion page that contains project memory, context, or key decisions:
 Fetch the page content using the Notion MCP server.
 Determine scope:
   - Architecture decisions, tech stack, stable conventions → workspace-context/shared/locked/
-  - Active project state, current priorities → workspace-context/{user}/
+  - Active project state, current priorities → workspace-context/team-member/{user}/
   - Historical context no longer relevant → skip
 
 For each section:
@@ -72,7 +72,7 @@ For each Notion page that contains session handoffs or context transfers:
 ```
 Fetch the page content using the Notion MCP server.
 For recent/active handoffs only (skip stale ones):
-  - Create workspace-context/{user}/{handoff-name}.md
+  - Create workspace-context/team-member/{user}/{handoff-name}.md
   - Use handoff frontmatter format with type: handoff
   - Extract: status, key decisions, next steps, open questions
   - Set lifecycle: active (or paused if the work is suspended)
@@ -84,7 +84,7 @@ Check `CLAUDE.md.bak` for local preferences that aren't Notion-dependent:
 - Repo paths, coding conventions, project-specific notes
 - Add these to appropriate places:
   - Coding conventions → `.claude/rules/` (new rule file)
-  - Project notes → `workspace-context/shared/locked/` or `workspace-context/{user}/`
+  - Project notes → `workspace-context/shared/locked/` or `workspace-context/team-member/{user}/`
   - Repo paths → already in `workspace.json`
 
 ### 6. Remove Notion dependency

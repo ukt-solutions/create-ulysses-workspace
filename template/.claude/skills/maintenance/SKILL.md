@@ -115,13 +115,13 @@ Active recommendations. Flags problems and suggests fixes, but asks before actin
 /maintenance results:
 
 Issues (3):
-  ✗ workspace-context/alice/old-handoff.md references branch feature/old
+  ✗ workspace-context/team-member/alice/old-handoff.md references branch feature/old
     but that branch was deleted
   ✗ 2 inflight files exist but no active work session (orphaned?)
   ✗ Locked context is 18% of model context window (red threshold: 15%)
 
 Warnings (2):
-  ⚠ workspace-context/alice/workspace-analytics.md not updated in 8 days
+  ⚠ workspace-context/team-member/alice/workspace-analytics.md not updated in 8 days
   ⚠ Worktree work-sessions/old-feature/workspace has no commits in 5 days
 
 Cleanup suggestions (2):

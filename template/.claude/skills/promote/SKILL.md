@@ -1,17 +1,17 @@
 ---
 name: promote
-description: Move personal auto-memory or local-only files into shared context. Use when you've discovered something valuable that the team should know.
+description: Move personal auto-memory or local-only files into workspace-context. Use when you've discovered something valuable that the team should know.
 ---
 
 # Promote
 
-Promote personal knowledge into shared context. Assess all candidates, recommend actions, let the user decide with coded references.
+Promote personal knowledge into workspace-context. Assess all candidates, recommend actions, let the user decide with coded references.
 
 ## Sources
 
 This skill can promote from three sources:
 1. **Auto-memory (AM)** — files in `~/.claude/projects/*/memory/`
-2. **Local-only context (LOC)** — `workspace-context/local-only-*.md`
+2. **Local-only context (LOC)** — `workspace-context/team-member/{user}/local-only-*.md` (and any other `local-only-*.md` under `workspace-context/`)
 3. **Local-only rules (LOR)** — `.claude/rules/local-only-*.md`
 
 ## Flow
@@ -47,9 +47,19 @@ The user responds using codes:
 **Step 3: Execute decisions**
 
 For each **promote** action:
-- Ask: "Team-visible, user-scoped (default), or locked?"
-- Copy to destination, set `type: promoted` in frontmatter
-- Remove the local-only original
+- Ask: "Team-visible (`workspace-context/shared/`), user-scoped (default, `workspace-context/team-member/{user}/`), or locked (`workspace-context/shared/locked/`)?"
+- Use `capture-context.mjs --update` to write to the destination with the right frontmatter:
+  ```bash
+  cat {source-file} | node .claude/scripts/capture-context.mjs \
+    --type {braindump|handoff|research} \
+    --topic {kebab-name} \
+    --scope {team-member|shared} \
+    [--user {workspace.user}] \
+    --update
+  ```
+  When promoting *to locked*, write directly to `workspace-context/shared/locked/{bare-name}.md` instead — locked files use bare names (location signals the type) and don't take a prefix. Strip the `braindump_/handoff_/research_` prefix when locking.
+- Set `type: promoted` in the destination frontmatter (the helper writes the standard fields; edit `type` afterward, or have the body's frontmatter override).
+- Remove the `local-only-` original.
 - Commit individually: `git commit -m "promote: {name}"`
 
 For each **drop** action:
@@ -65,13 +75,13 @@ For each **keep** action:
 
 ## Rewrite on Promote
 
-Auto-memory files are terse notes written for Claude's internal use. When promoting to shared context, rewrite into proper format with:
+Auto-memory files are terse notes written for Claude's internal use. When promoting to workspace-context, rewrite into proper format with:
 - Frontmatter (state, lifecycle, type: promoted, topic, author, updated)
 - Sections with enough context to be useful to someone who wasn't in the original session
 - Local-only files may already be well-formatted — copy as-is if so, just update frontmatter
 
 ## Notes
-- Promotion is one-way: shared context should not be demoted back to local-only
+- Promotion is one-way: workspace-context should not be demoted back to local-only
 - Use this when you discover a pattern, convention, or decision that would benefit the team
 - The coded table makes bulk decisions fast — no need to type full filenames
 - Assess everything upfront so the user sees the full picture before deciding

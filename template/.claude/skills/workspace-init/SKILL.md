@@ -145,7 +145,7 @@ For sources that need extraction:
 - **Track access failures** — if a source is unreachable, note it but don't stop
 - For rules/conventions found: write to `.claude/rules/{rule-name}.md`
 - For project context/decisions: stage for Step 10 (locked knowledge)
-- For handoffs/active work: write to `workspace-context/{user}/` as ephemeral
+- For handoffs/active work: write to `workspace-context/team-member/{user}/` as ephemeral
 
 **Commit:** `git commit -m "feat: extract rules and context from documentation sources"`
 
@@ -181,7 +181,7 @@ Write `workspace-scratchpad/chat-history-manifest.json`:
 3. Update the manifest entry status to "processed"
 4. Synthesize findings into shared context:
    - Decisions and architecture → stage for locked context (Step 10)
-   - Work-in-progress context → `workspace-context/{user}/` as ephemeral handoffs
+   - Work-in-progress context → `workspace-context/team-member/{user}/` as ephemeral handoffs
    - Patterns and conventions → candidate rules for `.claude/rules/`
 
 Present a summary: "Found {N} prior sessions. Extracted {M} decisions, {K} handoffs, {P} convention candidates."
@@ -199,7 +199,7 @@ rm -f workspace-scratchpad/chat-history-manifest.json
 
 Read CLAUDE.md.bak for non-documentation content worth keeping:
 - Local coding conventions → `.claude/rules/` (new rule files)
-- Project-specific notes → `workspace-context/shared/locked/` or `workspace-context/{user}/`
+- Project-specific notes → `workspace-context/shared/locked/` or `workspace-context/team-member/{user}/`
 - Repo paths → verify they match workspace.json
 
 **Commit:** `git commit -m "feat: preserve local preferences as rules and context"`
@@ -300,7 +300,7 @@ Report: "Moved {N} items to workspace-scratchpad/unmigrated/: {list}."
 Read EVERY created and activated file:
 - Every `.claude/rules/*.md` (not .skip)
 - Every `workspace-context/shared/locked/*.md`
-- Every `workspace-context/{user}/*.md`
+- Every `workspace-context/team-member/{user}/*.md`
 
 Check for:
 - References to removed services or files
