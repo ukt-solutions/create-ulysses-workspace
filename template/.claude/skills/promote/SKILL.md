@@ -11,7 +11,7 @@ Promote personal knowledge into shared context. Assess all candidates, recommend
 
 This skill can promote from three sources:
 1. **Auto-memory (AM)** — files in `~/.claude/projects/*/memory/`
-2. **Local-only context (LOC)** — `shared-context/local-only-*.md`
+2. **Local-only context (LOC)** — `workspace-context/local-only-*.md`
 3. **Local-only rules (LOR)** — `.claude/rules/local-only-*.md`
 
 ## Flow

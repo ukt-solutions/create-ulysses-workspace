@@ -113,7 +113,7 @@ If PRs already exist, update them to draft status if needed.
 No worktree cleanup — the session is meant to be resumed. The `work-sessions/{session-name}/` folder stays intact.
 
 ## Notes
-- Pause writes ONLY to `work-sessions/{session-name}/workspace/session.md` — never to ongoing or root shared-context
+- Pause writes ONLY to `work-sessions/{session-name}/workspace/session.md` — never to ongoing or root workspace-context
 - The session tracker's frontmatter stays in the session folder — it's the resume mechanism
 - Draft PRs signal work-in-progress without implying merge readiness
 - Auto-committing the pause capture is a workflow artifact — this intentionally bypasses normal commit conventions

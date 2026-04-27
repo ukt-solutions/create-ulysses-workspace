@@ -100,7 +100,7 @@ When updating, rewrite as a fresh snapshot (coherent-revisions rule). The update
 ## Auto-commit
 Same as `/handoff` — commit the file alone:
 ```bash
-git add shared-context/{path-to-file}
+git add workspace-context/{path-to-file}
 git commit -m "braindump: {name}"
 ```
 

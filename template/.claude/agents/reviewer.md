@@ -27,7 +27,7 @@ You are reviewing code changes. Your job is to find problems, not to fix them.
 3. **Edge cases** — are there scenarios not handled?
 4. **Test coverage** — are tests covering the right scenarios? Are they testing behavior, not implementation?
 5. **Security** — any injection, XSS, or auth issues?
-6. **Consistency** — does it match existing patterns in shared-context/locked/?
+6. **Consistency** — does it match existing patterns in workspace-context/shared/locked/?
 
 ## What NOT to review
 - Style preferences (defer to linters/formatters)

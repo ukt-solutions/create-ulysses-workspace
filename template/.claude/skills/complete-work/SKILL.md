@@ -60,9 +60,9 @@ Formally read ALL sources before synthesizing — do not write release notes fro
    - `work-sessions/{session-name}/workspace/plan-*.md` files
    - Read each one fully
 
-3. **Handoffs** — any shared-context entries referencing this branch:
+3. **Handoffs** — any workspace-context entries referencing this branch:
    ```bash
-   grep -rl "branch: {branch}" shared-context/
+   grep -rl "branch: {branch}" workspace-context/
    ```
    Read each matching file.
 
@@ -349,7 +349,7 @@ If /complete-work is called but changes were made without a formal work session 
 Ask: "These changes weren't part of a formal work session. What do you want to do?"
 - **Accept as work** — create a session retroactively, proceed with normal completion
 - **Stash for later** — create a user-scoped handoff describing what was done, stash the changes
-- **Hand off to someone** — create a team-visible handoff at root shared-context/ for another member to pick up
+- **Hand off to someone** — create a team-visible handoff at root workspace-context/ for another member to pick up
 - **Revert** — undo the changes (with confirmation)
 
 ## Notes

@@ -52,7 +52,7 @@ For each selected option, **ask for specific paths**.
 
 > What other sources should I pull from?
 >
-> - Shared context files in the workspace
+> - Workspace-context files in the workspace
 > - Claude chat history from prior sessions on this project
 > - Notion export (zip)
 > - Confluence / wiki export

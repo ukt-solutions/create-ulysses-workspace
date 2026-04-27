@@ -1,11 +1,11 @@
 ---
 name: release
-description: Prepend a new CHANGELOG.md entry per project repo by synthesizing unreleased branch notes. Deletes consumed branch notes and synthesizes workspace shared-context into locked entries. Use at release time.
+description: Prepend a new CHANGELOG.md entry per project repo by synthesizing unreleased branch notes. Deletes consumed branch notes and synthesizes workspace workspace-context into locked entries. Use at release time.
 ---
 
 # Release
 
-Synthesize unreleased branch notes (in the **workspace** repo) into a concise, user-facing entry at the top of each project repo's `CHANGELOG.md`. Delete the consumed branch notes from the workspace. Bump the project repo's `package.json` version. In parallel, promote resolved workspace shared-context into locked team knowledge.
+Synthesize unreleased branch notes (in the **workspace** repo) into a concise, user-facing entry at the top of each project repo's `CHANGELOG.md`. Delete the consumed branch notes from the workspace. Bump the project repo's `package.json` version. In parallel, promote resolved workspace workspace-context into locked team knowledge.
 
 ## Why this shape
 
@@ -104,13 +104,13 @@ git commit -m "release: consume {repo} branch notes for v{version}"
 Workspace and project repos have separate commits — they are separate git histories.
 
 **Step 8: Consume project-scoped specs**
-Project-scoped specs and plans in `shared-context/{user}/` (ongoing) that are fully covered by this release:
+Project-scoped specs and plans in `workspace-context/{user}/` (ongoing) that are fully covered by this release:
 - Consume into the CHANGELOG entry (their content is now captured there)
 - Remove the source files
 - If partially covered: rewrite the spec to reflect only what remains unimplemented
 
 **Step 9: Synthesize workspace shared context**
-Process ephemeral shared-context entries:
+Process ephemeral workspace-context entries:
 
 1. List all ephemeral entries with `lifecycle: resolved`
 2. For each, determine:
@@ -120,11 +120,11 @@ Process ephemeral shared-context entries:
    - Is it unresolvable but still valuable? → Move to `{user}/` ongoing or keep as root ephemeral
 3. For merged/new locked entries:
    - Set `state: locked`, `type: synthesized`
-   - Move to `shared-context/locked/`
+   - Move to `workspace-context/shared/locked/`
    - Write concise, focused content — team truths, not session history
 4. Commit:
    ```bash
-   git add shared-context/
+   git add workspace-context/
    git commit -m "release: synthesize shared context for v{version}"
    ```
 
@@ -137,6 +137,6 @@ Process ephemeral shared-context entries:
 - Branch notes live in the WORKSPACE at `release-notes/unreleased/{repo}/`. `/complete-work` writes them; `/release` consumes and deletes them. They never reach project repos.
 - Versions are bumped here, not in `/complete-work`. This keeps the version semantics aligned with what actually shipped (accumulated changes since last release).
 - The public repo stays lean. Detailed per-branch retrospection exists in workspace git history (the consumed-notes commit) but is not surfaced as standalone files in either repo.
-- Context synthesis happens in the WORKSPACE repo — Step 7c (consumed-notes) and Step 9 (shared-context synthesis) are separate workspace commits.
+- Context synthesis happens in the WORKSPACE repo — Step 7c (consumed-notes) and Step 9 (workspace-context synthesis) are separate workspace commits.
 - Per-repo is the default — each project repo has its own release cadence.
 - The coherent-revisions rule applies: write the CHANGELOG entry from scratch, don't concatenate branch notes.

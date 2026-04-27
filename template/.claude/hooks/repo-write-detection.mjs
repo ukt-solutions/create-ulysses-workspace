@@ -94,9 +94,9 @@ if (toolName === 'Bash') {
   }
 }
 
-// Check if this write targets repos/, shared-context/, work-sessions/, or template files
+// Check if this write targets repos/, workspace-context/, work-sessions/, or template files
 const isRepoWrite = /(?:^|[\s/])repos\//.test(paths) || paths.includes('work-sessions/');
-const isContextWrite = paths.includes('shared-context/') && !basename(filePathArg).startsWith('local-only-');
+const isContextWrite = paths.includes('workspace-context/') && !basename(filePathArg).startsWith('local-only-');
 const isTemplateWrite = paths.includes('.claude/') && !paths.includes(scratchpadName);
 
 if (isRepoWrite || isContextWrite || isTemplateWrite) {

@@ -6,7 +6,7 @@ This applies to all written output:
 - Project documentation
 - Specs and design docs
 - Code and logic changes including comments
-- Shared context documents (handoffs, braindumps, locked context)
+- Workspace-context files (handoffs, braindumps, locked truths)
 - Release notes
 - Open questions
 - Commit messages
@@ -18,7 +18,7 @@ Injected revisions create fragmented, hard-to-follow output where the seams betw
 ## In Practice
 
 - When updating a section of a document, rewrite the entire section — not just the changed sentences
-- When updating a shared-context file, rewrite it as a fresh snapshot of current understanding
+- When updating a workspace-context file, rewrite it as a fresh snapshot of current understanding
 - When synthesizing multiple sources into release notes, write the narrative from scratch — don't concatenate
 - When revising code with comments, ensure the comments tell a coherent story, not a changelog
 - Small, isolated edits (fixing a typo, updating a single value) are fine — this rule targets substantive revisions

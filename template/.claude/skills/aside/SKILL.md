@@ -20,10 +20,10 @@ No subagent. Execute these steps directly:
 
 1. Parse the user's thought from the arguments (everything after `--quick`)
 2. Generate a kebab-case slug from the content (3-5 words that capture the core idea)
-3. Check if `shared-context/{user}/local-only-{slug}.md` exists. If so, append `-2`, `-3`, etc.
+3. Check if `workspace-context/{user}/local-only-{slug}.md` exists. If so, append `-2`, `-3`, etc.
 4. Infer 2-3 threads worth exploring later for the Further Investigation section
 5. Write the file using the Quick Mode template below
-6. Report the file path to the user: "Noted: `shared-context/{user}/local-only-{slug}.md`"
+6. Report the file path to the user: "Noted: `workspace-context/{user}/local-only-{slug}.md`"
 
 ### Quick Mode Template
 
@@ -51,8 +51,8 @@ Dispatch the `aside-researcher` agent in the background:
 
 1. Parse the user's thought from the arguments (everything after `/aside`)
 2. Generate a kebab-case slug from the content (3-5 words that capture the core idea)
-3. Check if `shared-context/{user}/local-only-{slug}.md` exists. If so, append `-2`, `-3`, etc.
-4. Determine the target file path: `shared-context/{user}/local-only-{slug}.md`
+3. Check if `workspace-context/{user}/local-only-{slug}.md` exists. If so, append `-2`, `-3`, etc.
+4. Determine the target file path: `workspace-context/{user}/local-only-{slug}.md`
 5. Dispatch the `aside-researcher` agent using the Agent tool:
    - `subagent_type`: use the `aside-researcher` agent definition
    - `run_in_background: true`
@@ -98,7 +98,7 @@ Topics that would benefit from deeper exploration or user input.}
 
 ## File Naming
 
-- **Location:** `shared-context/{user}/local-only-{slug}.md`
+- **Location:** `workspace-context/{user}/local-only-{slug}.md`
 - **Slug:** Generated from the thought content. Kebab-case, 3-5 words. E.g., `refresh-token-caching`, `deploy-pipeline-idea`
 - **Collision handling:** If the file exists, append `-2`, `-3`, etc.
 - **Always `local-only-`** — gitignored, never auto-committed
@@ -106,7 +106,7 @@ Topics that would benefit from deeper exploration or user input.}
 ## Session Behavior
 
 Asides are session-agnostic. Regardless of whether a work session is active:
-- Files always go to `shared-context/{user}/`
+- Files always go to `workspace-context/{user}/`
 - No interaction with the session tracker
 - No interaction with `/complete-work` synthesis
 

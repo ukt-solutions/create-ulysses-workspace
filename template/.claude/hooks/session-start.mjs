@@ -22,7 +22,8 @@ const input = await readStdin();
 const config = readJSON(join(root, 'workspace.json'));
 
 const chatId = input.session_id || null;
-const contextDir = join(root, 'shared-context');
+const contextDir = join(root, 'workspace-context');
+const sharedDir = join(contextDir, 'shared');
 const reposDir = join(root, 'repos');
 const lines = [];
 
@@ -113,8 +114,11 @@ if (trackers.length > 0) {
   lines.push('Use /start-work to resume a session or start new work.');
 }
 
-// Surface shared context (secondary)
-if (existsSync(contextDir)) {
+// Surface team-shared workspace context (secondary)
+// Only scan shared/ — locked/ is now a sub-dir of shared/ and is included
+// naturally. team-member/ is per-user (loaded via CLAUDE.local.md).
+// release-notes/ is operational, not knowledge.
+if (existsSync(sharedDir)) {
   const entries = [];
 
   function scanDir(dir, depth = 0) {
@@ -123,11 +127,10 @@ if (existsSync(contextDir)) {
       const fullPath = join(dir, entry);
       const stat = statSync(fullPath);
       if (stat.isDirectory()) {
-        if (entry === 'locked' || entry === '.keep') continue;
+        if (entry === '.keep') continue;
         scanDir(fullPath, depth + 1);
       } else if (entry.endsWith('.md') && entry !== '.keep' && !entry.startsWith('local-only-')) {
         const relPath = relative(contextDir, fullPath);
-        if (relPath.startsWith('locked/')) continue;
         const content = readFileSync(fullPath, 'utf-8');
         const topicMatch = content.match(/^topic:\s*(.+)$/m);
         const lifecycleMatch = content.match(/^lifecycle:\s*(.+)$/m);
@@ -139,10 +142,10 @@ if (existsSync(contextDir)) {
     }
   }
 
-  scanDir(contextDir);
+  scanDir(sharedDir);
   if (entries.length > 0) {
     lines.push('');
-    lines.push('Shared context:');
+    lines.push('Workspace context:');
     lines.push(...entries);
   }
 }

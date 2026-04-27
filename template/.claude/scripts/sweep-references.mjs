@@ -48,6 +48,15 @@ const SKIP_PATH_FRAGMENTS = [
   `${sep}node_modules${sep}`,
 ];
 
+// Scripts whose contents intentionally contain the literal "before" strings as
+// part of their behavior (the migrator's constants, test fixtures verifying
+// rule firing). Skipping by basename keeps the sweeper from mangling them.
+const SKIP_BASENAMES = new Set([
+  'migrate-to-workspace-context.mjs',
+  'migrate-to-workspace-context.test.mjs',
+  'sweep-references.test.mjs',
+]);
+
 function parseArgs(argv) {
   const args = { mode: null, target: null };
   for (let i = 2; i < argv.length; i++) {
@@ -67,6 +76,8 @@ function shouldSkip(absPath, scriptPath) {
   for (const frag of SKIP_PATH_FRAGMENTS) {
     if (absPath.includes(frag)) return true;
   }
+  const base = absPath.split(sep).pop();
+  if (SKIP_BASENAMES.has(base)) return true;
   return false;
 }
 

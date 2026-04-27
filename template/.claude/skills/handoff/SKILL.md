@@ -35,13 +35,13 @@ The flows below apply when NOT in an active work session, or when the user expli
 ## Flow: Named
 
 1. Read workspace user identity from `.claude/settings.local.json` (`workspace.user`)
-2. Check if handoff already exists in `shared-context/{user}/` or `shared-context/` root
+2. Check if handoff already exists in `workspace-context/{user}/` or `workspace-context/` root
 3. If exists: read it, prepare to update with current session state
 4. If new: prepare to create
 5. Ask: "Should this be user-scoped (default), team-visible, or local-only?"
-   - User-scoped (default): `shared-context/{user}/{name}.md`
-   - Team-visible: `shared-context/{name}.md`
-   - Local-only: `shared-context/local-only-{name}.md`
+   - User-scoped (default): `workspace-context/{user}/{name}.md`
+   - Team-visible: `workspace-context/{name}.md`
+   - Local-only: `workspace-context/local-only-{name}.md`
 6. Write the handoff file:
 
 ```yaml
@@ -71,7 +71,7 @@ updated: {YYYY-MM-DD}
 
 7. Auto-commit the handoff file alone:
    ```bash
-   git add shared-context/{path-to-file}
+   git add workspace-context/{path-to-file}
    git commit -m "handoff: {name}"
    ```
 

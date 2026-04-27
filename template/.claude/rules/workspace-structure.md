@@ -14,11 +14,11 @@ This workspace follows the claude-workspace convention. All paths are relative t
 | `work-sessions/{name}/workspace/plan-*.md` | Plans for this session — consumed into release notes by /complete-work | Yes — on the session branch |
 | `work-sessions/{name}/workspace/repos/` | Real directory holding nested project worktrees for this session | No (gitignored) |
 | `work-sessions/{name}/workspace/repos/{repo}/` | Project worktree nested inside the workspace worktree | No (gitignored) |
-| `shared-context/` | Shared memory — handoffs, braindumps, team knowledge | Yes |
-| `shared-context/index.md` | Auto-generated catalog of every shared-context file (one-line per file) | Yes |
-| `shared-context/.indexignore` | Path prefixes to exclude from `index.md` (e.g., archived release notes) | Yes |
-| `shared-context/locked/` | Team truths — loaded every session, injected into subagents | Yes |
-| `shared-context/{user}/` | User-scoped working context — default for all captures | Yes |
+| `workspace-context/` | Shared memory — handoffs, braindumps, team knowledge | Yes |
+| `workspace-context/index.md` | Auto-generated catalog of every workspace-context file (one-line per file) | Yes |
+| `workspace-context/.indexignore` | Path prefixes to exclude from `index.md` (e.g., archived release notes) | Yes |
+| `workspace-context/shared/locked/` | Team truths — loaded every session, injected into subagents | Yes |
+| `workspace-context/{user}/` | User-scoped working context — default for all captures | Yes |
 | `workspace-scratchpad/` | Disposable workspace-scoped files — session log, hook debug output | No (gitignored, lazy) |
 | `.claude/` | Claude Code configuration — rules, agents, skills, hooks, scripts, lib | Yes (except settings.local.json) |
 
@@ -32,7 +32,7 @@ Session content (tracker, specs, plans) lives at the top of each session's works
 | Root | Team-visible ephemerals — cross-team handoffs, post-release leftovers | Explicit choice |
 | `{user}/` | Ongoing personal context — persists across work sessions | Default for captures |
 
-Inflight session state lives inside the session worktree at `work-sessions/{name}/workspace/session.md`, not in `shared-context/`. Shared-context is for knowledge that outlives any individual session.
+Inflight session state lives inside the session worktree at `work-sessions/{name}/workspace/session.md`, not in `workspace-context/`. Shared-context is for knowledge that outlives any individual session.
 
 User-scoped is the default for captures. Root is only for content deliberately made team-visible.
 

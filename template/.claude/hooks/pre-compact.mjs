@@ -30,5 +30,5 @@ if (pointer) {
     respond(`Context is about to be compacted. No session tracker found for "${pointer.name}". Use /handoff to capture progress before context is lost.`);
   }
 } else {
-  respond(`Context is about to be compacted — earlier conversation details will be lost.\n\nIf this session produced decisions or progress worth keeping:\n  /braindump [name] — capture discussion and reasoning\n  /handoff [name]   — capture workstream state and next steps\n\nFiles in shared-context/ will persist. Conversation details won't.`);
+  respond(`Context is about to be compacted — earlier conversation details will be lost.\n\nIf this session produced decisions or progress worth keeping:\n  /braindump [name] — capture discussion and reasoning\n  /handoff [name]   — capture workstream state and next steps\n\nFiles in workspace-context/ will persist. Conversation details won't.`);
 }
