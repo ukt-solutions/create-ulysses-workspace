@@ -22,8 +22,16 @@
 //   - the script's own file (avoids self-rewrite)
 //   - binary files (detected via null-byte heuristic)
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, writeFileSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
 
 const DEFAULT_RULES = [
   // Order matters — longest patterns first.
@@ -146,7 +154,7 @@ function main() {
   if (args.mode === 'check' && changes.length > 0) process.exit(1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (err) {

@@ -28,8 +28,16 @@
 //
 // Stdout: a single line with the absolute path of the written (or planned) file.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
 
 const VALID_TYPES = new Set(['braindump', 'handoff', 'research']);
 const VALID_SCOPES = new Set(['shared', 'team-member']);
@@ -187,7 +195,7 @@ function main() {
   process.stdout.write(filePath + '\n');
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (err) {

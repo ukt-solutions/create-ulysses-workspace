@@ -17,8 +17,16 @@
 //   0 — wrote (or would have written) the file
 //   1 — error (missing settings, settings missing user, refusal to overwrite)
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
 
 function parseArgs(argv) {
   const args = { root: process.cwd(), force: false };
@@ -84,7 +92,7 @@ function main() {
   process.stdout.write(JSON.stringify(result) + '\n');
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (err) {

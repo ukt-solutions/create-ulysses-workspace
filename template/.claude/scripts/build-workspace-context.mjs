@@ -16,10 +16,18 @@
 // --write regenerates all three artifacts.
 // --check exits 0 if everything matches, 1 if any is stale or missing. Reports per-file status.
 
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
+
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
 
 const WC_DIR = 'workspace-context';
 const SHARED_DIR = 'shared';
@@ -340,7 +348,7 @@ function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (isMainModule(import.meta.url)) main();
 
 export {
   buildSharedIndex,
