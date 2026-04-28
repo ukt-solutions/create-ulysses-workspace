@@ -249,6 +249,94 @@ cd repos/{repo} && git pull origin {repo-branch}
 cd {main-workspace-root} && git pull origin main
 ```
 
+**Step 10a.1: Tag the merge commit (release sessions only, project repos with `package.json`)**
+
+The next three sub-substeps run only when the session branch starts with `release/` — the convention for release sessions (e.g., `release/v0.15.0-beta.0`). For feature, bugfix, and chore sessions, skip 10a.1, 10a.2, and 10a.3 entirely; non-release sessions don't trigger publishes. Detection is purely by branch prefix.
+
+Derive the version tag from the branch name by stripping the `release/` prefix (so `release/v0.15.0-beta.0` yields `v0.15.0-beta.0`). For each project repo whose `package.json` declares a `version` field, verify that version matches the derived tag. The workspace repo is **never** tagged — only project repos with publishable `package.json` files get tagged, since the tag triggers `.github/workflows/publish.yml` in that project repo. If a project repo's `package.json` version doesn't match the release tag, skip that repo with a warning rather than failing the whole completion flow — the mismatch usually means `/release` was run against a different version than the branch name suggests, and the user needs to investigate before publishing.
+
+Before tagging, preflight against origin: if `v{version}` already exists remotely, surface the conflict to the user with three explicit recovery options — **Reuse** (skip to 10a.2 if the existing tag points at the right commit), **Replace** (`git push origin --delete v{version}` then re-run 10a.1), or **Investigate** (`gh release view v{version}` to see what shipped). Do **not** silently force-push the tag; an existing tag means a published artifact, and overwriting it without confirmation can corrupt the npm registry's view of the release history.
+
+If the tag is absent on origin, tag the merge commit (HEAD on `{default-branch}` after the prior `git pull origin {default-branch}`) and push the tag. The tag push triggers `.github/workflows/publish.yml`.
+
+```bash
+# Detect: only run for release sessions.
+if [[ ! "$branch" =~ ^release/ ]]; then
+  # Not a release session — skip 10a.1, 10a.2, 10a.3.
+  return
+fi
+
+# Extract the version from the branch name (release/v{X} → v{X}).
+version_tag="${branch#release/}"   # e.g. "v0.15.0-beta.0"
+
+# For each project repo with a package.json containing a version field:
+for repo in {project-repos-with-package-json}; do
+  cd repos/{repo}
+
+  # Verify package.json version matches the tag.
+  pkg_version=$(node -p "require('./package.json').version")
+  expected_version="${version_tag#v}"
+  if [ "$pkg_version" != "$expected_version" ]; then
+    echo "Skipping {repo}: package.json version ($pkg_version) does not match release tag ($expected_version)."
+    continue
+  fi
+
+  # Preflight: does the tag already exist on origin?
+  if git ls-remote --exit-code origin "refs/tags/$version_tag" >/dev/null 2>&1; then
+    # Tag exists. Surface to user with three options:
+    # 1. Reuse — skip to 10a.2 if the existing tag points at the right commit.
+    # 2. Replace — `git push origin --delete $version_tag` then re-run 10a.1.
+    # 3. Investigate — `gh release view $version_tag` to see what shipped.
+    # Do NOT silently force-push.
+    echo "Tag $version_tag already exists on origin. Aborting with recovery options."
+    return 1
+  fi
+
+  # Tag the merge commit (HEAD on default branch after the prior `git pull`).
+  git tag "$version_tag"
+  git push origin "$version_tag"   # Triggers .github/workflows/publish.yml
+done
+```
+
+**Step 10a.2: Watch the publish workflow (release sessions only)**
+
+For each project repo tagged in 10a.1, find and follow the `publish.yml` workflow run on GitHub. The workflow takes a moment to register against the new tag — poll `gh run list` up to 5 times with a 3-second backoff before giving up. Once the run is found, attach with `gh run watch` so the maintainer sees progress live alongside the unified summary. Append `|| true` to the watch command so a workflow failure does **not** abort the rest of `/complete-work`: the maintainer still needs to see the unified summary, including the failure URL, to decide whether to rerun, redo the release, or roll the tag back. If no run registers within the retry window, log a warning with the manual investigation command and continue.
+
+```bash
+# Retry up to 5 times with 3-second backoff — the run takes a moment to register.
+for i in 1 2 3 4 5; do
+  run_id=$(gh run list \
+    --repo {org}/{repo} \
+    --workflow publish.yml \
+    --branch "$version_tag" \
+    --limit 1 \
+    --json databaseId \
+    --jq '.[0].databaseId')
+  if [ -n "$run_id" ]; then break; fi
+  sleep 3
+done
+
+if [ -z "$run_id" ]; then
+  echo "Warning: no publish workflow run found for $version_tag after 15s. Investigate via 'gh run list'."
+else
+  gh run watch "$run_id" --exit-status --repo {org}/{repo} || true
+fi
+```
+
+**Step 10a.3: Update the unified summary (release sessions only)**
+
+The unified summary block presented earlier in Step 10a already has a section per project repo. For release sessions, append a `PUBLISH` section per tagged project repo to the same summary — this goes inside the existing summary, not in a new location, so the maintainer sees one consolidated report covering merges, tags, and npm publishes:
+
+```
+PUBLISH ({repo}):
+  Tag: v{version}
+  Workflow: {run-url}
+  Status: success | failure
+  Published: {dist-tag}@{version} on npm
+```
+
+Pull `Status` from the `gh run watch` exit code (success when the watch returned 0, failure otherwise). Pull `Published: {dist-tag}@{version}` from the workflow's published-package output if available; if the workflow failed before publishing, omit the `Published:` line and rely on `Status: failure` plus the workflow URL to point the maintainer at the failure.
+
 #### Step 10b: Local / bare / other remotes — local merge flow
 
 No PRs are created — these remotes don't have a PR concept (or we don't have a client wired up for them). Present an adjusted summary:
