@@ -249,7 +249,7 @@ If not: ask "Ready to start implementing, or want to brainstorm first?"
 
 When /start-work is called after work has already begun:
 
-1. Detect uncommitted changes in `repos/` or `shared-context/`
+1. Detect uncommitted changes in `repos/` or `workspace-context/`
 2. "It looks like you've already been working. Let me formalize this."
 3. If changes are on a default branch: stash → create session → pop stash
 4. If changes are already on a feature branch: create workspace worktree and nest the existing project worktree(s) under it, or create a fresh session if the work is small enough to re-apply

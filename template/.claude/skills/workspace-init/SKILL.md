@@ -68,7 +68,7 @@ Ask the user:
 
 This determines whether documentation extraction is part of the plan.
 
-**Important:** If the user indicates a source, ask: "Has any content already been extracted from this source? (e.g., rules or context files already pulled down from Notion)" Check `shared-context/` and `.claude/rules/` for files that appear to contain extracted content. If content already exists from a source, mark it as "already extracted" and skip re-fetching unless the user explicitly wants a refresh.
+**Important:** If the user indicates a source, ask: "Has any content already been extracted from this source? (e.g., rules or context files already pulled down from Notion)" Check `workspace-context/` and `.claude/rules/` for files that appear to contain extracted content. If content already exists from a source, mark it as "already extracted" and skip re-fetching unless the user explicitly wants a refresh.
 
 ### Step 4: Present the plan
 
@@ -134,7 +134,7 @@ List all `.md.skip` files in `.claude/rules/`:
 For each documentation source identified in Step 3:
 
 **Before fetching from any source, check if content was already extracted:**
-- Scan `shared-context/` and `.claude/rules/` for files that reference the source (e.g., files mentioning Notion page IDs, Confluence URLs, etc.)
+- Scan `workspace-context/` and `.claude/rules/` for files that reference the source (e.g., files mentioning Notion page IDs, Confluence URLs, etc.)
 - If found: "Content from {source} appears to already be in {files}. Skip re-fetching? [Y/n]"
 - If the user confirms skip: move on to the next source
 - If the user wants a refresh: proceed with extraction but note which files will be updated
@@ -145,7 +145,7 @@ For sources that need extraction:
 - **Track access failures** — if a source is unreachable, note it but don't stop
 - For rules/conventions found: write to `.claude/rules/{rule-name}.md`
 - For project context/decisions: stage for Step 10 (locked knowledge)
-- For handoffs/active work: write to `shared-context/{user}/` as ephemeral
+- For handoffs/active work: write to `workspace-context/team-member/{user}/` as ephemeral
 
 **Commit:** `git commit -m "feat: extract rules and context from documentation sources"`
 
@@ -181,7 +181,7 @@ Write `workspace-scratchpad/chat-history-manifest.json`:
 3. Update the manifest entry status to "processed"
 4. Synthesize findings into shared context:
    - Decisions and architecture → stage for locked context (Step 10)
-   - Work-in-progress context → `shared-context/{user}/` as ephemeral handoffs
+   - Work-in-progress context → `workspace-context/team-member/{user}/` as ephemeral handoffs
    - Patterns and conventions → candidate rules for `.claude/rules/`
 
 Present a summary: "Found {N} prior sessions. Extracted {M} decisions, {K} handoffs, {P} convention candidates."
@@ -199,7 +199,7 @@ rm -f workspace-scratchpad/chat-history-manifest.json
 
 Read CLAUDE.md.bak for non-documentation content worth keeping:
 - Local coding conventions → `.claude/rules/` (new rule files)
-- Project-specific notes → `shared-context/locked/` or `shared-context/{user}/`
+- Project-specific notes → `workspace-context/shared/locked/` or `workspace-context/team-member/{user}/`
 - Repo paths → verify they match workspace.json
 
 **Commit:** `git commit -m "feat: preserve local preferences as rules and context"`
@@ -207,7 +207,7 @@ Read CLAUDE.md.bak for non-documentation content worth keeping:
 ### Step 10: Create locked team knowledge
 
 Combine content from Steps 7, 8, 9, and existing auto-memory into locked context:
-- For each piece of stable knowledge: write to `shared-context/locked/{topic}.md`
+- For each piece of stable knowledge: write to `workspace-context/shared/locked/{topic}.md`
 - Keep locked context lean — target <10KB total
 - One topic per file, proper frontmatter
 - Only lock what the team needs every session. Everything else is ephemeral.
@@ -269,7 +269,7 @@ Save to `.claude/settings.local.json`:
 
 ### Step 14: Clean root directory
 
-The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (`.claude/`, `shared-context/`). The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created the first time something writes to them — they won't exist yet unless a repo has already been cloned.
+The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (`.claude/`, `workspace-context/`). The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created the first time something writes to them — they won't exist yet unless a repo has already been cloned.
 
 Move everything else to `workspace-scratchpad/unmigrated/`:
 
@@ -299,8 +299,8 @@ Report: "Moved {N} items to workspace-scratchpad/unmigrated/: {list}."
 
 Read EVERY created and activated file:
 - Every `.claude/rules/*.md` (not .skip)
-- Every `shared-context/locked/*.md`
-- Every `shared-context/{user}/*.md`
+- Every `workspace-context/shared/locked/*.md`
+- Every `workspace-context/team-member/{user}/*.md`
 
 Check for:
 - References to removed services or files
@@ -333,8 +333,8 @@ git remote -v
   ```bash
   git rebase origin/main
   ```
-  If conflicts arise (e.g., shared-context differs between your init and what's already committed), STOP and present them. These are legitimate merge decisions — your extracted content vs what your teammate committed. Help the user resolve each conflict:
-  - For shared-context files: the remote version likely has the teammate's extractions. Merge both perspectives or keep the more complete version.
+  If conflicts arise (e.g., workspace-context differs between your init and what's already committed), STOP and present them. These are legitimate merge decisions — your extracted content vs what your teammate committed. Help the user resolve each conflict:
+  - For workspace-context files: the remote version likely has the teammate's extractions. Merge both perspectives or keep the more complete version.
   - For rules: if both sides activated different optional rules, keep both.
   - For CLAUDE.md: use the remote version (it's the established one), add any local customizations the user wants.
 
@@ -408,7 +408,7 @@ This session is done. Start a fresh Claude Code session and run /start-work to b
 - **Don't suggest starting work at the end.** Tell the user to restart Claude Code and run /start-work in a fresh session.
 - The verification step (Step 16) is mandatory — read every file, check thoroughly.
 - **Build manifests before long operations.** Chat history scanning (Step 8) and worktree formalization (Step 11) can be interrupted by auto-compaction. Write a manifest to `workspace-scratchpad/` before starting so progress survives.
-- **Never re-fetch content that already exists.** Always check shared-context and rules for existing extractions before accessing external sources.
+- **Never re-fetch content that already exists.** Always check workspace-context and rules for existing extractions before accessing external sources.
 - This skill is idempotent — safe to run if interrupted and restarted.
 
 ## Notes

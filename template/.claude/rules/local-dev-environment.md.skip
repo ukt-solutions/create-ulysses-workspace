@@ -1,6 +1,6 @@
 # Local Dev Environment
 
-Maintain a local-only document at `shared-context/locked/local-only-dev-environment.md` that captures machine-specific development context. This file is gitignored (local-only prefix) but positioned in locked for maximum visibility — Claude sees it every turn.
+Maintain a local-only document at `workspace-context/shared/locked/local-only-dev-environment.md` that captures machine-specific development context. This file is gitignored (local-only prefix) but positioned in locked for maximum visibility — Claude sees it every turn.
 
 ## What to Record
 
@@ -17,7 +17,7 @@ When you discover any of the following during work, add it to the local dev envi
 
 When you encounter a local development detail worth preserving:
 
-1. Check if `shared-context/locked/local-only-dev-environment.md` exists
+1. Check if `workspace-context/shared/locked/local-only-dev-environment.md` exists
 2. If not, create it with this structure:
    ```markdown
    ---

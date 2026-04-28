@@ -96,7 +96,7 @@ For the codebase:
 - Read actual implementations, not just existing docs about them
 
 For shared context:
-- Walk `shared-context/` for handoffs, braindumps, locked team knowledge, release notes
+- Walk `workspace-context/` for handoffs, braindumps, locked team knowledge, release notes
 
 For work-session history:
 - Walk `work-sessions/*/workspace/session.md` for any currently-active session trackers — their bodies may contain decisions not yet consumed into release notes

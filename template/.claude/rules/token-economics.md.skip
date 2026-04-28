@@ -34,7 +34,7 @@ The single biggest source of session bloat is bash output you didn't bound. The 
 "Ghost tokens" are context spend you can't see in any single tool result — structural bloat that accumulates across the session. Watch for:
 
 - **Unused skills.** A loaded skill that you never invoke costs input tokens every turn. If a workspace ships skills you don't use in the current task, that's silent overhead.
-- **Oversized locked context.** `shared-context/locked/` is injected into every session and every subagent. If it grows past 5% of the active model's context window, flag it (yellow); past 15%, treat as red. Absolute byte count is a weak proxy — duplicated coverage and stale references matter more.
+- **Oversized locked context.** `workspace-context/shared/locked/` is injected into every session and every subagent. If it grows past 5% of the active model's context window, flag it (yellow); past 15%, treat as red. Absolute byte count is a weak proxy — duplicated coverage and stale references matter more.
 - **Unused MCP servers.** Each MCP server's tool list is in your prompt whether you call it or not. If a server is registered but never used in this workspace's flow, surface it for cleanup.
 - **Resolved discussions still in context.** If the conversation has worked through a long debate that's now settled, that text is still occupying the window. Suggest `/braindump` to offload it into a file.
 - **Subagent context bloat.** A subagent prompt that ships more context than the task requires wastes tokens twice — once for the subagent, once for the dispatching model that wrote the prompt.
@@ -42,5 +42,5 @@ The single biggest source of session bloat is bash output you didn't bound. The 
 ## Compaction Awareness
 
 - When approaching the compaction threshold, prioritize capturing over continuing. A `/braindump` or `/handoff` *before* compaction preserves reasoning that gets summarized away.
-- After compaction, avoid re-reading files that were already discussed — check `shared-context/` and the session tracker first.
+- After compaction, avoid re-reading files that were already discussed — check `workspace-context/` and the session tracker first.
 - The `PreCompact` hook will prompt for capture; treat that prompt as a real checkpoint, not a dismissable nag.

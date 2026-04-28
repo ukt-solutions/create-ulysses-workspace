@@ -15,6 +15,7 @@ workspace-scratchpad/
 # Personal overrides
 .claude/settings.local.json
 .claude/.active-session.json
+CLAUDE.local.md
 
 # Local-only convention — machine-local state, any depth
 local-only-*

@@ -7,14 +7,15 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - `/start-work` to create or resume a work session
 - Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker
 - From root: only `local-only-*` and `workspace-scratchpad/` are writable
-- Shared memory lives in `shared-context/`
+- Team knowledge lives in `workspace-context/`
 
 ## Workspace Config
 @workspace.json
 @local-only-template-freshness.md
 
-## Team Knowledge (always loaded)
-@shared-context/locked/
+## Team Knowledge
+@workspace-context/canonical.md
+@workspace-context/index.md
 
 ## Skills
 - `/workspace-init` — first-time workspace setup (clone repos, install template, activate rules)

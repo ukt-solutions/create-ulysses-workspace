@@ -14,27 +14,35 @@ This workspace follows the claude-workspace convention. All paths are relative t
 | `work-sessions/{name}/workspace/plan-*.md` | Plans for this session — consumed into release notes by /complete-work | Yes — on the session branch |
 | `work-sessions/{name}/workspace/repos/` | Real directory holding nested project worktrees for this session | No (gitignored) |
 | `work-sessions/{name}/workspace/repos/{repo}/` | Project worktree nested inside the workspace worktree | No (gitignored) |
-| `shared-context/` | Shared memory — handoffs, braindumps, team knowledge | Yes |
-| `shared-context/index.md` | Auto-generated catalog of every shared-context file (one-line per file) | Yes |
-| `shared-context/.indexignore` | Path prefixes to exclude from `index.md` (e.g., archived release notes) | Yes |
-| `shared-context/locked/` | Team truths — loaded every session, injected into subagents | Yes |
-| `shared-context/{user}/` | User-scoped working context — default for all captures | Yes |
+| `workspace-context/` | Team knowledge and per-user context | Yes |
+| `workspace-context/shared/` | Team-visible content — handoffs, braindumps, research, references | Yes |
+| `workspace-context/shared/locked/` | Canonical team truths — auto-concatenated into `canonical.md` and loaded into every session | Yes |
+| `workspace-context/team-member/{user}/` | Per-user working context — default destination for personal captures | Yes |
+| `workspace-context/index.md` | Auto-generated navigation catalog of `shared/` (locked first, then ephemerals) | Yes |
+| `workspace-context/canonical.md` | Auto-generated verbatim concatenation of `shared/locked/*.md` | Yes |
+| `workspace-context/team-member/{user}/index.md` | Auto-generated per-user navigation catalog | Yes |
+| `workspace-context/.indexignore` | Path prefixes to exclude from `index.md` (e.g., archived release notes) | Yes |
+| `workspace-context/release-notes/` | Per-branch release-note artifacts — `unreleased/` and `archive/` | Yes |
 | `workspace-scratchpad/` | Disposable workspace-scoped files — session log, hook debug output | No (gitignored, lazy) |
+| `CLAUDE.md` | Workspace launcher prompt — imports `canonical.md` and `index.md` | Yes |
+| `CLAUDE.local.md` | Per-user prompt — imports `team-member/{user}/index.md` | No (gitignored) |
 | `.claude/` | Claude Code configuration — rules, agents, skills, hooks, scripts, lib | Yes (except settings.local.json) |
 
 Session content (tracker, specs, plans) lives at the top of each session's workspace worktree. It is tracked on the session branch, not on main. Pushing the session branch carries durable session thinking across machines. When `/complete-work` finalizes the session, it synthesizes the content into release notes and removes the files from the branch before the final PR so main's top level stays free of session artifacts.
 
-## Shared Context Levels
+## Workspace-Context Levels
 
-| Level | What lives there | Default? |
-|-------|-----------------|----------|
-| `locked/` | Team truths — always loaded, injected into subagents | Promoted by /release |
-| Root | Team-visible ephemerals — cross-team handoffs, post-release leftovers | Explicit choice |
-| `{user}/` | Ongoing personal context — persists across work sessions | Default for captures |
+Three layers, in increasing trust order:
 
-Inflight session state lives inside the session worktree at `work-sessions/{name}/workspace/session.md`, not in `shared-context/`. Shared-context is for knowledge that outlives any individual session.
+| Level | Path | What lives there | How it gets there |
+|-------|------|-----------------|--------------------|
+| Personal | `team-member/{user}/` | Per-user braindumps, handoffs, research notes | Default destination for `/braindump`, `/handoff`, `/aside` |
+| Shared | `shared/` (root) | Team-visible ephemerals — cross-team handoffs, post-release leftovers, references | Explicit choice via `--scope shared` or `/promote` |
+| Canonical | `shared/locked/` | Promoted truths — naming conventions, post-release discipline, project status | Promoted by `/release` (or `/promote` with explicit locked target) |
 
-User-scoped is the default for captures. Root is only for content deliberately made team-visible.
+Canonical content is verbatim-loaded into every session via `CLAUDE.md` → `@workspace-context/canonical.md`. Personal content is loaded only for the active user via the gitignored `CLAUDE.local.md`.
+
+Inflight session state lives inside the session worktree at `work-sessions/{name}/workspace/session.md`, not in `workspace-context/`. Workspace-context is for knowledge that outlives any individual session.
 
 ## Spec and Plan Locations — MANDATORY OVERRIDE
 
@@ -51,7 +59,7 @@ If a spec/plan already exists for the current session, version it: `design-{topi
 
 `/complete-work` reads specs and plans from the worktree to synthesize release notes, then removes them in a dedicated commit before the final PR so main's tree stays pristine.
 
-## Naming Conventions
+## File Naming Conventions
 
 - Session folders: `work-sessions/{session-name}/`
 - Workspace worktrees: `work-sessions/{session-name}/workspace/`
@@ -59,7 +67,19 @@ If a spec/plan already exists for the current session, version it: `design-{topi
 - Session trackers: `work-sessions/{session-name}/workspace/session.md`
 - Specs: `design-{topic}.md` (top of worktree)
 - Plans: `plan-{topic}.md` (top of worktree)
-- Handoffs and braindumps: named by topic (no date prefix — use frontmatter `updated:`)
+
+For ephemeral content under `shared/` and `team-member/{user}/`, the filename prefix signals the type:
+
+| Skill | Filename prefix |
+|-------|-----------------|
+| `/braindump` | `braindump_{topic}.md` |
+| `/handoff` | `handoff_{topic}.md` |
+| `/aside` (full mode, dispatches researcher) | `research_{topic}.md` |
+| `/aside --quick` | `braindump_{topic}.md` (with `variant: aside` in frontmatter) |
+| `/promote` | preserves source prefix |
+| `/release` | strips prefix when locking — `shared/locked/` files use bare names since location signals the type |
+
+Local-only personal drafts get an additional `local-only-` prefix (e.g., `local-only-braindump_x.md`) which keeps them gitignored until promoted.
 
 ## Rules
 
@@ -69,3 +89,4 @@ If a spec/plan already exists for the current session, version it: `design-{topi
 - Source clones at `repos/{repo-name}/` stay on their default branch — never checkout a feature branch there.
 - `workspace-scratchpad/` is for disposable files only — session log, hook debug output, temporary pointers.
 - Project worktrees are nested inside the workspace worktree's real `repos/` directory — no symlink.
+- Hand edits to `index.md`, `canonical.md`, or any per-user `team-member/{user}/index.md` are overwritten by `build-workspace-context.mjs`. Update source files (or their `description:` frontmatter) instead.

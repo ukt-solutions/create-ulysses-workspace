@@ -69,7 +69,7 @@ The value is the adapter-prefixed issue ID. This survives adapter swaps — repl
 
 ## When NOT to maintain local state
 
-- Do not create, write to, or read `shared-context/open-work.md`. That file is deprecated.
+- Do not create, write to, or read `workspace-context/open-work.md`. That file is deprecated.
 - Do not write ticket state into `session.md` frontmatter beyond the `workItem:` pointer. Status, assignment, milestone, and labels live in the tracker.
 - Do not cache issue bodies locally. Always fetch via `tracker.getIssue(id)` when the content is needed.
 

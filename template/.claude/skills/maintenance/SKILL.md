@@ -17,13 +17,13 @@ Keep the workspace healthy. Combines integrity auditing with active cleanup reco
 Read-only integrity checks. Reports problems but never modifies files.
 
 ### 1. Cross-reference consistency
-Scan all shared-context files against each other:
+Scan all workspace-context files against each other:
 - **Stale references** — file A mentions "2 mandatory rules" but there are now 4
 - **Path references** — file A mentions a file that was moved or deleted
 - **Contradictions** — file A says "user-scoped is default" but file B says "root is default"
 
 ### 2. Frontmatter integrity
-For each shared-context `.md` file and each `work-sessions/*/workspace/session.md`:
+For each workspace-context `.md` file and each `work-sessions/*/workspace/session.md`:
 - Valid frontmatter? (state, lifecycle, type, topic, author, updated; plus name/status/branch/repos for session trackers)
 - `branch` field references a branch that still exists?
 - `repo`/`repos` field references repos that exist in workspace.json?
@@ -45,23 +45,23 @@ For each shared-context `.md` file and each `work-sessions/*/workspace/session.m
 - Workspace repo on expected branch?
 - Orphan worktree records in project repos — run `git -C repos/{repo} worktree list` for each repo and flag any `prunable` markers. These usually come from a workspace-first teardown (the unsafe order) leaving stale admin records behind. Suggest `git worktree prune` on the affected repo.
 
-### 5. Shared-context index integrity
+### 5. Workspace-context auto-file integrity
 
-`shared-context/index.md` is auto-generated from frontmatter. Run the check:
+`workspace-context/index.md`, `workspace-context/canonical.md`, and each `workspace-context/team-member/{user}/index.md` are auto-generated from frontmatter and locked content. Run the check:
 
 ```bash
-node .claude/scripts/build-shared-context-index.mjs --check --root .
+node .claude/scripts/build-workspace-context.mjs --check --root .
 ```
 
-Three failure modes (script exits 1 with a JSON status):
+The script exits 1 if any of the three artifact types is missing or stale, and reports per-file status as JSON:
 
-- `missing` — `shared-context/` exists but `index.md` does not. Run `--write` to create.
-- `stale` — `index.md` exists but its entries no longer match the filesystem. Causes: a file was added or deleted, a `description:` was changed, a `.indexignore` rule was added. Run `--write` to regenerate.
-- (no failure) — `current` with the entry count.
+- `missing` — `workspace-context/` exists but the artifact does not. Run `--write` to create.
+- `stale` — the artifact exists but no longer matches the filesystem. Causes: a file was added or deleted, a `description:` was changed, a `shared/locked/` file was edited, an `.indexignore` rule was added. Run `--write` to regenerate.
+- `current` — everything matches.
 
 Audit mode reports the status. Cleanup mode runs `--write` if stale or missing, then re-checks.
 
-While the index is being read, also flag entries with weak fallbacks: filename-slug-only descriptions (e.g., "project status" with no period) usually indicate the underlying file is missing a `description:` or has no usable opening sentence. Suggest adding `description:` to those source files — the index will pick it up on the next regeneration.
+While the indexes are being read, also flag entries with weak fallbacks: filename-slug-only descriptions (e.g., "project status" with no period) usually indicate the underlying file is missing a `description:` or has no usable opening sentence. Suggest adding `description:` to those source files — the index will pick it up on the next regeneration.
 
 ### 6. Template freshness
 
@@ -96,13 +96,13 @@ Active recommendations. Flags problems and suggests fixes, but asks before actin
 - Handoffs referencing deleted branches — suggest resolve or remove
 
 ### 8. Context reconciliation
-- Read recent shared-context writes (last session or last N files by updated date)
-- For each, scan other shared-context files for references that are now stale
+- Read recent workspace-context writes (last session or last N files by updated date)
+- For each, scan other workspace-context files for references that are now stale
 - Surface: "{file} says X but {newer-file} now says Y. Update {file}?"
 - This is the capture-time cross-check, run retroactively instead of inline
 
 ### 9. Health metrics
-- Size of `shared-context/locked/` relative to the active model's context window — flag if over 5% (yellow) or 15% (red). Absolute byte count is a weak proxy; contradictions, stale references, and duplicated coverage across files matter more than total size.
+- Size of `workspace-context/shared/locked/` relative to the active model's context window — flag if over 5% (yellow) or 15% (red). Absolute byte count is a weak proxy; contradictions, stale references, and duplicated coverage across files matter more than total size.
 - Number of ephemeral files — flag if accumulating without resolution
 - Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
   - Sessions without capture
@@ -115,13 +115,13 @@ Active recommendations. Flags problems and suggests fixes, but asks before actin
 /maintenance results:
 
 Issues (3):
-  ✗ shared-context/alice/old-handoff.md references branch feature/old
+  ✗ workspace-context/team-member/alice/old-handoff.md references branch feature/old
     but that branch was deleted
   ✗ 2 inflight files exist but no active work session (orphaned?)
   ✗ Locked context is 18% of model context window (red threshold: 15%)
 
 Warnings (2):
-  ⚠ shared-context/alice/workspace-analytics.md not updated in 8 days
+  ⚠ workspace-context/team-member/alice/workspace-analytics.md not updated in 8 days
   ⚠ Worktree work-sessions/old-feature/workspace has no commits in 5 days
 
 Cleanup suggestions (2):
@@ -140,14 +140,14 @@ OK (5):
 
 ## Flow
 
-1. Scan shared-context/ recursively — read all `.md` files and their frontmatter
+1. Scan workspace-context/ recursively — read all `.md` files and their frontmatter
 2. Read CLAUDE.md — extract skill and rule references
 3. Read workspace.json — extract repo manifest
 4. Check `.claude/rules/`, `.claude/skills/`, `.claude/agents/` against references
 5. Check git state (worktrees, branches, remotes)
-6. Run `node .claude/scripts/build-shared-context-index.mjs --check --root .` — capture status
+6. Run `node .claude/scripts/build-workspace-context.mjs --check --root .` — capture status
 7. Read session-log.jsonl if it exists
-8. If cleanup mode: regenerate the shared-context index if stale; compare files pairwise for overlap; scan for stale cross-references
+8. If cleanup mode: regenerate the workspace-context auto-files if stale (index.md, canonical.md, per-user team-member indexes); compare files pairwise for overlap; scan for stale cross-references
 9. Compile and present findings grouped by severity
 
 ## Notes

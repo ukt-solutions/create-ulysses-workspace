@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// SubagentStart hook — inject shared-context/locked/ into subagent context
+// SubagentStart hook — inject workspace-context/shared/locked/ into subagent context
 import { readdirSync, readFileSync, existsSync } from 'fs';
 import { join, basename } from 'path';
 import { getWorkspaceRoot, readJSON, respond } from './_utils.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
 const config = readJSON(join(root, 'workspace.json'));
-const lockedDir = join(root, 'shared-context', 'locked');
+const lockedDir = join(root, 'workspace-context', 'shared', 'locked');
 
 const maxBytes = config?.workspace?.subagentContextMaxBytes || 10240;
 
@@ -38,7 +38,7 @@ if (Buffer.byteLength(context) > maxBytes) {
     return `- ${basename(f, '.md')}: ${firstLine}`;
   }).join('\n');
 
-  context = `[Locked shared context exceeds ${maxBytes} byte limit (${Buffer.byteLength(context)} bytes). Summary of ${files.length} files:]\n${summary}\n[Read individual files from shared-context/locked/ if you need full content.]`;
+  context = `[Locked shared context exceeds ${maxBytes} byte limit (${Buffer.byteLength(context)} bytes). Summary of ${files.length} files:]\n${summary}\n[Read individual files from workspace-context/shared/locked/ if you need full content.]`;
 }
 
 respond(context);

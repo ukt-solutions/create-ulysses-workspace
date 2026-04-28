@@ -1,11 +1,11 @@
 ---
 name: braindump
-description: Capture discussion-heavy topics into shared context. Use when reasoning, exploration, or design rationale should be preserved. Accepts optional name parameter.
+description: Capture discussion-heavy topics into workspace-context. Use when reasoning, exploration, or design rationale should be preserved. Accepts optional name parameter.
 ---
 
 # Braindump
 
-Capture discussion reasoning, exploration results, and design rationale into shared context. More freeform than /handoff — designed for "why we chose X" content. User-scoped by default.
+Capture discussion reasoning, exploration results, and design rationale into workspace-context. More freeform than /handoff — designed for "why we chose X" content. Per-user (`team-member/{user}/`) is the default scope.
 
 ## Parameters
 - `/braindump {name}` — create or update a named braindump
@@ -27,25 +27,29 @@ When called within an active work session (the active-session pointer at `.claud
   ```
 
 When called from the workspace root (no active session):
-- Create a `local-only-{name}.md` file (root only allows local-only writes)
+- Use `--local-only` so the captured file is gitignored (the root only allows local-only writes)
 - Suggest starting a work session if the braindump is about actionable work
 
 The flows below apply when NOT in an active work session, or when the user explicitly asks for a standalone braindump file.
 
 ## Flow: Named
 
-Follows the same naming, scoping (user/team/local-only), and commit flow as `/handoff` but with a different file format:
+Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to:
 
-```yaml
----
-state: ephemeral
-lifecycle: active
-type: braindump
-topic: {name}
-author: {user}
-updated: {YYYY-MM-DD}
----
+```bash
+echo "$BODY" | node .claude/scripts/capture-context.mjs \
+  --type braindump \
+  --topic {kebab-case-name} \
+  --scope team-member \
+  --user {workspace.user} \
+  --description "{one-line summary}"
+```
 
+Add `--scope shared` (and drop `--user`) to put the file in `workspace-context/shared/` for team visibility. Add `--local-only` to keep it gitignored. Add `--update` to overwrite an existing file with the same name; without it, the helper appends `-2`, `-3`, etc. on collision.
+
+The body content sent on stdin should follow this template:
+
+```markdown
 ## Context
 {What prompted this discussion}
 
@@ -58,6 +62,8 @@ updated: {YYYY-MM-DD}
 ## Implications
 {What this decision means for future work}
 ```
+
+The helper writes the frontmatter (`state: ephemeral`, `lifecycle: active`, `type: braindump`, `topic`, `author`, `updated`) and prints the absolute path on stdout so the skill can `git add` and commit it.
 
 ## Flow: Side Braindump (deprecated)
 
@@ -74,7 +80,7 @@ updated: {YYYY-MM-DD}
 
 ## Include task snapshot
 
-If an active session exists (detected via `.claude/.active-session.json`), include a `## Tasks at capture time` section in the braindump artifact with a snapshot of the current `TodoWrite` state:
+If an active session exists (detected via `.claude/.active-session.json`), include a `## Tasks at capture time` section in the braindump body before piping it to `capture-context.mjs`:
 
 ```markdown
 ## Tasks at capture time
@@ -85,11 +91,11 @@ If an active session exists (detected via `.claude/.active-session.json`), inclu
 - [ ] Complete work
 ```
 
-Use the same GFM checkbox format as `session.md`'s `## Tasks` section (just `content` and `status` per task — no `activeForm` field, no blockquote line) and render it inline in the braindump. Do NOT call `sync-tasks.mjs --write` — braindumps are snapshots, not the canonical store.
+Use the same GFM checkbox format as `session.md`'s `## Tasks` section (just `content` and `status` per task — no `activeForm` field, no blockquote line). Do NOT call `sync-tasks.mjs --write` — braindumps are snapshots, not the canonical store.
 
 ## Updating Existing Braindumps
 
-When updating, rewrite as a fresh snapshot (coherent-revisions rule). The updated braindump should read as if written in one pass.
+When updating, rewrite as a fresh snapshot (coherent-revisions rule) and pass `--update` to `capture-context.mjs`. The updated braindump should read as if written in one pass.
 
 ## Key Differences from /handoff
 - `/handoff` is structured around work state (branch, status, next steps)
@@ -98,14 +104,14 @@ When updating, rewrite as a fresh snapshot (coherent-revisions rule). The update
 - Use `/braindump` when you're capturing a discussion or decision
 
 ## Auto-commit
-Same as `/handoff` — commit the file alone:
+Use the path that `capture-context.mjs` printed:
 ```bash
-git add shared-context/{path-to-file}
+git add {printed-path}
 git commit -m "braindump: {name}"
 ```
 
 ## Notes
-- User-scoped is the default
+- Per-user (`team-member/{user}/`) is the default scope
 - One topic, one file — don't mix unrelated ideas in one braindump
 - Drive-by ideas now use `/aside` instead of `/braindump side`
 - Auto-committing context files without user request is a workflow artifact — this intentionally bypasses the "do not commit unless asked" convention

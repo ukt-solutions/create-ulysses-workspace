@@ -67,7 +67,7 @@ for (const ticket of tickets) {
     '',
     '---',
     '',
-    `Migrated from \`shared-context/open-work.md\` ticket #${ticket.id} (status at migration: \`${ticket.status}\`${ticket.branch ? `, branch: \`${ticket.branch}\`` : ''}).`,
+    `Migrated from \`workspace-context/open-work.md\` ticket #${ticket.id} (status at migration: \`${ticket.status}\`${ticket.branch ? `, branch: \`${ticket.branch}\`` : ''}).`,
   ].join('\n');
 
   const issue = await tracker.createIssue({ title: ticket.title, body, labels, milestone: ticket.milestone });

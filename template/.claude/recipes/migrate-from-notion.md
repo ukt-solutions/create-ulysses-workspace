@@ -47,12 +47,12 @@ For each Notion page that contains project memory, context, or key decisions:
 ```
 Fetch the page content using the Notion MCP server.
 Determine scope:
-  - Architecture decisions, tech stack, stable conventions → shared-context/locked/
-  - Active project state, current priorities → shared-context/{user}/
+  - Architecture decisions, tech stack, stable conventions → workspace-context/shared/locked/
+  - Active project state, current priorities → workspace-context/team-member/{user}/
   - Historical context no longer relevant → skip
 
 For each section:
-  - Create a shared-context file with proper frontmatter:
+  - Create a workspace-context file with proper frontmatter:
     ---
     state: locked (or ephemeral)
     lifecycle: active
@@ -72,7 +72,7 @@ For each Notion page that contains session handoffs or context transfers:
 ```
 Fetch the page content using the Notion MCP server.
 For recent/active handoffs only (skip stale ones):
-  - Create shared-context/{user}/{handoff-name}.md
+  - Create workspace-context/team-member/{user}/{handoff-name}.md
   - Use handoff frontmatter format with type: handoff
   - Extract: status, key decisions, next steps, open questions
   - Set lifecycle: active (or paused if the work is suspended)
@@ -84,7 +84,7 @@ Check `CLAUDE.md.bak` for local preferences that aren't Notion-dependent:
 - Repo paths, coding conventions, project-specific notes
 - Add these to appropriate places:
   - Coding conventions → `.claude/rules/` (new rule file)
-  - Project notes → `shared-context/locked/` or `shared-context/{user}/`
+  - Project notes → `workspace-context/shared/locked/` or `workspace-context/team-member/{user}/`
   - Repo paths → already in `workspace.json`
 
 ### 6. Remove Notion dependency
@@ -108,7 +108,7 @@ Verify the workspace works without Notion:
 ### 7. Commit
 
 ```bash
-git add .claude/rules/ shared-context/
+git add .claude/rules/ workspace-context/
 git commit -m "chore: migrate Notion content to local files"
 ```
 
