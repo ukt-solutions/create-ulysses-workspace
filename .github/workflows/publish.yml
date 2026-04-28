@@ -11,10 +11,13 @@ jobs:
     permissions:
       contents: write    # for gh release create
       id-token: write    # for OIDC trusted publishing to npm
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
@@ -53,24 +56,37 @@ jobs:
       - name: Publish to npm
         run: npm publish --tag ${{ steps.tag.outputs.dist }} --access public
 
+      - name: Extract CHANGELOG section for release notes
+        id: changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node scripts/extract-changelog-section.mjs "$version" --out /tmp/release-notes.md
+          if [ -s /tmp/release-notes.md ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          notes_file="release-notes/v${version}.md"
           prerelease_flag=""
           if [ "${{ steps.tag.outputs.is_prerelease }}" = "true" ]; then
             prerelease_flag="--prerelease"
           fi
-          if [ -f "$notes_file" ]; then
+          if [ "${{ steps.changelog.outputs.found }}" = "true" ]; then
             gh release create "${GITHUB_REF_NAME}" \
-              --notes-file "$notes_file" \
+              --notes-file /tmp/release-notes.md \
               --title "v${version}" \
-              $prerelease_flag
+              $prerelease_flag \
+              || gh release edit "${GITHUB_REF_NAME}" \
+                   --notes-file /tmp/release-notes.md
           else
             gh release create "${GITHUB_REF_NAME}" \
               --generate-notes \
               --title "v${version}" \
-              $prerelease_flag
+              $prerelease_flag \
+              || true
           fi
