@@ -18,7 +18,24 @@ import {
   fingerprint,
   readDescription,
   stripFrontmatter,
+  DEFAULT_CANONICAL_BUDGET,
+  readWorkspaceBudget,
+  extractCanonicalVariants,
+  selectCanonicalContent,
+  renderCanonicalBody,
 } from './build-workspace-context.mjs';
+
+const NULL_SELECTION = {
+  status: 'ok',
+  budgetBytes: null,
+  currentBytes: 0,
+  trimmedFiles: [],
+  stubbedFiles: [],
+};
+
+function resolvedFromOldShape(items) {
+  return items.map((it) => ({ name: it.name, priority: 'critical', content: it.content }));
+}
 
 let failed = 0;
 let passed = 0;
@@ -379,8 +396,9 @@ Beta.
   const items = buildCanonical(root);
   assertEq(items.length, 2, '2 canonical items');
   assertEq(items[0].name, 'a-naming', 'sorted alphabetically');
-  assert(items[0].content.includes('Use kebab-case.'), 'frontmatter stripped, body preserved');
-  assert(!items[0].content.startsWith('---'), 'no frontmatter in concat output');
+  assert(items[0].full.includes('Use kebab-case.'), 'frontmatter stripped, body preserved');
+  assert(!items[0].full.startsWith('---'), 'no frontmatter in full variant');
+  assertEq(items[0].priority, 'critical', 'priority defaults to critical');
   cleanup(root);
 }
 
@@ -400,15 +418,17 @@ console.log('# renderCanonical output');
     { name: 'naming', content: 'Use kebab-case.' },
     { name: 'status', content: 'Beta.' },
   ];
-  const out = renderCanonical(items, '2026-04-27T00:00:00Z');
+  const out = renderCanonical(resolvedFromOldShape(items), NULL_SELECTION, '2026-04-27T00:00:00Z');
   assert(out.includes('## naming'), 'section header from name');
   assert(out.includes('## status'), 'second section header');
   assert(out.includes('Use kebab-case.'), 'body included');
   assert(out.includes('type: canonical'), 'frontmatter type set');
+  assert(!out.includes('budget:'), 'no budget frontmatter line when budgetBytes=null');
+  assert(!out.includes('Budget:'), 'no budget blockquote when budgetBytes=null');
 }
 
 {
-  const out = renderCanonical([], '2026-04-27T00:00:00Z');
+  const out = renderCanonical([], NULL_SELECTION, '2026-04-27T00:00:00Z');
   assert(out.includes('_(no canonical entries yet'), 'empty state rendered');
 }
 
@@ -625,6 +645,583 @@ body
   const check2 = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
   assertEq(check2.status, 0, '--check exits 0 after --write');
 
+  cleanup(root);
+}
+
+console.log('# extractCanonicalVariants');
+
+{
+  // 1. No markers: full === trimmed === stripped body, stub is breadcrumb form.
+  const raw = `---
+priority: reference
+---
+
+# Hello
+
+This file has no markers.
+`;
+  const v = extractCanonicalVariants({ name: 'no-markers', rawContent: raw });
+  assertEq(v.full, '# Hello\n\nThis file has no markers.', 'full strips frontmatter, no markers to remove');
+  assertEq(v.trimmed, v.full, 'trimmed === full when no markers present');
+  assertEq(v.stub, '> _Dropped for canonical budget — see `shared/locked/no-markers.md`._', 'stub is one-line breadcrumb');
+}
+
+{
+  // 2. One trim block: full keeps content, trimmed replaces with breadcrumb, stub is breadcrumb.
+  const raw = `---
+priority: reference
+---
+
+# Header
+
+Always shown.
+
+<!-- canonical:trim -->
+Droppable details here.
+More droppable text.
+<!-- canonical:end-trim -->
+
+Tail content.
+`;
+  const v = extractCanonicalVariants({ name: 'one-block', rawContent: raw });
+  assert(v.full.includes('Droppable details here.'), 'full keeps the wrapped content');
+  assert(!v.full.includes('canonical:trim'), 'full strips opener marker');
+  assert(!v.full.includes('canonical:end-trim'), 'full strips closer marker');
+  assert(v.trimmed.includes('Trimmed for canonical budget'), 'trimmed has breadcrumb');
+  assert(!v.trimmed.includes('Droppable details here.'), 'trimmed drops wrapped content');
+  assert(v.trimmed.includes('Tail content.'), 'trimmed keeps post-block content');
+  assert(v.trimmed.includes('Always shown.'), 'trimmed keeps pre-block content');
+  assertEq(v.stub, '> _Dropped for canonical budget — see `shared/locked/one-block.md`._', 'stub form');
+}
+
+{
+  // 3. Two consecutive trim blocks collapse to one breadcrumb.
+  const raw = `---
+priority: reference
+---
+
+Pre.
+
+<!-- canonical:trim -->
+First droppable.
+<!-- canonical:end-trim -->
+<!-- canonical:trim -->
+Second droppable.
+<!-- canonical:end-trim -->
+
+Post.
+`;
+  const v = extractCanonicalVariants({ name: 'two-blocks', rawContent: raw });
+  const breadcrumbCount = (v.trimmed.match(/Trimmed for canonical budget/g) || []).length;
+  assertEq(breadcrumbCount, 1, 'consecutive trim blocks collapse to one breadcrumb');
+  assert(!v.trimmed.includes('First droppable.'), 'first block dropped');
+  assert(!v.trimmed.includes('Second droppable.'), 'second block dropped');
+}
+
+{
+  // 4. Unmatched opener throws.
+  const raw = `---
+priority: reference
+---
+
+Pre.
+
+<!-- canonical:trim -->
+No closer here.
+`;
+  let threw = false;
+  try {
+    extractCanonicalVariants({ name: 'bad-open', rawContent: raw });
+  } catch (e) {
+    threw = true;
+    assert(/canonical:trim parse error in bad-open/.test(e.message), 'error message names the file');
+  }
+  assert(threw, 'unmatched opener throws');
+}
+
+{
+  // 5. Nested opener throws.
+  const raw = `---
+priority: reference
+---
+
+<!-- canonical:trim -->
+Outer.
+<!-- canonical:trim -->
+Inner.
+<!-- canonical:end-trim -->
+<!-- canonical:end-trim -->
+`;
+  let threw = false;
+  try {
+    extractCanonicalVariants({ name: 'nested', rawContent: raw });
+  } catch (e) {
+    threw = true;
+    assert(/nested opener/.test(e.message), 'error message mentions nesting');
+  }
+  assert(threw, 'nested opener throws');
+}
+
+console.log('# readWorkspaceBudget');
+
+{
+  // 12. workspace.json missing → default.
+  const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
+  assertEq(readWorkspaceBudget(root), DEFAULT_CANONICAL_BUDGET, 'missing workspace.json → default');
+  cleanup(root);
+}
+
+{
+  // 13. Field absent → default.
+  const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { name: 'x' } }));
+  assertEq(readWorkspaceBudget(root), DEFAULT_CANONICAL_BUDGET, 'absent field → default');
+  cleanup(root);
+}
+
+{
+  // 14. Field set to 81920 → 81920.
+  const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { canonicalBudgetBytes: 81920 } }));
+  assertEq(readWorkspaceBudget(root), 81920, 'explicit value returned');
+  cleanup(root);
+}
+
+{
+  // 15. Field is 0 → 0 (disabled).
+  const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { canonicalBudgetBytes: 0 } }));
+  assertEq(readWorkspaceBudget(root), 0, 'zero treated as disabled');
+  cleanup(root);
+}
+
+{
+  // 16. Field is -1 → 0 (disabled).
+  const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { canonicalBudgetBytes: -1 } }));
+  assertEq(readWorkspaceBudget(root), 0, 'negative treated as disabled');
+  cleanup(root);
+}
+
+{
+  // 17. Invalid JSON → default, no throw.
+  const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
+  writeFileSync(join(root, 'workspace.json'), '{ not valid json');
+  let threw = false;
+  let result;
+  try { result = readWorkspaceBudget(root); } catch { threw = true; }
+  assert(!threw, 'invalid JSON does not throw');
+  assertEq(result, DEFAULT_CANONICAL_BUDGET, 'invalid JSON falls back to default');
+  cleanup(root);
+}
+
+console.log('# selectCanonicalContent');
+
+function makeItem(name, priority, full, trimmed = full, stub = `> _Dropped for canonical budget — see \`shared/locked/${name}.md\`._`) {
+  return { name, priority, full, trimmed, stub };
+}
+
+const measureBody = { measureBodyBytes: (resolved) => Buffer.byteLength(renderCanonicalBody(resolved), 'utf-8') };
+
+{
+  // 6. Total ≤ budget at stage 1: status 'ok'.
+  const items = [
+    makeItem('a', 'critical', 'short A'),
+    makeItem('b', 'reference', 'short B'),
+  ];
+  const { resolvedItems, selection } = selectCanonicalContent(items, 100000, measureBody);
+  assertEq(selection.status, 'ok', 'status ok when fits at stage 1');
+  assertEq(resolvedItems[0].content, 'short A', 'critical resolved to full');
+  assertEq(resolvedItems[1].content, 'short B', 'reference resolved to full');
+  assertEq(selection.trimmedFiles, [], 'no trimmed files at ok');
+  assertEq(selection.stubbedFiles, [], 'no stubbed files at ok');
+}
+
+{
+  // 7. Trimming reference fits.
+  // Critical 'A' is small. Reference 'B' has full=very long, trimmed=tiny.
+  const longB = 'x'.repeat(2000);
+  const items = [
+    makeItem('a', 'critical', 'a-content'),
+    makeItem('b', 'reference', longB, 'tiny-b'),
+  ];
+  // Budget big enough for trimmed but not full.
+  const { resolvedItems, selection } = selectCanonicalContent(items, 200, measureBody);
+  assertEq(selection.status, 'trimmed', 'status trimmed when stage 2 fits');
+  assertEq(resolvedItems[0].content, 'a-content', 'critical kept as full');
+  assertEq(resolvedItems[1].content, 'tiny-b', 'reference resolved to trimmed');
+  assertEq(selection.trimmedFiles, ['b'], 'b listed as trimmed');
+}
+
+{
+  // 8. Trimmed still over → stubbed.
+  // Critical small, reference both full and trimmed are too long, but stub fits.
+  const items = [
+    makeItem('a', 'critical', 'a-content'),
+    makeItem('b', 'reference', 'x'.repeat(5000), 'y'.repeat(3000), '> stub-b'),
+  ];
+  const { resolvedItems, selection } = selectCanonicalContent(items, 100, measureBody);
+  assertEq(selection.status, 'stubbed', 'status stubbed when only stub fits');
+  assertEq(resolvedItems[1].content, '> stub-b', 'reference resolved to stub');
+  assertEq(selection.stubbedFiles, ['b'], 'b listed as stubbed');
+}
+
+{
+  // 9. Stubbed still over → over-budget.
+  // Critical itself is over budget; nothing helps.
+  const items = [
+    makeItem('a', 'critical', 'x'.repeat(1000)),
+    makeItem('b', 'reference', 'short', 'short', '> stub-b'),
+  ];
+  const { selection } = selectCanonicalContent(items, 50, measureBody);
+  assertEq(selection.status, 'over-budget', 'status over-budget when stage 3 still over');
+  assert(selection.overBy > 0, 'overBy populated');
+  assert(typeof selection.overBy === 'number', 'overBy is a number');
+}
+
+{
+  // 10. budgetBytes <= 0 → stage 1 wins, budget = null.
+  const items = [
+    makeItem('a', 'critical', 'x'.repeat(10000)),
+    makeItem('b', 'reference', 'y'.repeat(10000), 'tiny'),
+  ];
+  const { resolvedItems, selection } = selectCanonicalContent(items, 0, measureBody);
+  assertEq(selection.status, 'ok', 'status ok when budget disabled');
+  assertEq(selection.budgetBytes, null, 'budgetBytes null when disabled');
+  assertEq(resolvedItems[1].content, 'y'.repeat(10000), 'reference resolved to full when disabled');
+}
+
+{
+  // 11. All critical, total > budget: status over-budget, no items modified.
+  const items = [
+    makeItem('a', 'critical', 'x'.repeat(1000)),
+    makeItem('c', 'critical', 'z'.repeat(1000)),
+  ];
+  const { resolvedItems, selection } = selectCanonicalContent(items, 100, measureBody);
+  assertEq(selection.status, 'over-budget', 'status over-budget when no reference files');
+  assertEq(resolvedItems[0].content, 'x'.repeat(1000), 'critical a still full');
+  assertEq(resolvedItems[1].content, 'z'.repeat(1000), 'critical c still full');
+  assertEq(selection.trimmedFiles, [], 'no trimmed files');
+  assertEq(selection.stubbedFiles, [], 'no stubbed files');
+}
+
+console.log('# buildCanonical priority');
+
+{
+  // 18. File with priority: reference → item.priority === 'reference'.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'project-status.md'),
+    `---
+priority: reference
+description: Status.
+---
+
+# Status
+
+Some content.
+`,
+  );
+  const items = buildCanonical(root);
+  assertEq(items.length, 1, '1 item');
+  assertEq(items[0].priority, 'reference', 'priority read as reference');
+  assert(items[0].full.includes('Some content.'), 'full body present');
+  cleanup(root);
+}
+
+{
+  // 19. File without priority field → defaults to critical.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'naming.md'),
+    `---
+description: Naming.
+---
+
+# Naming
+
+Body.
+`,
+  );
+  const items = buildCanonical(root);
+  assertEq(items.length, 1, '1 item');
+  assertEq(items[0].priority, 'critical', 'priority defaults to critical');
+  cleanup(root);
+}
+
+console.log('# renderCanonical with budget');
+
+{
+  // 20. Budget set: header has budget/status frontmatter and budget blockquote.
+  const resolved = [{ name: 'a', priority: 'critical', content: 'Hello.' }];
+  const sel = {
+    status: 'ok',
+    budgetBytes: 40960,
+    currentBytes: 12,
+    trimmedFiles: [],
+    stubbedFiles: [],
+  };
+  const out = renderCanonical(resolved, sel, '2026-04-28T00:00:00Z');
+  assert(out.includes('budget: 40960'), 'frontmatter has budget');
+  assert(out.includes('status: ok'), 'frontmatter has status');
+  assert(out.includes('Budget: 40960 bytes (body); current: 12 bytes; status: ok (full).'), 'header blockquote present');
+  assert(out.includes('## a'), 'item rendered');
+
+  // Disabled budget: no budget frontmatter, no blockquote.
+  const out2 = renderCanonical(resolved, NULL_SELECTION, '2026-04-28T00:00:00Z');
+  assert(!out2.includes('budget:'), 'no budget frontmatter when disabled');
+  assert(!out2.includes('Budget:'), 'no header blockquote when disabled');
+
+  // Trimmed status summary.
+  const sel3 = {
+    status: 'trimmed',
+    budgetBytes: 1000,
+    currentBytes: 800,
+    trimmedFiles: ['x', 'y'],
+    stubbedFiles: [],
+  };
+  const out3 = renderCanonical(resolved, sel3, '2026-04-28T00:00:00Z');
+  assert(out3.includes('2 reference files trimmed'), 'trimmed summary count');
+
+  // Over-budget summary.
+  const sel4 = {
+    status: 'over-budget',
+    budgetBytes: 100,
+    currentBytes: 200,
+    overBy: 100,
+    trimmedFiles: [],
+    stubbedFiles: ['z'],
+  };
+  const out4 = renderCanonical(resolved, sel4, '2026-04-28T00:00:00Z');
+  assert(out4.includes('over budget by 100 bytes'), 'over-budget summary');
+}
+
+console.log('# regenerateAll end-to-end with trimming');
+
+{
+  // 21. Three locked files: critical, reference (with trim block), reference (no markers).
+  // Budget tight enough that stage 2 (trimming) fits but stage 1 (full) does not.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'a-critical.md'),
+    `---
+priority: critical
+---
+
+# Critical
+
+` + 'C'.repeat(500) + '\n',
+  );
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'b-reference-trimmable.md'),
+    `---
+priority: reference
+---
+
+# Reference Trimmable
+
+Pre.
+
+<!-- canonical:trim -->
+` + 'X'.repeat(2000) + `
+<!-- canonical:end-trim -->
+
+Post.
+`,
+  );
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'c-reference-no-markers.md'),
+    `---
+priority: reference
+---
+
+# No Markers
+
+Short body.
+`,
+  );
+  writeFileSync(
+    join(root, 'workspace.json'),
+    JSON.stringify({ workspace: { canonicalBudgetBytes: 1500 } }),
+  );
+
+  const artifacts = regenerateAll(root, '2026-04-28T00:00:00Z');
+  const canonicalArt = artifacts.find((a) => a.label === 'canonical.md');
+  assert(canonicalArt, 'canonical artifact present');
+  const sel = canonicalArt.selection;
+  assertEq(sel.status, 'trimmed', 'status trimmed at this budget');
+  assertEq(sel.budgetBytes, 1500, 'budget echoed');
+  assert(sel.currentBytes <= 1500, 'currentBytes within budget');
+  assert(canonicalArt.content.includes('Critical'), 'critical content kept');
+  assert(canonicalArt.content.includes('Trimmed for canonical budget'), 'breadcrumb present');
+  assert(!canonicalArt.content.includes('X'.repeat(2000)), 'trimmed block dropped');
+  assert(canonicalArt.content.includes('## c-reference-no-markers'), 'no-markers reference still present');
+  assert(canonicalArt.content.includes('Short body.'), 'no-markers reference body kept (trimmed === full)');
+
+  cleanup(root);
+}
+
+console.log('# CLI --check exit codes (canonical block)');
+
+const scriptPath = new URL('./build-workspace-context.mjs', import.meta.url).pathname;
+
+{
+  // 22. --check on current/in-budget fixture: exit 0, status current, selectionStatus ok.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'tiny.md'),
+    `---
+priority: critical
+---
+
+# Tiny
+
+Body.
+`,
+  );
+  // Write to make current.
+  spawnSync('node', [scriptPath, '--write', '--root', root], { encoding: 'utf-8' });
+  const r = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
+  assertEq(r.status, 0, 'exit 0 when current and in budget');
+  const out = JSON.parse(r.stdout);
+  assertEq(out.status, 'current', 'JSON status current');
+  assert(out.canonical, 'canonical block present');
+  assertEq(out.canonical.selectionStatus, 'ok', 'selectionStatus ok');
+  cleanup(root);
+}
+
+{
+  // 23. --check on stale fixture (artifact differs from source): exit 1, status stale.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'one.md'),
+    `---
+priority: critical
+---
+
+Body.
+`,
+  );
+  // No --write run, so canonical/index missing.
+  const r = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
+  assertEq(r.status, 1, 'exit 1 when artifacts missing');
+  const out = JSON.parse(r.stdout);
+  assertEq(out.status, 'stale', 'JSON status stale');
+  assert(out.missing.includes('canonical.md'), 'canonical.md flagged missing');
+  cleanup(root);
+}
+
+{
+  // 24. --check in-budget on disk but source content over budget → exit 2.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'big-critical.md'),
+    `---
+priority: critical
+---
+
+` + 'A'.repeat(5000) + '\n',
+  );
+  writeFileSync(
+    join(root, 'workspace.json'),
+    JSON.stringify({ workspace: { canonicalBudgetBytes: 100 } }),
+  );
+  // Write so disk matches what computation produces.
+  spawnSync('node', [scriptPath, '--write', '--root', root], { encoding: 'utf-8' });
+  const r = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
+  assertEq(r.status, 2, 'exit 2 when current but over budget');
+  const out = JSON.parse(r.stdout);
+  assertEq(out.status, 'current', 'JSON status current (artifacts in sync)');
+  assertEq(out.canonical.selectionStatus, 'over-budget', 'selectionStatus over-budget');
+  assert(typeof out.canonical.overBy === 'number' && out.canonical.overBy > 0, 'overBy populated');
+  cleanup(root);
+}
+
+{
+  // 25. --check both stale + over-budget: exit 1 (stale wins).
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'big.md'),
+    `---
+priority: critical
+---
+
+` + 'A'.repeat(5000) + '\n',
+  );
+  writeFileSync(
+    join(root, 'workspace.json'),
+    JSON.stringify({ workspace: { canonicalBudgetBytes: 100 } }),
+  );
+  // Don't --write, so canonical.md is missing.
+  const r = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
+  assertEq(r.status, 1, 'exit 1 (stale wins over over-budget)');
+  const out = JSON.parse(r.stdout);
+  assertEq(out.status, 'stale', 'JSON status stale');
+  cleanup(root);
+}
+
+{
+  // 26. --check disabled budget: exit 0 with huge canonical, canonical.budget = null.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'huge.md'),
+    `---
+priority: critical
+---
+
+` + 'A'.repeat(50000) + '\n',
+  );
+  writeFileSync(
+    join(root, 'workspace.json'),
+    JSON.stringify({ workspace: { canonicalBudgetBytes: 0 } }),
+  );
+  spawnSync('node', [scriptPath, '--write', '--root', root], { encoding: 'utf-8' });
+  const r = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
+  assertEq(r.status, 0, 'exit 0 when budget disabled even with huge canonical');
+  const out = JSON.parse(r.stdout);
+  assertEq(out.canonical.budget, null, 'canonical.budget null when disabled');
+  assertEq(out.canonical.selectionStatus, 'ok', 'selectionStatus ok when disabled');
+  cleanup(root);
+}
+
+{
+  // 27. Stderr warning fires for reference file with no markers.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'ref-no-markers.md'),
+    `---
+priority: reference
+---
+
+# Reference
+
+Body without markers.
+`,
+  );
+  const r = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
+  assert(/no canonical:trim markers/.test(r.stderr), 'warning about missing markers in stderr');
+  assert(/ref-no-markers/.test(r.stderr), 'warning names the file');
+  cleanup(root);
+}
+
+{
+  // 28. Stderr warning fires when over-budget with no reference files.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'all-critical.md'),
+    `---
+priority: critical
+---
+
+` + 'A'.repeat(5000) + '\n',
+  );
+  writeFileSync(
+    join(root, 'workspace.json'),
+    JSON.stringify({ workspace: { canonicalBudgetBytes: 100 } }),
+  );
+  spawnSync('node', [scriptPath, '--write', '--root', root], { encoding: 'utf-8' });
+  const r = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
+  assert(/no priority:reference files exist/.test(r.stderr), 'warning when over-budget with all-critical');
   cleanup(root);
 }
 

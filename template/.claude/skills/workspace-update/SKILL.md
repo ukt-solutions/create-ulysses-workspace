@@ -77,7 +77,7 @@ Read `toVersion` from `.workspace-update/.manifest.json` and update `templateVer
 
 ### Step 4a: Run idempotent migrators
 
-The payload may include migrator scripts at `.workspace-update/.claude/scripts/migrate-*.mjs` that bring older workspaces forward in shape. They are idempotent — safe to re-run on already-migrated workspaces. Run each one and surface its action in the upgrade summary.
+The payload may include migrator scripts at `.workspace-update/.claude/scripts/migrate-*.mjs` that bring older workspaces forward in shape. They are idempotent — safe to re-run on already-migrated workspaces. Run each one in document order and surface its action in the upgrade summary.
 
 ```bash
 node .workspace-update/.claude/scripts/migrate-claude-md-freshness-include.mjs
@@ -88,6 +88,12 @@ Output is JSON: `{"action":"appended"|"unchanged"|"skipped"}`.
 - `appended` — the workspace's `CLAUDE.md` got the `@local-only-template-freshness.md` include line added at the end.
 - `unchanged` — the line was already present.
 - `skipped` — no `CLAUDE.md` exists at the workspace root (rare; surface to the user).
+
+```bash
+node .workspace-update/.claude/scripts/migrate-canonical-priority.mjs --root .
+```
+
+Output is JSON: `{"status":"applied"|"noop","files":[...]}`. Back-fills `priority: critical` on every `workspace-context/shared/locked/*.md` that lacks the field, preserving today's full-load behavior until the user explicitly demotes a file. Idempotent — safe to re-run on already-migrated workspaces.
 
 Add other migrators here as the template ships them.
 

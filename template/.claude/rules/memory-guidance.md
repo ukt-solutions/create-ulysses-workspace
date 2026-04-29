@@ -34,6 +34,7 @@ Every workspace-context file should have YAML frontmatter. The fields below are 
 - `state` — `locked` (team truth) or `ephemeral` (working context). Locked files live under `shared/locked/`; ephemeral files live elsewhere under `shared/` or `team-member/{user}/`.
 - `lifecycle` — for ephemeral files: `active` (still relevant) or `resolved` (handled, kept for record).
 - `type` — kind of content: `reference`, `braindump`, `handoff`, `research`, `design`, `index`, `canonical`, `promoted`.
+- `priority` — for locked files only: `critical` (always loaded into canonical) or `reference` (eligible for trim/stub under canonical budget pressure). Default when absent is `critical`. See `build-workspace-context.mjs` for selection semantics.
 - `topic` — kebab-case slug matching the filename (after the type prefix, when one is present).
 - `author` — username scope owner. Required for `team-member/{user}/` files.
 - `updated` — ISO date of last meaningful edit. `/maintenance` flags stale `lifecycle: active` files based on this.
@@ -70,6 +71,8 @@ A single generator at `.claude/scripts/build-workspace-context.mjs` produces thr
 - `workspace-context/team-member/{user}/index.md` — per-user navigation catalog, one per team member. Imported by each user's gitignored `CLAUDE.local.md`.
 
 Gitignored files (e.g. anything matching `local-only-*`) are excluded automatically, and `workspace-context/.indexignore` adds path-prefix excludes for tracked files that shouldn't appear in the shared index (e.g. archived release notes).
+
+When `workspace-context/canonical.md` exceeds `workspace.canonicalBudgetBytes` (default 40960), the builder honors per-file `priority` and section-level `<!-- canonical:trim --> ... <!-- canonical:end-trim -->` markers to fit: `priority: reference` files are trimmed first, then stubbed, while `priority: critical` files are always included in full. `/maintenance` audits the budget and offers a triage flow when over.
 
 ```bash
 node .claude/scripts/build-workspace-context.mjs --check --root .   # exits 1 if any artifact is stale or missing
