@@ -2,6 +2,10 @@
 
 All notable changes to `@ulysses-ai/create-workspace` are documented here. Entries are written for users installing the package, not contributors — see the repository history for implementation detail.
 
+## v0.15.0-beta.2 — 2026-04-29
+
+- **`memory-guidance.md` now articulates what belongs in canonical content.** Canonical loads verbatim into every session prompt — it frames how Claude reads the rest of the conversation. The new section codifies the boundary between what's appropriate to lock (facts about the system, hard constraints, process rules, settled-rejection guardrails with rationale, meta-principles for debiasing) and what isn't (opinions on open technical questions, conclusions Claude might be asked to question, personal preferences, fast-aging status snapshots). Includes the test for promotion: "would this help frame the problem correctly, or push Claude toward a particular answer to a question that hasn't been asked yet?" `/release` and `/promote` apply this test before locking content.
+
 ## v0.15.0-beta.1 — 2026-04-29
 
 - **Configurable byte budget for `workspace-context/canonical.md` (gh:97).** Canonical content is auto-loaded into every session prompt via `CLAUDE.md`, so as locked truths accumulate it can silently push past Claude Code's recommended context-budget threshold. The new `workspace.canonicalBudgetBytes` field in `workspace.json` (default `40960`, matching Claude Code's own warn level) sets a soft ceiling; setting it to `0` or negative disables enforcement. The build script measures body bytes only — boilerplate header is excluded — so the budget is not affected by the new status lines the builder emits.
