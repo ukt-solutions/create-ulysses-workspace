@@ -80,3 +80,30 @@ node .claude/scripts/build-workspace-context.mjs --write --root .   # regenerate
 ```
 
 `/maintenance` checks staleness in audit mode and regenerates in cleanup mode. Hand edits to `index.md`, `canonical.md`, or any `team-member/{user}/index.md` are overwritten — update source files (or their `description:` frontmatter) instead.
+
+## What Belongs in Canonical
+
+Canonical content is loaded verbatim into every session prompt. It frames how Claude reads the rest of the conversation, so the bar for what goes in is narrower than the bar for `shared/` (root) or `team-member/{user}/`. The principle: canonical should describe what *is* and what *to do*, not what *to think*.
+
+**Belongs in canonical (`shared/locked/`):**
+
+- **Facts about the system** — current architecture, supported targets, naming conventions, where things live, what's published.
+- **Hard constraints** — "must work on Windows and macOS," "PRs only, no direct push to main," "this directory is gitignored." Constraints scope the solution space without prejudging which solution to pick.
+- **Process rules** — workflow discipline that applies regardless of the task. Branch protection, release cadence, mandatory review gates.
+- **Settled-rejection guardrails** — "we evaluated approach X, rejected because Y, do not propose this again." Saves Claude from spending tokens re-proposing already-evaluated options. The guardrail must include the *why*, so future-Claude can recognize when an edge case actually warrants revisiting the rejection.
+- **Meta-principles for debiasing** — explicit reminders to widen evaluation, like the dogfood-bias risk doc. Anti-shading by design.
+
+**Does NOT belong in canonical:**
+
+- **Opinions on open technical questions** — "library X is better than Y for this kind of problem," "approach A is preferred over B." These shape Claude's reasoning starting point so it begins from the conclusion rather than reasoning toward it. If the team has a strong preference, write it as a constraint ("use X, not Y") with the reason — or keep it in `shared/` (root) where it is reference material but not always-loaded.
+- **Conclusions Claude might be asked to question** — "we believe the architecture is correct," "feature Z is the right shape." If a topic is the subject of ongoing design work, locking a conclusion biases the discussion before it starts.
+- **Personal preferences** — what one contributor finds elegant or annoying. Belongs in `team-member/{user}/`.
+- **Status snapshots that age fast** — sprint-current priorities, "we're working on X this week." `project-status.md` is the bounded exception for high-level project status; finer-grained "what's in flight" lives in the tracker.
+
+**The test before promoting to canonical:**
+
+> If Claude read this for the first time during a session about an unrelated topic, would it (a) help frame the problem correctly, or (b) push Claude toward a particular answer to a question that hasn't been asked yet?
+
+(a) is canonical. (b) is `shared/` (root) at most, more often `team-member/{user}/`.
+
+The distinction matters because pre-loaded conclusions in always-loaded context don't read like opinions to Claude — they read like ground truth. A reference doc Claude *finds* during research is weighed against the question; a canonical doc loaded before the question is asked frames what Claude considers in the first place. `/release` and `/promote` should apply this test before locking content.
