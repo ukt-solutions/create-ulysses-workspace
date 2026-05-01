@@ -61,6 +61,7 @@ Trivial edits (renaming, reordering) do **not** trigger a flush — they ride on
 - Do not edit the `## Tasks` section by hand or with `Edit` — always go through the helper. Manual edits will be overwritten and may miss the bookend invariant.
 - Do not add nested checkboxes — `TodoWrite` is flat, and the round-trip ignores nesting.
 - Do not omit the bookends — the helper auto-inserts them, but explicit is better than implicit.
+- Do not append new tasks after the `Complete work` bookend in `TodoWrite`. Always insert them between `Start work` and `Complete work`. The disk helper silently corrects misplacement on the next flush, but the live `TodoWrite` UI shows tasks in the order they were written — appending leaves `Complete work` stranded mid-list until something triggers a flush.
 - Do not flush every keystroke — that creates pointless file churn. Flush on meaningful change or lifecycle moment.
 - Do not flush from inside a subagent — subagents have ephemeral context; only the main agent maintains the canonical `TodoWrite` state for the session.
 
