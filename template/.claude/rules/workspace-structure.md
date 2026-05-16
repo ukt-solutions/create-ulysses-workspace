@@ -12,6 +12,9 @@ This workspace follows the claude-workspace convention. All paths are relative t
 | `work-sessions/{name}/workspace/session.md` | Unified session tracker at the top of the session branch (frontmatter = machine state, body = human content) | Yes — on the session branch |
 | `work-sessions/{name}/workspace/design-*.md` | Specs for this session — consumed into release notes by /complete-work | Yes — on the session branch |
 | `work-sessions/{name}/workspace/plan-*.md` | Plans for this session — consumed into release notes by /complete-work | Yes — on the session branch |
+| `work-sessions/{name}/workspace/goal-*.md` | Goal artifacts for /goal-driven multi-phase work — consumed into release notes by /complete-work | Yes — on the session branch |
+| `work-sessions/{name}/workspace/research-*.md` | Phase-output research artifacts produced by goal-driven sessions — consumed into release notes by /complete-work | Yes — on the session branch |
+| `work-sessions/{name}/workspace/crossref-*.md` | Phase-output crossref artifacts produced by goal-driven sessions — consumed into release notes by /complete-work | Yes — on the session branch |
 | `work-sessions/{name}/workspace/repos/` | Real directory holding nested project worktrees for this session | No (gitignored) |
 | `work-sessions/{name}/workspace/repos/{repo}/` | Project worktree nested inside the workspace worktree | No (gitignored) |
 | `workspace-context/` | Team knowledge and per-user context | Yes |
@@ -46,18 +49,19 @@ Inflight session state lives inside the session worktree at `work-sessions/{name
 
 ## Spec and Plan Locations — MANDATORY OVERRIDE
 
-**Specs and plans MUST be written at the top of the active session's workspace worktree, not to `docs/superpowers/` or any other location.**
+**Specs, plans, and goal artifacts MUST be written at the top of the active session's workspace worktree, not to `docs/superpowers/` or any other location.**
 
 - Specs: `design-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`
 - Plans: `plan-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`
+- Goals: `goal-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`, with goal-native phase outputs as `research-{topic}.md` and `crossref-{topic}.md` siblings. See `goal-driven-work.md` for the schema and when to reach for `/goal`.
 
-From inside the worktree, these are plain top-level files (`design-{topic}.md`, `plan-{topic}.md`) sitting alongside `CLAUDE.md` and `workspace.json`. They are tracked on the session branch and travel with the branch on `git push`.
+From inside the worktree, these are plain top-level files (`design-{topic}.md`, `plan-{topic}.md`, `goal-{topic}.md`) sitting alongside `CLAUDE.md` and `workspace.json`. They are tracked on the session branch and travel with the branch on `git push`.
 
-This overrides any default paths specified by external skills (e.g., Superpowers brainstorming defaults to `docs/superpowers/specs/`). Those skills state that user preferences override their defaults — this rule IS that override. Do not create `docs/superpowers/` directories. Do not write specs or plans anywhere other than the top of the active worktree.
+This overrides any default paths specified by external skills (e.g., Superpowers brainstorming defaults to `docs/superpowers/specs/`). Those skills state that user preferences override their defaults — this rule IS that override. Do not create `docs/superpowers/` directories. Do not write specs, plans, or goal artifacts anywhere other than the top of the active worktree.
 
-If a spec/plan already exists for the current session, version it: `design-{topic}-v2.md`, `design-{topic}-v3.md`.
+If a spec/plan/goal already exists for the current session, version it: `design-{topic}-v2.md`, `design-{topic}-v3.md`.
 
-`/complete-work` reads specs and plans from the worktree to synthesize release notes, then removes them in a dedicated commit before the final PR so main's tree stays pristine.
+`/complete-work` reads specs, plans, and goal artifacts (including `research-*.md` and `crossref-*.md` phase outputs) from the worktree to synthesize release notes, then removes them in a dedicated commit before the final PR so main's tree stays pristine.
 
 ## File Naming Conventions
 
@@ -67,6 +71,9 @@ If a spec/plan already exists for the current session, version it: `design-{topi
 - Session trackers: `work-sessions/{session-name}/workspace/session.md`
 - Specs: `design-{topic}.md` (top of worktree)
 - Plans: `plan-{topic}.md` (top of worktree)
+- Goals: `goal-{topic}.md` (top of worktree)
+- Goal-native research outputs: `research-{topic}.md` (top of worktree)
+- Goal-native crossref outputs: `crossref-{topic}.md` (top of worktree)
 
 For ephemeral content under `shared/` and `team-member/{user}/`, the filename prefix signals the type:
 

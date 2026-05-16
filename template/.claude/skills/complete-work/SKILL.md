@@ -55,9 +55,12 @@ Formally read ALL sources before synthesizing — do not write release notes fro
 
 1. **Session tracker** at `work-sessions/{session-name}/workspace/session.md` — read the full body (frontmatter is machine state, body is human content)
 
-2. **Session-scoped specs/plans** at the top of the session worktree:
+2. **Session-scoped specs/plans/goal artifacts** at the top of the session worktree:
    - `work-sessions/{session-name}/workspace/design-*.md` files
    - `work-sessions/{session-name}/workspace/plan-*.md` files
+   - `work-sessions/{session-name}/workspace/goal-*.md` files
+   - `work-sessions/{session-name}/workspace/research-*.md` files
+   - `work-sessions/{session-name}/workspace/crossref-*.md` files
    - Read each one fully
 
 3. **Handoffs** — any workspace-context entries referencing this branch:
@@ -129,19 +132,34 @@ If a repo has no commits beyond the base, skip release notes for it.
 
 ### Step 7: Remove session artifacts from the workspace branch
 
-The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 12. Before that happens, make sure everything worth preserving has landed in release notes (Step 6) — once Step 6 has run, the tracker, specs, and plans have served their purpose.
+The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 12. Before that happens, make sure everything worth preserving has landed in release notes (Step 6) — once Step 6 has run, the tracker, specs, plans, and goal artifacts have served their purpose.
 
-Session content lives at the top of the workspace worktree on the session branch. Remove these files from the branch before the final push so main's top level stays free of session artifacts:
+**Goal sub-branch pre-flight (only when a `goal-*.md` artifact is present).** A `/goal`-driven session can produce per-phase sub-branches for code phases (any phase declaring `integration.strategy: sub-branch` in the goal artifact). Those sub-branches must be merged into the session branch before completion, or their work is lost when the session folder is torn down. Before stripping anything, check each repo in the session — the workspace worktree itself and every `repos/{repo}/` project worktree:
+
+```bash
+cd work-sessions/{session-name}/workspace/repos/{repo}   # repeat for the workspace worktree too
+session_branch=$(git rev-parse --abbrev-ref HEAD)
+for sub in $(git branch --format='%(refname:short)' --list "${session_branch}-*"); do
+  git merge-base --is-ancestor "$sub" "$session_branch" || echo "UNMERGED: $sub"
+done
+```
+
+If any `UNMERGED:` lines print, abort completion and show the list. The user merges the intended sub-branches into the session branch, or closes abandoned ones, then re-runs `/complete-work`. When no `goal-*.md` artifact is present, this check is a no-op and completion proceeds normally.
+
+Session content lives at the top of the workspace worktree on the session branch. Once the pre-flight passes, remove these files from the branch before the final push so main's top level stays free of session artifacts:
 
 ```bash
 cd work-sessions/{session-name}/workspace
 git rm -f session.md 2>/dev/null || true
 git rm -f design-*.md 2>/dev/null || true
 git rm -f plan-*.md 2>/dev/null || true
+git rm -f goal-*.md 2>/dev/null || true
+git rm -f research-*.md 2>/dev/null || true
+git rm -f crossref-*.md 2>/dev/null || true
 git commit -m "chore: remove session artifacts before PR" 2>/dev/null || true
 ```
 
-The `|| true` guards keep this idempotent — if a file is already gone (e.g., a session without specs), the step is a no-op. The commit is skipped when there's nothing staged.
+The `|| true` guards keep this idempotent — if a file is already gone (e.g., a session without specs or goals), the step is a no-op. The commit is skipped when there's nothing staged.
 
 This commit persists in the branch's history. On squash merge or rebase merge, branch history collapses to one clean commit on main with no session artifacts. On merge commits, branch history is reachable but the final tree on main shows no session content.
 
