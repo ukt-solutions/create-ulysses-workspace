@@ -15,6 +15,7 @@ If any of the three fails, prefer plain session work or a single skill invocatio
 ## File layout
 
 - One `goal-{topic}.md` artifact at the top of the active worktree, alongside `session.md`. One goal per worktree.
+- The artifact's frontmatter holds machine state; its body holds the human-readable goal statement, per-phase intent, and a mandatory `## Start command` section (see "Kicking off the goal") with the literal `/goal "..."` invocation the user runs to start the loop.
 - Phase output artifacts live as siblings. `research-*.md` and `crossref-*.md` are goal-native (produced by `parallel-research` and `crossref` phase types). `design-*.md` and `plan-*.md` are pre-existing session-artifact patterns that `type: skill` phases reuse when the wrapped skill is `superpowers:brainstorming` or `superpowers:writing-plans`; they are not goal-specific.
 - The artifact is tracked on the session branch and lives there until `/complete-work` runs. It is removed from the branch before the final PR alongside other session artifacts.
 
@@ -192,9 +193,31 @@ All phases in goal-<topic>.md show status: complete. Phase artifacts exist at: <
 
 Fill in `<topic>`, paths, and `<N>` per goal. Anchor on artifacts and committed state, not on feelings.
 
+## Kicking off the goal
+
+`/goal` is a Claude Code built-in that the **user** types — the agent cannot invoke it. So the moment the artifact is ready is the load-bearing hand-off, and the artifact itself carries the instruction rather than relying on an agent chat message that vanishes on the next compaction or resume.
+
+Every `goal-{topic}.md` body MUST include a `## Start command` section containing the literal, copy-paste-ready invocation:
+
+````markdown
+## Start command
+
+```
+/goal "All phases in goal-<topic>.md show status: complete. Phase artifacts exist at: <paths>. The /complete-work skill has produced release notes and opened the final PR; the PR URL appeared in the transcript. Or stop after <N> turns."
+```
+````
+
+Rules for the `## Start command`:
+
+- It is the `completion_condition` flattened to a **single line** and wrapped in `/goal "..."`. The frontmatter `completion_condition:` (a multi-line folded scalar) is the auditable source of truth; the start command is its runnable rendering. The two must express the same condition — if you edit one, re-derive the other.
+- Flatten by collapsing the folded scalar's newlines to single spaces. Escape any embedded double quotes. Keep it within the 4000-character `/goal` limit.
+- It lives in the body, not the frontmatter, because it is for a human to copy, not for machine parsing.
+
+When the artifact is drafted and the user has reviewed it, the agent's hand-off is: point the user at the `## Start command` block and let them run it. Running it flips the goal from `status: pending` to `status: active` (the first `/goal` turn updates the frontmatter per the dispatch pattern). The agent never types `/goal` itself.
+
 ## Lifecycle integration
 
-- `/goal` runs inside an active work session. It does NOT replace `/start-work`. The session is created the normal way, the goal artifact is drafted at the worktree top, then `/goal "<condition>"` kicks off the loop.
+- `/goal` runs inside an active work session. It does NOT replace `/start-work`. The session is created the normal way, the goal artifact is drafted at the worktree top (including its `## Start command` block), and the user runs that block's `/goal "..."` command to kick off the loop.
 - The goal artifact lives on the session branch and travels with `git push`. It survives across machines and `--resume`.
 - `session.md`'s `## Tasks` should mirror the phase list at coarse grain (one task per phase) so `TodoWrite` shows high-level progress. The main agent updates `## Tasks` at phase transitions via the helper specified by the `task-list-mirroring` rule, in addition to updating `goal-{topic}.md`.
 - `/pause-work` works without special handling. The goal-evaluator state resets on resume per the Claude Code docs; phase state is durable in the artifact.
@@ -218,9 +241,9 @@ When the goal artifact is itself the deliverable for a future session to execute
 
 ## Appendix: worked example
 
-A complete `goal-evaluate-rate-limiting.md` illustrating all three phase types. The topic is intentionally generic — the example is reference material, not prescriptive.
+A complete `goal-evaluate-rate-limiting.md` illustrating all three phase types. The topic is intentionally generic — the example is reference material, not prescriptive. (The appendix is fenced with four backticks so the example's own `## Start command` code block renders intact.)
 
-```yaml
+````yaml
 ---
 type: goal
 topic: evaluate-rate-limiting
@@ -357,6 +380,14 @@ The api-gateway needs rate limiting before the next traffic step-up. This
 goal runs the full arc from candidate-algorithm research through implementation
 on the session branch.
 
+## Start command
+
+```
+/goal "All 5 phases in goal-evaluate-rate-limiting.md show status: complete. Phase artifacts exist at: research-rate-limiting-strategies.md, crossref-existing-infrastructure.md, design-rate-limiting.md, plan-rate-limiting.md, and the implementation commits land on the session branch (visible in git log). The /complete-work skill has produced release notes and opened the final PR; the PR URL appeared in the transcript. Or stop after 60 turns."
+```
+
+This is the frontmatter `completion_condition` flattened to one line. Run it after reviewing the artifact; it flips the goal to `status: active`.
+
 ## Per-phase intent
 
 1. **strategy-research** runs three researchers in parallel, one per
@@ -385,4 +416,4 @@ All phase agents and synthesizers run on Sonnet (the default for team work).
 The main agent reading and orchestrating this goal runs on Opus. Haiku is
 unused in this example; it would be appropriate for a phase whose sole job
 is, e.g., scanning a tree and returning a tagged file list.
-```
+````
