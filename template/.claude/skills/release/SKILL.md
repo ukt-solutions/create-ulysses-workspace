@@ -27,10 +27,12 @@ Check `workspace.json` for `releaseMode`:
 - **workspace**: process all repos together
 - **ask**: "Process all repos together or individually?"
 
+**Release-notes base directory.** Read `workspace.releaseNotesDir` from `workspace.json` (default `workspace-context/release-notes` if the field is absent). Throughout this skill `{releaseNotesDir}` refers to that resolved value; every branch-note path is `{releaseNotesDir}/unreleased/{repo}/…`. Never use a bare `release-notes/`.
+
 **Step 2: Read unreleased notes**
 Branch notes live in the **workspace** repo, written there by `/complete-work`. For each target repo, list the workspace's unreleased subdirectory for that project:
 ```bash
-ls release-notes/unreleased/{repo}/
+ls {releaseNotesDir}/unreleased/{repo}/
 ```
 Read all `branch-release-notes-*.md` and `branch-release-questions-*.md` files.
 
@@ -71,9 +73,9 @@ The entry stays short. If a change needs more detail, reference the repo's docs 
 
 **Step 6: Delete consumed branch notes from the workspace**
 ```bash
-rm release-notes/unreleased/{repo}/branch-release-*
+rm {releaseNotesDir}/unreleased/{repo}/branch-release-*
 # If the directory is now empty, remove it too:
-rmdir release-notes/unreleased/{repo} 2>/dev/null || true
+rmdir {releaseNotesDir}/unreleased/{repo} 2>/dev/null || true
 ```
 The branch notes were an intermediate capture; their content is now in the CHANGELOG entry and their raw form in git history. They do not survive into the project repo.
 
@@ -98,7 +100,7 @@ Skip this step if the repo has no package.json or no version field.
 **Step 7c: Commit the consumed-notes deletion in the workspace**
 ```bash
 # From the workspace root
-git add release-notes/unreleased/
+git add {releaseNotesDir}/unreleased/
 git commit -m "release: consume {repo} branch notes for v{version}"
 ```
 Workspace and project repos have separate commits — they are separate git histories.
@@ -138,7 +140,7 @@ Process ephemeral workspace-context entries:
 ## Notes
 
 - Release entries live in `CHANGELOG.md` at the project repo root — one file, one concise entry per version. No `release-notes/v*.md`, no `release-notes/archive/`.
-- Branch notes live in the WORKSPACE at `release-notes/unreleased/{repo}/`. `/complete-work` writes them; `/release` consumes and deletes them. They never reach project repos.
+- Branch notes live in the WORKSPACE at `{releaseNotesDir}/unreleased/{repo}/` (resolved from `workspace.json` → `workspace.releaseNotesDir`, default `workspace-context/release-notes`). `/complete-work` writes them; `/release` consumes and deletes them. They never reach project repos.
 - Versions are bumped here, not in `/complete-work`. This keeps the version semantics aligned with what actually shipped (accumulated changes since last release).
 - The public repo stays lean. Detailed per-branch retrospection exists in workspace git history (the consumed-notes commit) but is not surfaced as standalone files in either repo.
 - Context synthesis happens in the WORKSPACE repo — Step 7c (consumed-notes) and Step 9 (workspace-context synthesis) are separate workspace commits.
