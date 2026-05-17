@@ -21,6 +21,7 @@ Determine paths:
 - Workspace worktree: `work-sessions/{session-name}/workspace/`
 - Project worktrees: `work-sessions/{session-name}/workspace/repos/{repo}/` for each repo in the tracker's `repos:` list
 - Read each repo's default branch from workspace.json (`repos.{repo}.branch`)
+- **Release-notes base directory.** Read `workspace.releaseNotesDir` from `workspace.json` (default `workspace-context/release-notes` if the field is absent). Throughout this skill `{releaseNotesDir}` refers to that resolved value; every branch-note path is `{releaseNotesDir}/unreleased/{repo}/…`. Never use a bare `release-notes/`.
 
 ### Step 2: Rebase project repos
 
@@ -86,10 +87,10 @@ For each repo in the tracker's `repos:` list that has commits beyond the base br
 cd work-sessions/{session-name}/workspace/repos/{repo}
 COMMIT_ID=$(git rev-parse --short HEAD)
 cd ../..  # back to the workspace worktree
-mkdir -p release-notes/unreleased/{repo-name}
+mkdir -p {releaseNotesDir}/unreleased/{repo-name}
 ```
 
-**File 1: `release-notes/unreleased/{repo-name}/branch-release-notes-{COMMIT_ID}.md`** (relative to the workspace worktree)
+**File 1: `{releaseNotesDir}/unreleased/{repo-name}/branch-release-notes-{COMMIT_ID}.md`** (relative to the workspace worktree)
 ```markdown
 ---
 branch: {branch}
@@ -105,7 +106,7 @@ date: {YYYY-MM-DD}
 Written from scratch per coherent-revisions rule.}
 ```
 
-**File 2: `release-notes/unreleased/{repo-name}/branch-release-questions-{COMMIT_ID}.md`**
+**File 2: `{releaseNotesDir}/unreleased/{repo-name}/branch-release-questions-{COMMIT_ID}.md`**
 ```markdown
 ---
 branch: {branch}
@@ -124,7 +125,7 @@ The `repo:` frontmatter field is what `/release` uses to know which project repo
 After all repos are processed, commit once on the workspace branch:
 ```bash
 cd work-sessions/{session-name}/workspace
-git add release-notes/unreleased/
+git add {releaseNotesDir}/unreleased/
 git commit -m "docs: add release notes for {branch}"
 ```
 
@@ -459,7 +460,7 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 - **Revert** — undo the changes (with confirmation)
 
 ## Notes
-- Branch release notes live in the WORKSPACE repo at `release-notes/unreleased/{repo-name}/` — never in project repos. Project repos only ever see code commits and (at release time) `CHANGELOG.md` entries written by `/release`.
+- Branch release notes live in the WORKSPACE repo at `{releaseNotesDir}/unreleased/{repo-name}/` (resolved from `workspace.json` → `workspace.releaseNotesDir`, default `workspace-context/release-notes`) — never in project repos. Project repos only ever see code commits and (at release time) `CHANGELOG.md` entries written by `/release`.
 - The session tracker's body is the primary source for release note synthesis — it captures the full session history alongside specs and plans
 - All repos get PRed and merged together — one approval for all
 - Version bumps happen in `/release`, not `/complete-work` — this avoids version drift when multiple feature branches land between releases
