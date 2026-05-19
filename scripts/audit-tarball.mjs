@@ -327,6 +327,20 @@ function checkReadmeCounts() {
   return violations;
 }
 
+function checkCLAUDEMdTmpl() {
+  const tmplPath = join(REPO_ROOT, 'template/CLAUDE.md.tmpl');
+  const content = readFileSync(tmplPath, 'utf8');
+  const violations = [];
+  if (!content.includes('## Quick Reference'))
+    violations.push({ kind: 'claude-md-tmpl', details: 'missing "## Quick Reference" heading' });
+  if (!content.includes('@workspace-context/canonical.md'))
+    violations.push({ kind: 'claude-md-tmpl', details: 'missing "@workspace-context/canonical.md" import' });
+  const bytes = Buffer.byteLength(content, 'utf8');
+  if (bytes >= 3000)
+    violations.push({ kind: 'claude-md-tmpl', details: `CLAUDE.md.tmpl is ${bytes} bytes (ceiling 3000)` });
+  return violations;
+}
+
 function main() {
   const result = runDryRun();
   const files = result.files;
@@ -338,6 +352,7 @@ function main() {
     ...checkSettingsSanity(),
     ...checkSizeBound(result.size),
     ...checkReadmeCounts(),
+    ...checkCLAUDEMdTmpl(),
   ];
 
   if (violations.length > 0) {
