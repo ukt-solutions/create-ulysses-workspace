@@ -108,22 +108,36 @@ Report one of:
 
 Active recommendations. Flags problems and suggests fixes, but asks before acting.
 
-### 7. Stale context
+### 7. Component age check
+
+Scan the following file sets for a YAML frontmatter `updated:` field:
+- `.claude/rules/*.md` (active rules only — `.md.skip` files are included too, since the rule content can still drift)
+- `.claude/skills/*/SKILL.md`
+- `.claude/agents/*.md`
+- `.claude/hooks/*.mjs`
+
+For each file that has an `updated:` field, compute the age in days from today. If the age exceeds 180 days, flag the file as a stale component candidate. Print the file name, the `updated:` date, and the age in days so the contributor knows how far the file has drifted.
+
+Files without an `updated:` field are skipped — the check is opt-in and activates the discipline incrementally as contributors add frontmatter to the files they own. To start tracking a file, add `updated: <today>` to its frontmatter; the check will surface it if it goes stale.
+
+When stale candidates are found, surface them as warnings in the output format and link to `config-review.md.skip` (in `.claude/rules/`) as the opt-in rule that documents the review cadence and rationale.
+
+### 8. Stale context
 - Ephemeral files not updated in 7+ days — suggest resolve, update, or archive
 - `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
 - Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
 - Braindumps that overlap significantly — suggest merging (e.g., "workspace-branching.md and persistent-work-sessions.md cover the same topic")
 - Handoffs referencing deleted branches — suggest resolve or remove
 
-### 8. Context reconciliation
+### 9. Context reconciliation
 - Read recent workspace-context writes (last session or last N files by updated date)
 - For each, scan other workspace-context files for references that are now stale
 - Surface: "{file} says X but {newer-file} now says Y. Update {file}?"
 - This is the capture-time cross-check, run retroactively instead of inline
 
-### 9. Canonical budget triage
+### 10. Canonical budget triage
 
-This step runs only when the post-regen `--check` from step 8 still reports `selectionStatus: 'over-budget'`. If the regular regen pass cleared the budget — or if `--check` was already `ok`, `trimmed`, or `stubbed` after step 8 — skip this step entirely.
+This step runs only when the post-regen `--check` from step 9 still reports `selectionStatus: 'over-budget'`. If the regular regen pass cleared the budget — or if `--check` was already `ok`, `trimmed`, or `stubbed` after step 9 — skip this step entirely.
 
 The rest of cleanup is suggestion-list-with-confirmation: surface a candidate, ask before applying, move on. Triage is the one meaningfully more interactive surface in `/maintenance`. It runs as a small REPL: present the budget state and a triage menu, take one action, re-run `--check`, present the menu again with the new state. No suggestion is auto-applied; every action is the user's choice.
 
@@ -168,7 +182,7 @@ For each chosen action:
 
 Trim markers and demotions only matter for `priority: reference` files — `<!-- canonical:trim -->` spans on a `priority: critical` file are inert until the file is demoted. The triage flow never auto-decides which file to demote or which section to wrap; it surfaces the data, presents options, and waits.
 
-### 10. Health metrics
+### 11. Health metrics
 - Canonical budget — read from the same `--check` invocation as step 5. Reported as `current / budget` bytes with the selection status (e.g., `full`, `2 reference files trimmed`). Over-budget cases are deferred to the cleanup triage flow rather than re-reported here.
 - Number of ephemeral files — flag if accumulating without resolution
 - Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
@@ -215,7 +229,7 @@ OK (5):
 5. Check git state (worktrees, branches, remotes)
 6. Run `node .claude/scripts/build-workspace-context.mjs --check --root .` — capture status. Exit `0` = clean and within budget, `1` = artifact missing or stale, `2` = artifacts current but canonical body over budget. The `canonical` block in the JSON output drives both the audit budget line and the cleanup triage decision.
 7. Read session-log.jsonl if it exists
-8. If cleanup mode: regenerate the workspace-context auto-files if stale (index.md, canonical.md, per-user team-member indexes); compare files pairwise for overlap; scan for stale cross-references. If post-regen `--check` reports `over-budget`, enter the canonical-budget triage flow described in cleanup step 9.
+8. If cleanup mode: regenerate the workspace-context auto-files if stale (index.md, canonical.md, per-user team-member indexes); compare files pairwise for overlap; scan for stale cross-references. If post-regen `--check` reports `over-budget`, enter the canonical-budget triage flow described in cleanup step 10.
 9. Compile and present findings grouped by severity
 
 ## Notes
