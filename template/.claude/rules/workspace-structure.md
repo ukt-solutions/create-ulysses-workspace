@@ -47,6 +47,16 @@ Canonical content is verbatim-loaded into every session via `CLAUDE.md` → `@wo
 
 Inflight session state lives inside the session worktree at `work-sessions/{name}/workspace/session.md`, not in `workspace-context/`. Workspace-context is for knowledge that outlives any individual session.
 
+## Dynamic context loading (hooks)
+
+Two hooks extend static `CLAUDE.md` loading with context that varies per session and per invocation:
+
+- **`session-start.mjs`** (`SessionStart` hook): reads the active session pointer from `workspace-scratchpad/` and injects the current session's name, branch, linked work item, and shared context catalog into Claude's context. The injection is conditional — if no session is active, or if the relevant fields are absent from the session frontmatter, nothing is added. This avoids noise in non-session contexts (e.g., a quick launcher query).
+
+- **`subagent-start.mjs`** (`SubagentStart` hook): reads every file under `workspace-context/shared/locked/` and injects their content into subagent context. A `subagentContextMaxBytes` field in `workspace.json` (default 10240) acts as a byte-budget fallback — if the total locked content exceeds the budget, files are truncated in reverse-priority order rather than silently dropped. This ensures subagents that never load `CLAUDE.md` still receive canonical team truths.
+
+Both hooks are at `.claude/hooks/session-start.mjs` and `.claude/hooks/subagent-start.mjs`. They are registered as Node.js scripts — cross-platform, no shell dependency.
+
 ## Spec and Plan Locations — MANDATORY OVERRIDE
 
 **Specs, plans, and goal artifacts MUST be written at the top of the active session's workspace worktree, not to `docs/superpowers/` or any other location.**
@@ -97,3 +107,17 @@ Local-only personal drafts get an additional `local-only-` prefix (e.g., `local-
 - `workspace-scratchpad/` is for disposable files only — session log, hook debug output, temporary pointers.
 - Project worktrees are nested inside the workspace worktree's real `repos/` directory — no symlink.
 - Hand edits to `index.md`, `canonical.md`, or any per-user `team-member/{user}/index.md` are overwritten by `build-workspace-context.mjs`. Update source files (or their `description:` frontmatter) instead.
+
+## Explore before editing
+
+Before modifying files in a large or unfamiliar codebase, use read-only tools to map the affected surface. The workflow: dispatch a researcher-type subagent to read, grep, and navigate the codebase; have it return a summary of the affected files, callers, and dependencies; then edit only after the map is established.
+
+The `researcher.md` agent enforces this pattern mechanically via `disallowedTools: [Edit, Write, Bash]` — it can read and search but cannot change anything. Use it for initial exploration, then hand the findings back to the main agent for the actual edit. This avoids partial edits that break callers, catches ripple effects before they happen, and keeps the edit surface as small as possible.
+
+## Launching Claude from a project worktree
+
+Claude can be launched from any directory, and it walks up the filesystem loading every `CLAUDE.md` it finds. This means starting `claude` from `work-sessions/{name}/workspace/repos/{repo}/` loads both the per-repo conventions (from `repos/{repo}/CLAUDE.md`, if it exists) and the full workspace conventions (from the workspace `CLAUDE.md` further up the tree) — all without extra configuration.
+
+For repo-focused work — debugging a single service, reviewing a specific module, running targeted tests — launching from the project worktree gives Claude a tighter codebase context. It sees the repo's own file tree first and reaches workspace-level conventions by traversal. The session hooks still fire (they read from `workspace-scratchpad/`, which is always relative to the workspace root), and `session.md` and all session artifacts remain at the workspace worktree top.
+
+This is purely a launch-point choice; no workspace configuration changes are needed to enable it.
