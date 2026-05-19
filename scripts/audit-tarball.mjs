@@ -40,10 +40,11 @@ const TEXT_FILENAMES = new Set(['LICENSE', '_gitignore']);
 
 const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 
-// Hard size ceiling. Current tarball is ~104 kB; 150 kB leaves headroom for
+// Hard size ceiling. Current tarball is ~150 kB; 155 kB leaves headroom for
 // legitimate growth but trips loudly if something like docs/ or node_modules/
-// gets pulled in by accident.
-const SIZE_LIMIT_BYTES = 150 * 1024;
+// gets pulled in by accident. Bumped from 150 kB after session-end.mjs grew
+// legitimately with the BP-10 reflection sub-step.
+const SIZE_LIMIT_BYTES = 155 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
