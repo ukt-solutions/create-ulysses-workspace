@@ -222,6 +222,11 @@ function checkSettingsSanity() {
     }
   }
 
+  const deny = parsed?.permissions?.deny;
+  if (!Array.isArray(deny)) {
+    violations.push({ kind: 'missing-deny', details: `${settingsPath}: permissions.deny is missing or not an array` });
+  }
+
   const leakPatterns = [
     { name: 'macOS home path', re: /\/Users\// },
     { name: 'linux home path', re: /\/home\// },
