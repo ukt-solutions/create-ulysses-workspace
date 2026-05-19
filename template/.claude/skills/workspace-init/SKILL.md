@@ -1,6 +1,9 @@
 ---
 name: workspace-init
 description: First-time workspace initialization. Clones repos, installs template components, extracts team knowledge from documentation sources and Claude chat history, activates rules, configures user identity. Run once after scaffolding with --init.
+
+# scope example (remove # to activate path-scoped loading):
+# scope: repos/my-api/
 ---
 
 # Workspace Init
@@ -118,6 +121,8 @@ Also install these top-level files from the payload:
 - **`.gitignore`** — Merge: add lines from payload not already present.
 - **`CLAUDE.md`** — Generate from `.workspace-update/CLAUDE.md.tmpl`, substituting `{{project-name}}` with the workspace name. If the existing CLAUDE.md has user-added content beyond the bootstrap template, preserve it.
 - **`CODEBASE.md` (optional)** — Ask: "Generate CODEBASE.md? This produces a lightweight file-tree map that helps Claude navigate the codebase without exhaustive exploration. [Y/n]". If yes: scaffold `CODEBASE.md` from `.workspace-update/CODEBASE.md.tmpl`, substitute `{{project-name}}`, then pre-populate `## Top-level layout` by listing the top-level entries of each `repos/{repo}/` directory using `fs.readdirSync` (Node.js, no network calls). If no: skip — `CODEBASE.md` can always be created manually later by copying and filling the template.
+
+**Per-repo CLAUDE.md stubs:** For each repo in `workspace.json`, check if `repos/{repo}/CLAUDE.md` exists. If not, ask "Scaffold a CLAUDE.md for {repo}? [Y/n]". If yes, write a blank stub from `.workspace-update/repo-claude.md.tmpl`, substituting `{{repo-name}}` with the repo name. The stub body is comment text only — no workspace-specific content — and its `## Commands` section is where you will add repo-specific test, lint, and build commands.
 
 **Commit:** `git commit -m "feat: install template components from payload"`
 
@@ -421,3 +426,4 @@ This session is done. Start a fresh Claude Code session and run /start-work to b
 - Existing worktrees are formalized with session markers, trackers, and linked chat history
 - **Subdirectory launch:** Once initialized, `claude` can be launched from `work-sessions/{name}/workspace/repos/{repo}/` instead of the workspace root. Claude walks up the filesystem loading every `CLAUDE.md` it finds, so starting from inside a project worktree loads both the per-repo conventions and the workspace conventions automatically. This is useful for repo-focused tasks — no configuration change needed, just a different launch point.
 - **Skills are on-demand, not pre-loaded:** Skills are invoked explicitly by name (`/skill-name`) when needed; they are not loaded at session start. The `.skip` mechanism in `.claude/rules/` provides the analogous progressive-disclosure pattern for rules — a `.md.skip` file is present but inactive; rename it to `.md` to activate, rename it back to deactivate. Step 6 of this skill walks through the activation choices.
+- **`scope:` for path-scoped skills:** The `scope:` frontmatter field (shown as a commented-out example at the top of this file) restricts a skill so it activates only when the working directory is inside the declared path. Removing the `#` prefix from the example line turns this skill into a path-scoped skill — useful when you want a repo-specific skill available only from inside that repo's worktree.

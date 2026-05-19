@@ -108,6 +108,10 @@ Local-only personal drafts get an additional `local-only-` prefix (e.g., `local-
 - Project worktrees are nested inside the workspace worktree's real `repos/` directory — no symlink.
 - Hand edits to `index.md`, `canonical.md`, or any per-user `team-member/{user}/index.md` are overwritten by `build-workspace-context.mjs`. Update source files (or their `description:` frontmatter) instead.
 
+## Per-repo commands
+
+Per-repo test, lint, and build commands belong in `repos/{repo}/CLAUDE.md` under a `## Commands` section. This scopes Claude's command invocations to the specific repo rather than triggering monorepo-wide runs that may time out or produce irrelevant output. The `/workspace-init` skill scaffolds a blank `repos/{repo}/CLAUDE.md` stub with a `## Commands` placeholder — fill it in once the repo is cloned.
+
 ## Explore before editing
 
 Before modifying files in a large or unfamiliar codebase, use read-only tools to map the affected surface. The workflow: dispatch a researcher-type subagent to read, grep, and navigate the codebase; have it return a summary of the affected files, callers, and dependencies; then edit only after the map is established.

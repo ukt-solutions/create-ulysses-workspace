@@ -172,6 +172,7 @@ function checkRequiredFiles(files) {
     'lib/upgrade.mjs',
     'template/CLAUDE.md.tmpl',
     'template/CODEBASE.md.tmpl',
+    'template/repo-claude.md.tmpl',
     'template/_gitignore',
     'template/.claudeignore',
     'template/.claude/settings.json',
