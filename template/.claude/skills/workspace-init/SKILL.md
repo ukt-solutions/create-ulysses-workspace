@@ -117,6 +117,7 @@ Also install these top-level files from the payload:
 - **`.claude/settings.json`** — Merge payload settings into existing file. Preserve user-added settings, add missing entries.
 - **`.gitignore`** — Merge: add lines from payload not already present.
 - **`CLAUDE.md`** — Generate from `.workspace-update/CLAUDE.md.tmpl`, substituting `{{project-name}}` with the workspace name. If the existing CLAUDE.md has user-added content beyond the bootstrap template, preserve it.
+- **`CODEBASE.md` (optional)** — Ask: "Generate CODEBASE.md? This produces a lightweight file-tree map that helps Claude navigate the codebase without exhaustive exploration. [Y/n]". If yes: scaffold `CODEBASE.md` from `.workspace-update/CODEBASE.md.tmpl`, substitute `{{project-name}}`, then pre-populate `## Top-level layout` by listing the top-level entries of each `repos/{repo}/` directory using `fs.readdirSync` (Node.js, no network calls). If no: skip — `CODEBASE.md` can always be created manually later by copying and filling the template.
 
 **Commit:** `git commit -m "feat: install template components from payload"`
 
