@@ -125,3 +125,13 @@ Claude can be launched from any directory, and it walks up the filesystem loadin
 For repo-focused work — debugging a single service, reviewing a specific module, running targeted tests — launching from the project worktree gives Claude a tighter codebase context. It sees the repo's own file tree first and reaches workspace-level conventions by traversal. The session hooks still fire (they read from `workspace-scratchpad/`, which is always relative to the workspace root), and `session.md` and all session artifacts remain at the workspace worktree top.
 
 This is purely a launch-point choice; no workspace configuration changes are needed to enable it.
+
+## Grep vs LSP
+
+Two complementary search strategies cover different parts of the navigation surface:
+
+- **Grep / Ripgrep** — searches file content as text. Fast, requires no server, and works across any file type. Use for free-text pattern search: finding a string literal, locating config values, scanning comments, searching across heterogeneous files. The downside: no language awareness — a search for `_toMs` matches comments, string literals, and variable names alike, producing false positives that require manual filtering.
+
+- **LSP tools (`mcp__lsp__*`)** — powered by a running Language Server Protocol server that has indexed the codebase. LSP understands the language's type system and scope rules, so `find-all-references` on `_toMs` returns only actual symbol usages, not textual coincidences. Go-to-definition, rename-symbol, and callers/callees are accurate even across files and module boundaries. The tradeoff: requires a running LSP MCP server configured in `.mcp.json`.
+
+The practical rule: reach for Grep first when you don't know where to look or when the pattern is not a symbol. Switch to LSP when you have a specific symbol and need precise cross-file navigation — especially before refactoring or understanding a call graph. The `researcher.md` agent lists the LSP tool among its allowed tools; activating LSP requires adding the appropriate language server to `.mcp.json` (see the MCP servers step in `/workspace-init`).

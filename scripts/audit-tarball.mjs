@@ -344,6 +344,18 @@ function checkCLAUDEMdTmpl() {
   return violations;
 }
 
+function checkMcpJson() {
+  const mcpPath = join(REPO_ROOT, 'template/.mcp.json');
+  try {
+    const parsed = JSON.parse(readFileSync(mcpPath, 'utf8'));
+    if (typeof parsed?.mcpServers !== 'object' || parsed.mcpServers === null)
+      return [{ kind: 'mcp-json', details: 'template/.mcp.json: missing or invalid mcpServers key' }];
+  } catch (err) {
+    return [{ kind: 'mcp-json', details: `template/.mcp.json: ${err.message}` }];
+  }
+  return [];
+}
+
 function main() {
   const result = runDryRun();
   const files = result.files;
@@ -356,6 +368,7 @@ function main() {
     ...checkSizeBound(result.size),
     ...checkReadmeCounts(),
     ...checkCLAUDEMdTmpl(),
+    ...checkMcpJson(),
   ];
 
   if (violations.length > 0) {

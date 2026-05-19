@@ -261,6 +261,29 @@ If you discovered candidate work items during earlier steps (bugs in braindumps,
 
 Do NOT batch-create issues automatically — the user should review and prune the list.
 
+### Step 12.5: Configure MCP servers
+
+MCP (Model Context Protocol) servers extend what Claude can do inside the workspace. The template ships with a Playwright MCP server entry in `.mcp.json` for browser automation and visual testing. Additional servers open up two particularly useful capabilities:
+
+- **LSP symbol navigation** — a Language Server Protocol server gives Claude go-to-definition, find-all-references, and call-graph queries without false positives from text search. The right server depends on your language stack:
+  - TypeScript / JavaScript: `typescript-language-server` (via `npx typescript-language-server --stdio`)
+  - Python: `pylsp` (via `pip install python-lsp-server`)
+  - Go, Rust, Java, and others: consult your language's LSP documentation.
+- **Internal tool access** — if your team has internal APIs, databases, or services, an MCP server can expose them as tools Claude can call directly. The shape of an `mcpServers` entry in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "my-lsp": {
+      "command": "npx",
+      "args": ["typescript-language-server", "--stdio"]
+    }
+  }
+}
+```
+
+**This step is guidance only.** The right LSP server depends on your language; the right internal-tool server depends on what your team builds. Configure `.mcp.json` after init when you know what you need — there is no pressure to choose now. The Playwright entry already present in `.mcp.json` satisfies the template's audit assertion; additional servers are additive.
+
 ### Step 13: Configure user identity
 
 Ask: "What name should be used for your user-scoped context? [{system-username}]"
