@@ -40,10 +40,11 @@ const TEXT_FILENAMES = new Set(['LICENSE', '_gitignore']);
 
 const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 
-// Hard size ceiling. Current tarball is ~104 kB; 150 kB leaves headroom for
+// Hard size ceiling. Current tarball is ~150 kB; 155 kB leaves headroom for
 // legitimate growth but trips loudly if something like docs/ or node_modules/
-// gets pulled in by accident.
-const SIZE_LIMIT_BYTES = 150 * 1024;
+// gets pulled in by accident. Bumped from 150 kB after session-end.mjs grew
+// legitimately with the BP-10 reflection sub-step.
+const SIZE_LIMIT_BYTES = 155 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -171,7 +172,10 @@ function checkRequiredFiles(files) {
     'lib/init.mjs',
     'lib/upgrade.mjs',
     'template/CLAUDE.md.tmpl',
+    'template/CODEBASE.md.tmpl',
+    'template/repo-claude.md.tmpl',
     'template/_gitignore',
+    'template/.claudeignore',
     'template/.claude/settings.json',
     'LICENSE',
   ];
@@ -220,6 +224,11 @@ function checkSettingsSanity() {
         details: `${settingsPath}: unexpected entries ${JSON.stringify(extras)}`,
       });
     }
+  }
+
+  const deny = parsed?.permissions?.deny;
+  if (!Array.isArray(deny)) {
+    violations.push({ kind: 'missing-deny', details: `${settingsPath}: permissions.deny is missing or not an array` });
   }
 
   const leakPatterns = [
@@ -322,6 +331,32 @@ function checkReadmeCounts() {
   return violations;
 }
 
+function checkCLAUDEMdTmpl() {
+  const tmplPath = join(REPO_ROOT, 'template/CLAUDE.md.tmpl');
+  const content = readFileSync(tmplPath, 'utf8');
+  const violations = [];
+  if (!content.includes('## Quick Reference'))
+    violations.push({ kind: 'claude-md-tmpl', details: 'missing "## Quick Reference" heading' });
+  if (!content.includes('@workspace-context/canonical.md'))
+    violations.push({ kind: 'claude-md-tmpl', details: 'missing "@workspace-context/canonical.md" import' });
+  const bytes = Buffer.byteLength(content, 'utf8');
+  if (bytes >= 3000)
+    violations.push({ kind: 'claude-md-tmpl', details: `CLAUDE.md.tmpl is ${bytes} bytes (ceiling 3000)` });
+  return violations;
+}
+
+function checkMcpJson() {
+  const mcpPath = join(REPO_ROOT, 'template/.mcp.json');
+  try {
+    const parsed = JSON.parse(readFileSync(mcpPath, 'utf8'));
+    if (typeof parsed?.mcpServers !== 'object' || parsed.mcpServers === null)
+      return [{ kind: 'mcp-json', details: 'template/.mcp.json: missing or invalid mcpServers key' }];
+  } catch (err) {
+    return [{ kind: 'mcp-json', details: `template/.mcp.json: ${err.message}` }];
+  }
+  return [];
+}
+
 function main() {
   const result = runDryRun();
   const files = result.files;
@@ -333,6 +368,8 @@ function main() {
     ...checkSettingsSanity(),
     ...checkSizeBound(result.size),
     ...checkReadmeCounts(),
+    ...checkCLAUDEMdTmpl(),
+    ...checkMcpJson(),
   ];
 
   if (violations.length > 0) {

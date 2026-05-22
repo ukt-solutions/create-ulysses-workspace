@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // SessionEnd hook — mark this chat's `ended` timestamp in the session
-// tracker and append a small safety-net note to the session.md body.
-import { appendFileSync, mkdirSync, existsSync } from 'fs';
+// tracker, append a small safety-net note to the session.md body, and
+// write a disk-durable reflection record if the session.md ## Progress
+// section contains heuristic correction-pattern sentences.
+import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import {
@@ -70,6 +72,70 @@ if (pointer && sessionId) {
         );
       } catch {
         // Non-fatal
+      }
+
+      // Disk-durable reflection sub-step (BP-10).
+      // Read the ## Progress section of session.md (last 2000 chars max),
+      // scan for heuristic correction-pattern sentences, and write any
+      // candidates to workspace-scratchpad/session-reflect.json. The file
+      // is gitignored (workspace-scratchpad/ is in _gitignore). We do NOT
+      // emit additionalContext for this — per the canonical known limitation,
+      // additionalContext does not always reach Claude. Disk is the primary
+      // durable output.
+      try {
+        const sessionContent = readFileSync(trackerPath, 'utf8');
+
+        // Extract ## Progress section — find the section and take last 2000 chars.
+        const progressMatch = sessionContent.match(/^## Progress\s*\n([\s\S]*?)(?=\n^##|\s*$)/m);
+        const progressText = progressMatch
+          ? progressMatch[1].slice(-2000)
+          : sessionContent.slice(-2000);
+
+        // Split into sentences on '. ' or '.\n' boundaries.
+        const sentences = progressText
+          .split(/(?<=\.)\s+|\n/)
+          .map(s => s.trim())
+          .filter(s => s.length > 10);
+
+        // Correction-pattern keywords — case-insensitive.
+        const correctionPatterns = [
+          /actually/i,
+          /instead of/i,
+          /the right way is/i,
+          /i was wrong/i,
+          /correction:/i,
+        ];
+
+        const candidates = sentences
+          .filter(sentence => correctionPatterns.some(re => re.test(sentence)))
+          .map(text => ({ text, source: '## Progress' }));
+
+        if (candidates.length > 0) {
+          if (!existsSync(scratchpadDir)) mkdirSync(scratchpadDir, { recursive: true });
+          const reflectPath = join(scratchpadDir, 'session-reflect.json');
+
+          // Read existing records to append (create-or-append pattern).
+          let records = [];
+          if (existsSync(reflectPath)) {
+            try {
+              records = JSON.parse(readFileSync(reflectPath, 'utf8'));
+              if (!Array.isArray(records)) records = [records];
+            } catch {
+              records = [];
+            }
+          }
+
+          records.push({
+            sessionId: sessionId || `ts-${Date.now()}`,
+            date: new Date().toISOString(),
+            workSession: pointer.name,
+            candidates,
+          });
+
+          writeFileSync(reflectPath, JSON.stringify(records, null, 2), 'utf8');
+        }
+      } catch {
+        // Non-fatal — reflection is best-effort.
       }
     }
   }

@@ -1,0 +1,29 @@
+# Config Review Cadence
+
+Opt-in reminder to review `.claude` component files on a regular schedule. Activate by removing the `.skip` extension (`mv config-review.md.skip config-review.md`). Add it back to deactivate.
+
+## When to review
+
+Review the files in `.claude/rules/`, `.claude/skills/*/SKILL.md`, `.claude/agents/*.md`, and `.claude/hooks/*.mjs` after each major model release and at least every 180 days. Claude Code evolves quickly — conventions that matched platform behavior six months ago may no longer be accurate, optimal, or even meaningful.
+
+The 180-day threshold is not arbitrary: it corresponds to roughly two major Claude model generations. Conventions written for an older model generation can silently mis-steer the newer one without anyone noticing, because the file still runs without error.
+
+## Connection to /maintenance
+
+The `/maintenance` skill's **Component age check** (step 7 in the Cleanup section) surfaces which files have drifted past 180 days by reading their frontmatter `updated:` field. Files without an `updated:` field are skipped — the check is incremental and only flags files that have opted in by carrying the field.
+
+When `/maintenance` reports stale components, the recommended action is to open each flagged file, read it against the current Claude Code documentation and platform behavior, update the content where needed, and bump `updated:` to today.
+
+## Why this ships as .skip
+
+Review cadence is org-specific. A solo maintainer doing active weekly development may want a shorter cadence; a team with a slower release cycle may need a longer one; some workspaces may defer review entirely to a dedicated maintenance session. Making this rule mandatory by default would encode one team's preference as a universal constraint — exactly the failure mode described in `product-bias-risk.md`.
+
+Activate the rule only if your team wants the reminder to appear in every session. If 180 days is wrong for your cadence, edit the threshold in the rule body after activating it.
+
+## Activating
+
+```
+mv .claude/rules/config-review.md.skip .claude/rules/config-review.md
+```
+
+Once active, this reminder loads into every session context. To deactivate, rename it back.

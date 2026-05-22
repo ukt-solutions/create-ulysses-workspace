@@ -110,7 +110,8 @@
     "allow": [
       "Bash(git:*)",
       "Bash(ls:*)"
-    ]
+    ],
+    "deny": []
   },
   "enabledPlugins": {
     "playwright@claude-plugins-official": false
