@@ -40,11 +40,14 @@ const TEXT_FILENAMES = new Set(['LICENSE', '_gitignore']);
 
 const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 
-// Hard size ceiling. Current tarball is ~150 kB; 155 kB leaves headroom for
-// legitimate growth but trips loudly if something like docs/ or node_modules/
-// gets pulled in by accident. Bumped from 150 kB after session-end.mjs grew
-// legitimately with the BP-10 reflection sub-step.
-const SIZE_LIMIT_BYTES = 155 * 1024;
+// Hard size ceiling. Current tarball is ~161 kB after the forges/ adapter
+// landed; 170 kB leaves headroom for the next bit of growth. Trips loudly
+// if something like docs/ or node_modules/ gets pulled in by accident.
+// Bump history: 150 kB initial → 155 kB after BP-10's session-end reflection
+// added ~750 bytes → 170 kB after forges/ adapter family added ~13 kB of
+// adapter code + ~15 kB of test files (which ship in the tarball since
+// template/ is included wholesale, matching the trackers/ precedent).
+const SIZE_LIMIT_BYTES = 170 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -177,6 +180,9 @@ function checkRequiredFiles(files) {
     'template/_gitignore',
     'template/.claudeignore',
     'template/.claude/settings.json',
+    'template/.claude/scripts/forges/interface.mjs',
+    'template/.claude/scripts/forges/github.mjs',
+    'template/.claude/scripts/forges/gitlab.mjs',
     'LICENSE',
   ];
   const present = new Set(files.map((f) => f.path));
