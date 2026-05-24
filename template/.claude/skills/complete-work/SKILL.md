@@ -218,16 +218,27 @@ The push shape is the same as 9a — what differs is the merge mechanics in Step
 
 #### Step 10a: GitHub remotes — create PRs, unified summary, merge
 
-Create one PR per project repo plus one workspace PR:
+Create one PR per project repo plus one workspace PR. PR operations go through the forge adapter (`.claude/scripts/forges/interface.mjs`), not `gh` directly — see `.claude/rules/forge-operations.md` for the contract. The adapter resolves the target repo from `workspace.forge.repo` or the local git remote.
 
-```bash
-# For each repo in the tracker's repos with a GitHub remote:
-cd work-sessions/{session-name}/workspace/repos/{repo}
-gh pr create --title "{type}: {description}" --body "..."
+```javascript
+import { createForge } from './.claude/scripts/forges/interface.mjs';
+import { readFileSync } from 'node:fs';
 
-# Workspace PR — from the workspace worktree
-cd work-sessions/{session-name}/workspace
-gh pr create --title "context: {session-name} work session" --body "..."
+const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+const forge = createForge(ws.workspace?.forge);
+
+// For each repo in the tracker's repos with a GitHub remote, from
+// work-sessions/{session-name}/workspace/repos/{repo}:
+const projectPr = await forge.prCreate({
+  title: `${type}: ${description}`,
+  body: prBody,  // synthesized release notes + verification section
+});
+
+// Workspace PR — from the workspace worktree:
+const workspacePr = await forge.prCreate({
+  title: `context: ${sessionName} work session`,
+  body: workspacePrBody,
+});
 ```
 
 Present unified summary:
@@ -254,15 +265,21 @@ WORKSPACE: {workspace-name}
 Merge all? [Y/n]
 ```
 
-If yes — merge all PRs atomically:
+If yes — merge all PRs atomically through the forge adapter:
+
+```javascript
+// For each project PR returned from Step 10a's prCreate calls:
+await forge.prMerge({ id: projectPr.id, strategy: 'squash', deleteBranch: true });
+
+// Workspace PR:
+await forge.prMerge({ id: workspacePr.id, strategy: 'squash', deleteBranch: true });
+```
+
+`strategy: 'squash'` matches the workspace convention from `post-release-discipline` (`create-ulysses-workspace` requires linear history, so squash is the only strategy that merges cleanly; squash also lifts the PR body into the commit message). `deleteBranch: true` cleans the remote feature branch on success.
+
+Then pull all repos to their default branches (still plain git):
+
 ```bash
-# For each project PR:
-gh pr merge {pr-number} --merge
-
-# Workspace PR:
-gh pr merge {workspace-pr-number} --merge
-
-# Pull all repos to their default branches
 # For each repo in the tracker's repos:
 cd repos/{repo} && git pull origin {repo-branch}
 cd {main-workspace-root} && git pull origin main
@@ -274,7 +291,7 @@ The next three sub-substeps run only when the session branch starts with `releas
 
 Derive the version tag from the branch name by stripping the `release/` prefix (so `release/v0.15.0-beta.0` yields `v0.15.0-beta.0`). For each project repo whose `package.json` declares a `version` field, verify that version matches the derived tag. The workspace repo is **never** tagged — only project repos with publishable `package.json` files get tagged, since the tag triggers `.github/workflows/publish.yml` in that project repo. If a project repo's `package.json` version doesn't match the release tag, skip that repo with a warning rather than failing the whole completion flow — the mismatch usually means `/release` was run against a different version than the branch name suggests, and the user needs to investigate before publishing.
 
-Before tagging, preflight against origin: if `v{version}` already exists remotely, surface the conflict to the user with three explicit recovery options — **Reuse** (skip to 10a.2 if the existing tag points at the right commit), **Replace** (`git push origin --delete v{version}` then re-run 10a.1), or **Investigate** (`gh release view v{version}` to see what shipped). Do **not** silently force-push the tag; an existing tag means a published artifact, and overwriting it without confirmation can corrupt the npm registry's view of the release history.
+Before tagging, preflight against origin: if `v{version}` already exists remotely, surface the conflict to the user with three explicit recovery options — **Reuse** (skip to 10a.2 if the existing tag points at the right commit), **Replace** (`git push origin --delete v{version}` then re-run 10a.1), or **Investigate** (`forge.releaseView({ tag: 'v{version}', repo: '{org}/{repo}' })` — or `gh release view v{version}` as a manual fallback — to see what shipped). Do **not** silently force-push the tag; an existing tag means a published artifact, and overwriting it without confirmation can corrupt the npm registry's view of the release history.
 
 If the tag is absent on origin, tag the merge commit (HEAD on `{default-branch}` after the prior `git pull origin {default-branch}`) and push the tag. The tag push triggers `.github/workflows/publish.yml`.
 
@@ -305,7 +322,8 @@ for repo in {project-repos-with-package-json}; do
     # Tag exists. Surface to user with three options:
     # 1. Reuse — skip to 10a.2 if the existing tag points at the right commit.
     # 2. Replace — `git push origin --delete $version_tag` then re-run 10a.1.
-    # 3. Investigate — `gh release view $version_tag` to see what shipped.
+    # 3. Investigate — call forge.releaseView({ tag: '$version_tag' }) — or
+    #    `gh release view $version_tag` as a manual fallback — to see what shipped.
     # Do NOT silently force-push.
     echo "Tag $version_tag already exists on origin. Aborting with recovery options."
     return 1
@@ -319,27 +337,39 @@ done
 
 **Step 10a.2: Watch the publish workflow (release sessions only)**
 
-For each project repo tagged in 10a.1, find and follow the `publish.yml` workflow run on GitHub. The workflow takes a moment to register against the new tag — poll `gh run list` up to 5 times with a 3-second backoff before giving up. Once the run is found, attach with `gh run watch` so the maintainer sees progress live alongside the unified summary. Append `|| true` to the watch command so a workflow failure does **not** abort the rest of `/complete-work`: the maintainer still needs to see the unified summary, including the failure URL, to decide whether to rerun, redo the release, or roll the tag back. If no run registers within the retry window, log a warning with the manual investigation command and continue.
+For each project repo tagged in 10a.1, find and follow the `publish.yml` workflow run on GitHub. The workflow takes a moment to register against the new tag — poll up to 5 times with a 3-second backoff before giving up. Once the run is found, attach with `workflowRunWatch` so the maintainer sees progress live alongside the unified summary. The adapter's `exitStatus: true` makes the underlying `gh run watch --exit-status` exit non-zero on workflow failure; the adapter returns the exit code via `res.exitCode` instead of throwing, so a failure does **not** abort the rest of `/complete-work` — the maintainer still needs to see the unified summary, including the failure URL, to decide whether to rerun, redo the release, or roll the tag back. If no run registers within the retry window, log a warning with the manual investigation command and continue.
 
-```bash
-# Retry up to 5 times with 3-second backoff — the run takes a moment to register.
-for i in 1 2 3 4 5; do
-  run_id=$(gh run list \
-    --repo {org}/{repo} \
-    --workflow publish.yml \
-    --branch "$version_tag" \
-    --limit 1 \
-    --json databaseId \
-    --jq '.[0].databaseId')
-  if [ -n "$run_id" ]; then break; fi
-  sleep 3
-done
+```javascript
+import { createForge } from './.claude/scripts/forges/interface.mjs';
+import { readFileSync } from 'node:fs';
 
-if [ -z "$run_id" ]; then
-  echo "Warning: no publish workflow run found for $version_tag after 15s. Investigate via 'gh run list'."
-else
-  gh run watch "$run_id" --exit-status --repo {org}/{repo} || true
-fi
+const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+const forge = createForge(ws.workspace?.forge);
+
+// Retry up to 5 times with 3-second backoff — the run takes a moment to register.
+let run = null;
+for (let i = 0; i < 5; i++) {
+  run = await forge.workflowRunFind({
+    workflow: 'publish.yml',
+    branch: versionTag,        // e.g. 'v0.15.0-beta.0'
+    repo: `${org}/${repo}`,
+    limit: 1,
+  });
+  if (run) break;
+  await new Promise(r => setTimeout(r, 3000));
+}
+
+if (!run) {
+  console.warn(`Warning: no publish workflow run found for ${versionTag} after 15s. Investigate via 'gh run list --workflow publish.yml --branch ${versionTag}'.`);
+} else {
+  const result = await forge.workflowRunWatch({
+    runId: run.runId,
+    repo: `${org}/${repo}`,
+    exitStatus: true,
+  });
+  // result.exitCode === 0 on success; non-zero on workflow failure (NOT thrown).
+  // result.exitCode and run.url feed into the unified summary in Step 10a.3.
+}
 ```
 
 **Step 10a.3: Update the unified summary (release sessions only)**
@@ -354,7 +384,7 @@ PUBLISH ({repo}):
   Published: {dist-tag}@{version} on npm
 ```
 
-Pull `Status` from the `gh run watch` exit code (success when the watch returned 0, failure otherwise). Pull `Published: {dist-tag}@{version}` from the workflow's published-package output if available; if the workflow failed before publishing, omit the `Published:` line and rely on `Status: failure` plus the workflow URL to point the maintainer at the failure.
+Pull `Status` from the watch result's `exitCode` (success when `result.exitCode === 0`, failure otherwise). Pull `Workflow` from `run.url` captured in 10a.2. Pull `Published: {dist-tag}@{version}` from the workflow's published-package output if available; if the workflow failed before publishing, omit the `Published:` line and rely on `Status: failure` plus the workflow URL to point the maintainer at the failure.
 
 #### Step 10b: Local / bare / other remotes — local merge flow
 

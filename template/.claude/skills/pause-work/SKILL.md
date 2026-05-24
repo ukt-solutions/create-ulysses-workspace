@@ -95,16 +95,33 @@ git push -u origin {branch}
 
 ### Step 7: Create draft PRs
 
-```bash
-# For each repo in the tracker's repos:
-cd work-sessions/{session-name}/workspace/repos/{repo}
-gh pr create --draft --title "WIP: {description}" --body "Work in progress. Session paused."
+PR creation goes through the forge adapter (`.claude/scripts/forges/interface.mjs`), not directly through `gh` — see `.claude/rules/forge-operations.md` for the contract and why. The adapter resolves the target repo from `workspace.forge.repo` or the local git remote.
 
-# Workspace repo — from the workspace worktree
-gh pr create --draft --title "context: {session-name} (paused)" --body "Workspace context for paused session."
+```javascript
+import { createForge } from './.claude/scripts/forges/interface.mjs';
+import { readFileSync } from 'node:fs';
+
+const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+const forge = createForge(ws.workspace?.forge);
+
+// For each repo in the tracker's repos, from work-sessions/{session-name}/workspace/repos/{repo}:
+const projectPr = await forge.prCreate({
+  title: `WIP: ${description}`,
+  body: 'Work in progress. Session paused.',
+  draft: true,
+});
+console.log(projectPr.url);
+
+// Workspace repo — from the workspace worktree:
+const workspacePr = await forge.prCreate({
+  title: `context: ${sessionName} (paused)`,
+  body: 'Workspace context for paused session.',
+  draft: true,
+});
+console.log(workspacePr.url);
 ```
 
-If PRs already exist, update them to draft status if needed.
+If PRs already exist, update them to draft status if needed (use `gh pr ready --undo` directly until a `forge.prSetDraft` method lands — that's tracked as a future forge adapter extension, not blocking here).
 
 ### Step 8: Confirm
 
