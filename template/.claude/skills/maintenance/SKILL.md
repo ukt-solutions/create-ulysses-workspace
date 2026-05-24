@@ -182,7 +182,19 @@ For each chosen action:
 
 Trim markers and demotions only matter for `priority: reference` files — `<!-- canonical:trim -->` spans on a `priority: critical` file are inert until the file is demoted. The triage flow never auto-decides which file to demote or which section to wrap; it surfaces the data, presents options, and waits.
 
-### 11. Health metrics
+### 11. Forge configuration
+
+Read `workspace.json`. If `workspace.tracker?.type === 'github-issues'` and `workspace.forge` is unset, emit a notice (not an error):
+
+```
+ℹ workspace.json has tracker.type='github-issues' but no workspace.forge field.
+  Skills default to GitHub forge operations; add `"forge": {"type": "github"}`
+  to workspace.json to make the choice explicit. See .claude/rules/forge-operations.md.
+```
+
+This is migration guidance for workspaces created before the `forge` field landed — the field is back-compat with a sensible default, so the unset case is not a bug, just an opportunity to make the implicit explicit. If `workspace.forge.type` is set to a value with no adapter at `.claude/scripts/forges/{type}.mjs`, that IS an error and goes in the Issues section.
+
+### 12. Health metrics
 - Canonical budget — read from the same `--check` invocation as step 5. Reported as `current / budget` bytes with the selection status (e.g., `full`, `2 reference files trimmed`). Over-budget cases are deferred to the cleanup triage flow rather than re-reported here.
 - Number of ephemeral files — flag if accumulating without resolution
 - Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
