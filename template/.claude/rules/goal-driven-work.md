@@ -107,6 +107,19 @@ The evaluator's "no, awaiting review" response after a gated phase does not bypa
 
 `gate: auto` is allowed in the format but discouraged in v1. Earn it after the workflow has been exercised at least once on the work in question.
 
+## Gate-budget interaction and turn-budget sizing
+
+A goal's `turn_budget` is a backstop that counts every orchestrator turn — including the short "awaiting your gate decision" exchanges that happen at every `gate: review` phase. The `/goal` evaluator re-pings the session whenever it tries to settle without the completion condition being met, and each ping consumes a turn. Concretely: a multi-phase gated goal whose author is away for stretches can spend a meaningful fraction of its budget *idling at gates* rather than advancing work. A run with six `gate: review` phases burned roughly half of a 150-turn budget on gate-idle pings before the actual work completed.
+
+This is a structural property of `/goal` + review gates, not a per-goal accident. Plan for it:
+
+- **Drop `gate: review` from early phases when the human is expected to be away for stretches.** Research, crossref, spec, and plan phases produce artifacts that the final session→main PR consumes anyway. The integration-branch model (`main` untouched until `/complete-work` opens the final PR for human review) already provides one strong human review point; piling per-phase gates on top of that, with no human watching, just burns budget. Set those phases to `gate: auto` when the run will be unattended.
+- **Keep `gate: review` for phases with irreversible side effects or for phases whose outcome reshapes subsequent phases.** A spec gate that lets the human reprioritize the ranked execution list before `executing-plans` walks it is worth its cost; a research-synthesis gate that just rubber-stamps a matrix the human will see again in the final PR is not.
+- **Size `turn_budget` for the worst case you actually expect.** If every phase is `gate: auto`: budget ≈ (estimated work-turns) × 1.2 (small headroom for retries). If any phases are `gate: review` and the human may be unavailable for hours: multiply the work-turn estimate by **2–3×** to absorb gate-idle pings, or raise the budget mid-goal by editing the goal artifact's `completion_condition` and `turn_budget` fields. The Stop-hook condition string is fixed from the original `/goal` invocation; raising `turn_budget` in the artifact keeps the auditable source-of-truth correct for resume but does not change the running evaluator's text — the user can re-run the (updated) `## Start command` to refresh it after `/goal clear`.
+- **If the goal stops on the backstop mid-work because of gate-idle waste, that is the system working as designed.** `claude --resume` plus re-running the `## Start command` continues from durable phase state; phase artifacts and per-phase `status: complete` markers survive. Do not treat backstop-stop as a failure of the goal.
+
+This guidance is workspace-side mitigation only. The underlying friction — the evaluator pinging during gate-idle — is `/goal` harness behavior, not workspace code. A cleaner fix (suspend the evaluator at review gates so it does not re-ping until a new user message arrives) is tracked separately and would obsolete the multiplier above when it lands.
+
 ## Integration branch and per-phase sub-PRs
 
 While a `/goal`-driven session is running, the session branch (`feature/{session-name}`) acts as the goal's integration branch. Main is untouched until `/complete-work` opens the final session→main PR for human review. This is the key autonomy boundary: phase agents can merge their own work, repeatedly, throughout the goal — but only into the integration branch, never into main.
