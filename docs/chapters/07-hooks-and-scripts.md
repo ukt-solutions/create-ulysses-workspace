@@ -62,12 +62,6 @@ First, when running from the workspace root (main branch), it enforces write res
 
 Second, when running from a workspace worktree with an active session, it detects writes to repos that are not part of the session. If you try to write to `my-api` but your session only includes `my-app`, the hook warns Claude so it can offer to add the repo to the session before proceeding.
 
-### worktree-create
-
-**Fires:** When a git worktree is created.
-
-**Does:** Performs post-creation setup for new worktrees — ensuring the workspace structure is correct in the new worktree.
-
 ### workspace-update-check
 
 **Fires:** On every tool call (PreToolUse event).
