@@ -94,6 +94,9 @@
       }
     ]
   },
+  "worktree": {
+    "baseRef": "head"
+  },
   "permissions": {
     "allow": [
       "Bash(git:*)",
