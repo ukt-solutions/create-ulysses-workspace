@@ -92,19 +92,10 @@
           }
         ]
       }
-    ],
-    "WorktreeCreate": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$(if command -v cygpath >/dev/null 2>&1; then cygpath -u \"${CLAUDE_PROJECT_DIR:-$PWD}\"; else echo \"${CLAUDE_PROJECT_DIR:-$PWD}\"; fi)\"/.claude/hooks/worktree-create.mjs",
-            "timeout": 5000,
-            "statusMessage": "Checking for stale worktrees..."
-          }
-        ]
-      }
     ]
+  },
+  "worktree": {
+    "baseRef": "head"
   },
   "permissions": {
     "allow": [
