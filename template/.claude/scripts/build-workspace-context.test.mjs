@@ -320,6 +320,40 @@ body
 }
 
 {
+  // gh:117 — canonical.md is committed and loaded verbatim into every session prompt,
+  // so a gitignored file under shared/locked/ must never reach it. The index path
+  // filtered these; the canonical path did not, and published them.
+  const root = setupFixture();
+  gitInit(root);
+  writeFileSync(join(root, '.gitignore'), 'local-only-*\n');
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'local-only-secret.md'),
+    `---
+description: Secret.
+---
+CANARY_MUST_NOT_REACH_CANONICAL
+`,
+  );
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'public-truth.md'),
+    `---
+description: Public truth.
+---
+kept
+`,
+  );
+  const items = buildCanonical(root);
+  assertEq(items.length, 1, 'gitignored locked file excluded from canonical');
+  assertEq(items[0].name, 'public-truth', 'only the tracked locked file survives');
+  assertEq(
+    JSON.stringify(items).includes('CANARY_MUST_NOT_REACH_CANONICAL'),
+    false,
+    'gitignored content absent from canonical output',
+  );
+  cleanup(root);
+}
+
+{
   // non-git workspace still works (no filter applied)
   const root = setupFixture();
   writeFileSync(

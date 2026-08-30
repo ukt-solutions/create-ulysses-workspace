@@ -470,7 +470,14 @@ export function selectCanonicalContent(items, budgetBytes, opts) {
 function buildCanonical(workspaceRoot) {
   const lockedDir = join(workspaceRoot, WC_DIR, SHARED_DIR, LOCKED_DIR);
   if (!existsSync(lockedDir)) return [];
-  const files = walkMarkdown(lockedDir).filter((f) => !f.endsWith('.keep')).sort();
+  const candidates = walkMarkdown(lockedDir).filter((f) => !f.endsWith('.keep')).sort();
+  // canonical.md is committed and loaded verbatim into every session prompt, so a
+  // gitignored file under shared/locked/ must never reach it. The index builder applies
+  // this same filter; without it here, a local-only-*.md dropped into this directory is
+  // published to the repo and broadcast to every session.
+  const candidatePaths = candidates.map((f) => relative(workspaceRoot, f).split(sep).join('/'));
+  const gitIgnored = gitIgnoredPaths(workspaceRoot, candidatePaths);
+  const files = candidates.filter((_, i) => !gitIgnored.has(candidatePaths[i]));
   const items = [];
   for (const f of files) {
     const name = f.split(sep).pop().replace(/\.md$/, '');
