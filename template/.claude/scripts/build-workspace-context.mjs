@@ -716,4 +716,5 @@ export {
   fingerprint,
   readDescription,
   stripFrontmatter,
+  gitIgnoredPaths,
 };
