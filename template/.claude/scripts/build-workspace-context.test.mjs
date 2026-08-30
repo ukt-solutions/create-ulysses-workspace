@@ -345,6 +345,36 @@ kept
   const items = buildCanonical(root);
   assertEq(items.length, 1, 'gitignored locked file excluded from canonical');
   assertEq(items[0].name, 'public-truth', 'only the tracked locked file survives');
+  cleanup(root);
+}
+
+{
+  // The git filter fails open (no git, not a repo, subprocess error). Canonical content is
+  // committed and broadcast, so local-only-* must also be excluded by name.
+  const root = setupFixture();           // deliberately NOT gitInit'd
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'local-only-secret.md'),
+    `---
+description: Secret.
+---
+NONGIT_CANARY_MUST_NOT_LEAK
+`,
+  );
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'kept.md'),
+    `---
+description: Kept.
+---
+body
+`,
+  );
+  const items = buildCanonical(root);
+  assertEq(items.length, 1, 'local-only excluded without git');
+  assertEq(
+    JSON.stringify(items).includes('NONGIT_CANARY_MUST_NOT_LEAK'),
+    false,
+    'no gitignore filter available, still no leak',
+  );
   assertEq(
     JSON.stringify(items).includes('CANARY_MUST_NOT_REACH_CANONICAL'),
     false,

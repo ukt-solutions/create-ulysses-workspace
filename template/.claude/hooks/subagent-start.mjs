@@ -9,7 +9,12 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join, basename, relative, sep } from 'path';
 import { getWorkspaceRoot, readJSON, respond } from './_utils.mjs';
-import { readDescription, gitIgnoredPaths, stripFrontmatter } from '../scripts/build-workspace-context.mjs';
+import {
+  readDescription,
+  gitIgnoredPaths,
+  stripFrontmatter,
+  isLocalOnlyName,
+} from '../scripts/build-workspace-context.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
 const config = readJSON(join(root, 'workspace.json'));
@@ -47,7 +52,9 @@ try {
 
 const entries = [];
 for (let i = 0; i < names.length; i++) {
-  if (ignored.has(relPaths[i])) continue;
+  // gitIgnoredPaths fails open when git is unavailable; local-only-* is excluded by
+  // name as well so a non-git workspace cannot broadcast a private file to subagents.
+  if (ignored.has(relPaths[i]) || isLocalOnlyName(names[i])) continue;
   const file = join(lockedDir, names[i]);
   let content = '';
   let size = 0;
