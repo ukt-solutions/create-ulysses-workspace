@@ -131,7 +131,34 @@ git commit -m "docs: add release notes for {branch}"
 
 If a repo has no commits beyond the base, skip release notes for it.
 
+**Count what you wrote.** Keep track of how many branch-note files Step 6 produced. A
+session whose work is entirely workspace-repo content — research, context, documentation, a
+design that never reached code — matches no project repo and therefore produces **zero**
+notes. That count is the guard Step 7 depends on.
+
 ### Step 7: Remove session artifacts from the workspace branch
+
+**Stop here if Step 6 archived nothing.** When Step 6 wrote zero branch-note files, this
+session's durable content exists *only* in the files this step is about to delete. Do not
+strip. Report the situation plainly:
+
+> Step 6 wrote no release notes — no project repo in this session has commits beyond its
+> base branch. `session.md` and {list the design-/plan-/goal-/research-/crossref- files
+> actually present} are the only record of this session's work. Stripping them now would
+> lose it.
+
+Then offer three choices and act on the answer:
+
+1. **Promote first (default).** Run `/promote` on the session artifacts so they land in
+   `workspace-context/` as durable team knowledge, then strip and continue. This is the
+   right answer for research, design, and context sessions, where the content is meant to
+   outlive the branch anyway.
+2. **Keep them on the branch.** Skip the strip and let the artifacts merge with the work.
+   Choose this when the content only makes sense beside the code it accompanies.
+3. **Discard.** Strip anyway, with an explicit confirmation that names the files.
+
+Never choose on the user's behalf. A session that produced no release notes is precisely the
+session whose content is least reconstructible from commits.
 
 The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 12. Before that happens, make sure everything worth preserving has landed in release notes (Step 6) — once Step 6 has run, the tracker, specs, plans, and goal artifacts have served their purpose.
 
