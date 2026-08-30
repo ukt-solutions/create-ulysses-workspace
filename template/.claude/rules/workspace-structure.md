@@ -63,7 +63,7 @@ Both hooks are at `.claude/hooks/session-start.mjs` and `.claude/hooks/subagent-
 
 - Specs: `design-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`
 - Plans: `plan-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`
-- Goals: `goal-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`, with goal-native phase outputs as `research-{topic}.md` and `crossref-{topic}.md` siblings. See `goal-driven-work.md` for the schema and when to reach for `/goal`.
+- Goals: `goal-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`, with goal-native phase outputs as `research-{topic}.md` and `crossref-{topic}.md` siblings. See the `goal-driven-work` rule for when to reach for `/goal`, and the same-named skill for the schema.
 
 From inside the worktree, these are plain top-level files (`design-{topic}.md`, `plan-{topic}.md`, `goal-{topic}.md`) sitting alongside `CLAUDE.md` and `workspace.json`. They are tracked on the session branch and travel with the branch on `git push`.
 
