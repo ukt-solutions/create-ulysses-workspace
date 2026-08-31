@@ -314,6 +314,43 @@ console.log('# project repo (no release-notes/, no shared-context/)');
   cleanup(root);
 }
 
+console.log('# gitMv resolves against root, not cwd');
+
+{
+  // gitMv received paths relative to root but called mkdirSync/renameSync on them
+  // directly, so they resolved against process.cwd(). Running the migrator with --root
+  // from anywhere else scattered workspace-context/ into the caller's directory.
+  const root = setupGitRoot();
+  writeFM(
+    join(root, OLD_FILE('alice', 'note.md')),
+    { state: 'ephemeral', type: 'braindump', topic: 'note', author: 'alice' },
+    '# Note\n',
+  );
+  writeFileSync(join(root, 'workspace.json'),
+    JSON.stringify({ workspace: { name: 'demo' } }, null, 2) + '\n');
+  gitAddCommit(root);
+
+  const elsewhere = mkdtempSync(join(tmpdir(), 'mig-cwd-'));
+  const before = process.cwd();
+  process.chdir(elsewhere);
+  try {
+    migrate(root);
+  } finally {
+    process.chdir(before);
+  }
+
+  assert(
+    existsSync(join(root, 'workspace-context', 'team-member', 'alice')),
+    'user dir moved inside root',
+  );
+  assert(
+    !existsSync(join(elsewhere, 'workspace-context')),
+    'nothing written to the working directory',
+  );
+  cleanup(elsewhere);
+  cleanup(root);
+}
+
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

@@ -91,14 +91,19 @@ function isGitRepo(root) {
 
 function gitMv(root, src, dst, dryRun) {
   if (dryRun) return { ok: true, dry: true };
+  // src and dst are relative to root. git resolves them against cwd: root, but the
+  // filesystem calls below do not — resolve explicitly or they act on process.cwd(),
+  // scattering directories wherever the caller happened to be standing.
+  const srcAbs = resolve(root, src);
+  const dstAbs = resolve(root, dst);
   // git mv refuses if dst dir doesn't exist; ensure parent
-  mkdirSync(dirname(dst), { recursive: true });
+  mkdirSync(dirname(dstAbs), { recursive: true });
   if (isGitRepo(root)) {
     const r = spawnSync('git', ['mv', src, dst], { cwd: root, encoding: 'utf-8' });
     if (r.status === 0) return { ok: true };
     // fall through to plain rename — happens for untracked files
   }
-  renameSync(src, dst);
+  renameSync(srcAbs, dstAbs);
   return { ok: true };
 }
 
