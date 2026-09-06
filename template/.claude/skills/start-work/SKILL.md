@@ -40,7 +40,7 @@ Begin or resume a persistent work session. Each session lives in its own `work-s
    - Workspace: `work-sessions/{name}/workspace/`
    - For each repo in `repos:` frontmatter: `work-sessions/{name}/workspace/repos/{repo}/`
    - If any are missing, recreate from the branch
-3. The session-start hook automatically registers each chat in the session tracker's `chatSessions` frontmatter when Claude opens in a worktree. Verify the current chat is registered — if not (e.g., the hook didn't fire), add an entry manually via the session-frontmatter helper.
+3. The session-start hook automatically registers each chat in the session tracker's `chatSessions` frontmatter when Claude opens in a worktree. Verify the current chat is registered — if not (e.g., the hook didn't fire), append an entry using the invocation shown under "Create work session" below (the helper is an importable library, not a CLI).
 
    Each `chatSessions` entry has this shape:
    ```yaml
@@ -165,9 +165,40 @@ The script creates:
 - Active-session pointer at `work-sessions/{session-name}/workspace/.claude/.active-session.json`
 - Copies `settings.local.json` into the worktree if it exists at the workspace root
 
-If a `workItem:` was set in step 5 or 6, write it into the tracker's frontmatter via the session-frontmatter helper after creation. This is what `/pause-work` and `/complete-work` use to locate the linked issue.
+If a `workItem:` was set in step 5 or 6, write it into the tracker's frontmatter after
+creation. `/pause-work` and `/complete-work` both use this to locate the linked issue, and
+a session created without it looks fine until one of them silently cannot find the ticket.
 
-Register this chat in the tracker's `chatSessions` frontmatter. For new sessions, the session-start hook has already fired (before /start-work was invoked) but the session folder didn't exist yet. Find the current chat's UUID from the most recently modified `.jsonl` file in `~/.claude/projects/{project-path}/` and add the entry manually via the session-frontmatter helper. Subsequent chats on this session will be registered automatically by the hook.
+`.claude/lib/session-frontmatter.mjs` is a **library, not a CLI** — running it with flags
+does nothing and exits 2. Import it:
+
+```bash
+cd work-sessions/{session-name}/workspace
+node --input-type=module -e '
+import { updateSessionFile, readSessionFields } from "./.claude/lib/session-frontmatter.mjs";
+updateSessionFile("session.md", { workItem: "{workItem}" });
+console.log("workItem =", readSessionFields("session.md").workItem);
+'
+```
+
+Read the value back, as above, and confirm it before moving on — this write has failed
+silently before (gh:143).
+
+Register this chat in the tracker's `chatSessions` frontmatter. For new sessions, the session-start hook has already fired (before /start-work was invoked) but the session folder didn't exist yet. Find the current chat's UUID from the most recently modified `.jsonl` file in
+`~/.claude/projects/{project-path}/` and append the entry with the same library:
+
+```bash
+node --input-type=module -e '
+import { updateSessionFile, readSessionFields } from "./.claude/lib/session-frontmatter.mjs";
+const existing = readSessionFields("session.md").chatSessions || [];
+updateSessionFile("session.md", {
+  chatSessions: [...existing, { id: "{uuid}", names: [], started: new Date().toISOString(), ended: null }],
+});
+'
+```
+
+Append — never replace: the list is the session'"'"'s whole chat history. Subsequent chats are
+registered automatically by the hook.
 
 The tracker already reflects the correct state — assignment happened in step 5 or 6 via `adapter.claim()`. Do not write to any local file mirror. There is no `open-work.md`.
 

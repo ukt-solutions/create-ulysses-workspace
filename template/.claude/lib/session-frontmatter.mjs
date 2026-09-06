@@ -263,3 +263,31 @@ export function writeSessionFile(filePath, fields, body = '') {
 export function readSessionFields(filePath) {
   return readSessionFile(filePath).fields;
 }
+
+// This module is a LIBRARY, not a CLI. Several skills say "update the tracker
+// via the session-frontmatter helper", and the natural reading of that — given
+// that everything else a skill invokes (sync-tasks.mjs, create-work-session.mjs,
+// build-workspace-context.mjs) is a real CLI — is to run this file with flags.
+//
+// Without this guard, Node imports the module, finds no side effects, ignores
+// the arguments and EXITS 0. The caller sees success, the frontmatter is
+// untouched, and a `cmd || fallback` idiom never fires because exit 0 is
+// success. That silently dropped a `workItem:` linkage during the gh:89
+// session and was only caught by re-reading the file (gh:143).
+//
+// So: fail loudly and say what to call instead.
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  process.stderr.write(
+    'session-frontmatter.mjs is a library, not a CLI — it takes no arguments.\n' +
+    '\n' +
+    'Import it instead:\n' +
+    '  node --input-type=module -e \'\n' +
+    '  import { updateSessionFile } from "./.claude/lib/session-frontmatter.mjs";\n' +
+    '  updateSessionFile("session.md", { workItem: "gh:42" });\n' +
+    '  \'\n' +
+    '\n' +
+    'Exports: parseSessionContent, updateSessionContent, updateSessionFile,\n' +
+    'readSessionFile, readSessionFields, writeSessionFile.\n',
+  );
+  process.exit(2);
+}
