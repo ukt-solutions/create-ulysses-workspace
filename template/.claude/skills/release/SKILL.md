@@ -16,6 +16,8 @@ Versions are bumped here, not in `/complete-work`, because version semantics des
 ## Parameters
 - `/release {version}` — create a release entry for a specific version
 - `/release` — ask for the version
+- `/release {version} --force` — proceed even when the coverage guard in Step 2 finds merged
+  PRs with no branch notes. Operator escape hatch; see Step 2.
 
 ## Flow
 
@@ -29,16 +31,53 @@ Check `workspace.json` for `releaseMode`:
 
 **Release-notes base directory.** Read `workspace.releaseNotesDir` from `workspace.json` (default `workspace-context/release-notes` if the field is absent). Throughout this skill `{releaseNotesDir}` refers to that resolved value; every branch-note path is `{releaseNotesDir}/unreleased/{repo}/…`. Never use a bare `release-notes/`.
 
-**Step 2: Read unreleased notes**
-Branch notes live in the **workspace** repo, written there by `/complete-work`. For each target repo, list the workspace's unreleased subdirectory for that project:
+**Step 2: Prove the notes pile is complete, then read it**
+
+Branch notes live in the **workspace** repo, written there by `/complete-work`. An empty
+unreleased directory is ambiguous: it means either nothing shipped, or `/complete-work` was
+skipped on merged sessions and their detail never made it into the pile. Releasing on the
+second reading silently drops work from the changelog and the next release inherits the gap.
+
+Run the guard before reading anything:
+
+```bash
+node .claude/scripts/check-release-coverage.mjs --root . --repo {repo}
+```
+
+It compares merged PRs since the last `CHANGELOG.md` entry against the `branch:` frontmatter
+of the notes on hand, and scans `work-sessions/*/workspace/` for sessions whose branch merged
+without `/complete-work` running. Release PRs (`release/*`) are excluded — those are the
+release, not content needing notes.
+
+- **Exit 0** — coverage is complete. Continue.
+- **Exit 1** — refuse to release. Show the script's output verbatim: it names each merged PR
+  with no notes (number, title, branch) and each session worktree that needs completing. Do
+  not write `CHANGELOG.md`. The operator either runs `/complete-work` from each listed
+  worktree, or — for PRs whose worktree is already gone — hand-writes a
+  `branch-release-notes-{topic}.md` into `{releaseNotesDir}/unreleased/{repo}/`.
+
+Only when the missing PRs were deliberately left undocumented, pass the escape hatch through:
+
+```bash
+node .claude/scripts/check-release-coverage.mjs --root . --repo {repo} --force
+```
+
+`--force` still reports what is missing; it just stops refusing. Reach for it when the
+operator has said so, not to get past a refusal on your own judgement.
+
+With coverage proven, list and read the notes:
+
 ```bash
 ls {releaseNotesDir}/unreleased/{repo}/
 ```
-Read all `branch-release-notes-*.md` and `branch-release-questions-*.md` files.
 
-If no unreleased files exist for a target repo: "No unreleased notes found for {repo}. Nothing to release."
+Read all `branch-release-notes-*.md` and `branch-release-questions-*.md` files. The
+frontmatter `repo:` field confirms which project repo each belongs to — match it to the
+directory name as a sanity check. A mismatch means files were moved by hand; surface it.
 
-The frontmatter `repo:` field on each branch-notes file confirms which project repo the notes belong to — match that to the directory name as a sanity check. Notes mismatched on `repo:` are a sign of manual file moves; surface to the user.
+If the guard exits 0 and the directory is genuinely empty, this is the trivial case: "No
+unreleased notes found for {repo}, and no merged PRs since the last release. Nothing to
+release."
 
 **Step 3: Group and organize**
 Group notes by `type:` frontmatter (feature, fix, chore). Within each group, order chronologically by date. This ordering drives bullet sequence in the synthesized entry.
