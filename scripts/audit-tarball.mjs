@@ -40,14 +40,20 @@ const TEXT_FILENAMES = new Set(['LICENSE', '_gitignore']);
 
 const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 
-// Hard size ceiling. Current tarball is ~161 kB after the forges/ adapter
-// landed; 170 kB leaves headroom for the next bit of growth. Trips loudly
-// if something like docs/ or node_modules/ gets pulled in by accident.
+// Hard size ceiling. Current tarball is ~172 kB after the context-footprint
+// and workspace-diagnostics scripts landed; 185 kB leaves headroom for the
+// next bit of growth. Trips loudly if something like docs/ or node_modules/
+// gets pulled in by accident.
+//
 // Bump history: 150 kB initial → 155 kB after BP-10's session-end reflection
-// added ~750 bytes → 170 kB after forges/ adapter family added ~13 kB of
-// adapter code + ~15 kB of test files (which ship in the tarball since
-// template/ is included wholesale, matching the trackers/ precedent).
-const SIZE_LIMIT_BYTES = 170 * 1024;
+// added ~750 bytes → 170 kB after the forges/ adapter family added ~13 kB of
+// adapter code + ~15 kB of tests → 185 kB after context-footprint.mjs and
+// workspace-diagnostics.mjs added ~59 kB, of which ~26 kB is test code.
+//
+// Test files ship because template/ is included wholesale, matching the
+// trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
+// worth revisiting as a whole rather than by carving out one directory.
+const SIZE_LIMIT_BYTES = 185 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -183,6 +189,10 @@ function checkRequiredFiles(files) {
     'template/.claude/scripts/forges/interface.mjs',
     'template/.claude/scripts/forges/github.mjs',
     'template/.claude/scripts/forges/gitlab.mjs',
+    // The context-placement skill and the memory-guidance rule both instruct
+    // Claude to price a placement before writing it. If this script does not
+    // ship, that instruction silently becomes advice nobody can follow.
+    'template/.claude/scripts/context-footprint.mjs',
     'LICENSE',
   ];
   const present = new Set(files.map((f) => f.path));

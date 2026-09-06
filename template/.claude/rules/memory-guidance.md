@@ -1,54 +1,61 @@
-# Memory Guidance
+# Memory and Placement Guidance
 
-Guide Claude's auto-memory system for this workspace.
-
-## What to Auto-Remember
-
-When working in this workspace, pay attention to and save memories about:
-- Architecture decisions and their rationale
-- Patterns that caused bugs or confusion
-- User corrections about project conventions
-- External system URLs, credentials locations, API quirks
-- Workarounds for tooling issues
-
-## What NOT to Auto-Remember
-
-- Temporary debugging state
-- File contents (re-read them instead)
-- Anything already captured in a workspace-context file
-- Anything documented in .claude/rules/
-
-## Session-Scoped vs Cross-Session
-
-When a work session is active:
-- Decisions and progress from this session → update the session tracker body at `work-sessions/{name}/workspace/session.md` (consumed by /complete-work)
-- Patterns, corrections, and insights that apply beyond this session → auto-memory (persists across all sessions)
-- Don't duplicate: if something is already in the session tracker, don't also save it to auto-memory
+Where durable content goes, and what each destination costs.
 
 ## Where durable content goes
 
-Four destinations, in increasing reach. Pick the narrowest one that works.
+Eight destinations, ordered cheapest first. Work down and stop at the first that genuinely
+fits. The right column is what every session pays, forever, for the choice.
 
-| destination | for |
-|---|---|
-| auto-memory | machine-local preferences and corrections; not shared, not reviewable |
-| `team-member/{user}/` | one person's working context |
-| `shared/` | team-visible reference that does not need to be always-loaded |
-| `shared/locked/` | canonical team truths, loaded verbatim into every session |
+| destination | for | always-loaded cost |
+|---|---|---|
+| nowhere | already covered, or true only today | zero |
+| `.claude/rules/*.md` with `paths:` | an instruction that applies only to certain files | zero until a match is read |
+| a skill | a procedure with steps, invoked on demand | its `description` line |
+| auto-memory | machine-local preference or correction; not shared, not reviewable | one `MEMORY.md` line |
+| `team-member/{user}/` | one person's working context | one index line, that user |
+| `shared/` | team-visible reference, looked up when relevant | one index line |
+| `shared/locked/` | canonical team truth | **the whole file, every session** |
+| `.claude/rules/*.md` (no `paths:`) | an instruction that must hold in every session | **the whole file, every session** |
 
-**The canonical test.** Canonical should describe what *is* and what *to do*, not what *to
-think*. Before locking anything, ask:
+**`nowhere` is the most common correct answer.** A second copy in a second location is
+worse than none — they drift, and the reader cannot tell which is current.
+
+The two bold rows tax every session in this workspace, and anything shipped in the template
+taxes every downstream workspace too. Reach them only after the cheaper rows are actually
+ruled out. Prefer `paths:` for anything domain-specific: a rule about migration scripts does
+not need to be in context while editing documentation.
+
+**Before writing to either bold row, state the cost:**
+
+```bash
+node .claude/scripts/context-footprint.mjs --root . --add <bytes> --as <destination>
+```
+
+## The canonical test
+
+Canonical describes what *is* and what *to do*, never what *to think*.
 
 > If Claude read this for the first time during a session about an unrelated topic, would it
-> (a) help frame the problem correctly, or (b) push Claude toward a particular answer to a
+> (a) help frame the problem correctly, or (b) push it toward a particular answer to a
 > question that hasn't been asked yet?
 
 (a) is canonical. (b) is `shared/` at most, more often `team-member/{user}/`. Pre-loaded
-conclusions in always-loaded context don't read as opinions to Claude — they read as ground
-truth, and they frame what Claude considers before the question is asked.
+conclusions don't read as opinions to Claude — they read as ground truth, and they frame
+what Claude considers before the question is asked.
 
-Every locked file is a permanent cost on every session in this workspace. Weigh that before
-adding one.
+## Auto-memory specifically
 
-For the frontmatter schema, the generator invocations, and the full belongs/doesn't-belong
-lists behind the test, invoke the `context-placement` skill.
+Save: architecture decisions and their rationale, patterns that caused bugs, user
+corrections about project conventions, external URLs and API quirks, tooling workarounds.
+
+Don't save: temporary debugging state, file contents (re-read them), anything already in a
+workspace-context file or a rule.
+
+When a work session is active, session decisions and progress go in the session tracker
+body at `work-sessions/{name}/workspace/session.md`, which `/complete-work` consumes.
+Auto-memory is for what outlives the session. Never both.
+
+For the full routing procedure, the frontmatter schema, the generator invocations, and the
+belongs/doesn't-belong lists behind the canonical test, invoke the `context-placement`
+skill.
