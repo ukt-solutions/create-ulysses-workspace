@@ -88,7 +88,7 @@ Four things, in the order you'll touch them:
 
 A scaffolded workspace with:
 
-- **14 skills** covering the workflow lifecycle, releases, handoffs, and maintenance
+- **16 skills** covering the workflow lifecycle, releases, handoffs, and maintenance
 - **9 active rules** + **9 optional `.skip` rules** for behaviors you can opt into
 - **9 hooks** for SessionStart, SubagentStart, PreCompact, and the rest of the small set the conventions rely on
 - A **`shared-context/`** memory system with three visibility levels: locked (team truths), root (team-visible ephemerals), user-scoped (personal)

@@ -1,90 +1,48 @@
 # Work Item Tracking
 
-When a workspace has an issue tracker configured, all work items — bugs, features, chores — live in that tracker. Skills and scripts read and write the tracker through the adapter at `.claude/scripts/trackers/{type}.mjs`. There is no local file that mirrors the tracker's state.
+When a workspace has a tracker configured, **all work items — bugs, features, chores — live
+in that tracker.** There is no local file mirroring its state. Skills reach it through
+`createTracker()` from `.claude/scripts/trackers/interface.mjs`; that module is the source of
+truth for the available methods, and the four skills that use it (`start-work`, `pause-work`,
+`complete-work`, `setup-tracker`) each carry the exact calls they make.
 
 ## Why external-first
 
-- **Atomic assignment.** Two teammates can't accidentally start the same ticket — the tracker is the source of truth for "who has this."
-- **Real-time state.** Status changes propagate to the whole team the moment they happen, not after a commit + push.
-- **Tool parity.** Humans and Claude see the same list of tickets in the same place.
+Two people can't start the same ticket — the tracker is the source of truth for who has what.
+Status changes reach the whole team the moment they happen rather than after a push. And
+humans and Claude read the same list in the same place.
 
 ## Configuration
 
-`workspace.json` → `workspace.tracker`:
-
-```json
-{
-  "workspace": {
-    "tracker": {
-      "type": "github-issues",
-      "repo": "your-org/your-workspace"
-    }
-  }
-}
-```
-
-- `type` — identifies the adapter module at `.claude/scripts/trackers/{type}.mjs`. Only `github-issues` ships in the template; others are additive.
-- `repo` — adapter-specific. For `github-issues`, the owner/name slug of the repo where issues live. `"auto"` resolves to the workspace's own git remote.
-
-Absence of `workspace.tracker` means tracking is disabled. Skills handle this by falling back to a blank/describe-the-work flow — they do not fabricate a local mirror.
-
-## Adapter interface (for Claude)
-
-Import from `.claude/scripts/trackers/interface.mjs`:
-
-```javascript
-import { createTracker, AlreadyAssignedError } from '.claude/scripts/trackers/interface.mjs';
-
-const tracker = createTracker(workspace.tracker);
-
-const mine = await tracker.listAssignedToMe();        // Issue[]
-const open = await tracker.listUnassigned();          // Issue[]
-const issue = await tracker.claim('gh:42');           // throws AlreadyAssignedError on contention
-const created = await tracker.createIssue({ title, body, labels: ['feat', 'P2'], milestone: 'Backlog' });
-await tracker.comment('gh:42', 'paused here; see branch X');
-await tracker.closeIssue('gh:42', { comment: 'shipped in PR #99' });
-
-// Setup-time: idempotent milestone / label creation
-await tracker.ensureLabels();                          // creates bug/feat/chore/P1/P2/P3 if absent
-await tracker.ensureMilestone({ title: 'Backlog', description: 'Triage later' });
-```
-
-All skills that touch work items use this interface. Adapters are not called directly.
+`workspace.json` → `workspace.tracker`: `{ "type": "github-issues", "repo": "owner/name" }`.
+`type` names the adapter at `.claude/scripts/trackers/{type}.mjs`; only `github-issues` ships.
+`repo` is adapter-specific — for GitHub, the slug where issues live, or `"auto"` to resolve
+from the git remote. No `workspace.tracker` means tracking is disabled, and skills fall back
+to a blank describe-the-work flow rather than fabricating a local mirror.
 
 ## Session linkage
 
-When `/start-work` links a session to a tracker issue, the session tracker's frontmatter gets:
-
-```yaml
-workItem: gh:42
-```
-
-The value is the adapter-prefixed issue ID. This survives adapter swaps — replacing the GitHub adapter with a Linear adapter later doesn't require re-linking session trackers (though the prefix changes for *new* sessions).
+`/start-work` records the adapter-prefixed issue ID in session frontmatter as `workItem: gh:42`.
+The prefix makes it self-describing across adapter swaps.
 
 ## When to create issues
 
-- **User describes new work during `/start-work`** → skill calls `createIssue` after session creation.
-- **Bug or feature discovered mid-session** → Claude proactively asks "Create an issue for this? [Y/n]"; if yes, calls `createIssue` and links the session (if it's scoped to this session) or leaves it unassigned (if it's a future concern).
-- **Never during braindumps or handoffs** — those are discussion artifacts, not work items. Action items can later graduate to issues during `/start-work`.
+- **Work described during `/start-work`** → create the issue, then claim it.
+- **A bug or feature found mid-session** → ask "Create an issue for this? [Y/n]". Link it to
+  the session if it is in scope; leave it unassigned if it is a future concern.
+- **Never during braindumps or handoffs.** Those are discussion artifacts. Action items can
+  graduate to issues later, at `/start-work`.
 
-## When NOT to maintain local state
+## What not to do
 
-- Do not create, write to, or read `workspace-context/open-work.md`. That file is deprecated.
-- Do not write ticket state into `session.md` frontmatter beyond the `workItem:` pointer. Status, assignment, milestone, and labels live in the tracker.
-- Do not cache issue bodies locally. Always fetch via `tracker.getIssue(id)` when the content is needed.
+- Do not create, read, or write `workspace-context/open-work.md`. It is deprecated.
+- Do not put ticket state in session frontmatter beyond the `workItem:` pointer. Status,
+  assignment, labels and milestone live in the tracker.
+- Do not cache issue bodies locally. Fetch with `tracker.getIssue(id)` when you need one.
 
-## Skill behavior
+## Boundaries
 
-Skills that interact with the tracker:
-
-- **`/setup-tracker`** — configures `workspace.json` → `tracker` block, calls `ensureLabels()`.
-- **`/start-work`** — fetches assigned-to-me first; falls back to unassigned; claims atomically on pick. Records `workItem:` in session tracker.
-- **`/pause-work`** — comments the pause capture on the linked issue.
-- **`/complete-work`** — closes the linked issue after PRs merge, with a final comment linking them.
-- **`/workspace-init`** — prompts to run `/setup-tracker` at the end of init. Does not pre-populate tickets.
-
-## What this rule does NOT do
-
-- Does not prescribe a specific tracker type. Adapter choice is per workspace.
-- Does not prescribe label or milestone schemas beyond the six standard labels (`bug`, `feat`, `chore`, `P1`, `P2`, `P3`) created by `ensureLabels()`. Teams with existing trackers can skip label creation during setup.
-- Does not replace tracker-native features (comments, reactions, linked PRs) — use the tracker's UI for those.
+Adapter choice is per workspace; this rule prescribes no particular tracker. Beyond the six
+labels `ensureLabels()` creates (`bug`, `feat`, `chore`, `P1`, `P2`, `P3`), it prescribes no
+schema — teams with an existing tracker skip label creation. Tracker-native features like
+comments, reactions and linked PRs stay in the tracker's own UI.

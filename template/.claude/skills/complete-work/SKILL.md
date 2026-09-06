@@ -131,6 +131,12 @@ git commit -m "docs: add release notes for {branch}"
 
 If a repo has no commits beyond the base, skip release notes for it.
 
+**Count what you wrote.** Keep track of how many branch-note files Step 6 produced. Notes
+are written only for repos in the tracker's `repos:` list, so a session whose changes are
+entirely in the workspace repo — research, context, documentation, or workspace code such as
+hooks and scripts — matches no project repo and produces **zero** notes. That count is the
+guard Step 7 depends on.
+
 ### Step 7: Remove session artifacts from the workspace branch
 
 The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 12. Before that happens, make sure everything worth preserving has landed in release notes (Step 6) — once Step 6 has run, the tracker, specs, plans, and goal artifacts have served their purpose.
@@ -146,6 +152,40 @@ done
 ```
 
 If any `UNMERGED:` lines print, abort completion and show the list. The user merges the intended sub-branches into the session branch, or closes abandoned ones, then re-runs `/complete-work`. When no `goal-*.md` artifact is present, this check is a no-op and completion proceeds normally.
+
+**Zero-notes guard — runs after the pre-flight, never before it.** When Step 6 wrote zero
+branch-note files, nothing this session produced has been archived, and the next commands
+delete the artifacts. Stop and report before stripping.
+
+The right message depends on where the session's work actually lives, so check first:
+
+```bash
+cd work-sessions/{session-name}/workspace
+git log origin/main..HEAD --oneline -- . ':(exclude)session.md' ':(exclude)design-*.md' \
+  ':(exclude)plan-*.md' ':(exclude)goal-*.md' ':(exclude)research-*.md' ':(exclude)crossref-*.md'
+```
+
+- **Commits listed** — the session changed workspace-repo files (hooks, scripts, rules,
+  context). That work merges normally and is not at risk. What the strip would lose is the
+  reasoning in `session.md` and any specs or plans: why the change was made, what was
+  rejected, what remains open.
+- **No commits listed** — the artifacts *are* the deliverable. Research, design, or context
+  work with nothing else to merge. Stripping deletes the session's entire output.
+
+Report which case applies, name the files that would be removed, then offer two choices:
+
+1. **Promote first (default).** Run `/promote` on the artifacts so they land in
+   `workspace-context/` as durable team knowledge, then strip and continue. This is the
+   right answer in both cases: reasoning that is worth keeping belongs in workspace-context,
+   which is where it will actually be read.
+2. **Discard.** Strip anyway, with an explicit confirmation that names each file.
+
+Never choose on the user's behalf. There is deliberately no "keep them on the branch"
+option: `session.md` would merge to the workspace repo root, which is exactly the path the
+next `/start-work` worktree writes its own tracker to, and `createSessionTracker` overwrites
+unconditionally. Keeping artifacts on the branch does not preserve them — it contaminates
+`main` and then loses them anyway on the next session.
+
 
 Session content lives at the top of the workspace worktree on the session branch. Once the pre-flight passes, remove these files from the branch before the final push so main's top level stays free of session artifacts:
 

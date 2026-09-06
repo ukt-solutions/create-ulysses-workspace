@@ -129,6 +129,15 @@ function gitIgnoredPaths(workspaceRoot, paths) {
   );
 }
 
+// The git filter fails open: gitIgnoredPaths returns an empty set when git is missing,
+// the directory is not a repository, or the subprocess errors. Canonical content is
+// committed and broadcast to every session and subagent, so that path must not depend on a
+// subprocess succeeding. Exclude the local-only-* convention by name as well.
+function isLocalOnlyName(filePath) {
+  const name = filePath.split(sep).pop() || '';
+  return name.startsWith('local-only-');
+}
+
 function stripFrontmatter(content) {
   if (!content.startsWith('---\n')) return content;
   const end = content.indexOf('\n---\n', 4);
@@ -159,7 +168,7 @@ function buildSharedIndex(workspaceRoot) {
     const relToWC = relative(wcRoot, f).split(sep).join('/');
     if (relToWC === INDEX_FILENAME || relToWC === CANONICAL_FILENAME) continue;
     if (isIgnored(relToWC, ignorePrefixes)) continue;
-    if (gitIgnored.has(candidatePaths[i])) continue;
+    if (gitIgnored.has(candidatePaths[i]) || isLocalOnlyName(f)) continue;
     const isLocked = relToWC.startsWith(`${SHARED_DIR}/${LOCKED_DIR}/`);
     const { description } = describeAndPath(f, wcRoot);
     entries.push({ rel: relToWC, isLocked, description });
@@ -470,7 +479,16 @@ export function selectCanonicalContent(items, budgetBytes, opts) {
 function buildCanonical(workspaceRoot) {
   const lockedDir = join(workspaceRoot, WC_DIR, SHARED_DIR, LOCKED_DIR);
   if (!existsSync(lockedDir)) return [];
-  const files = walkMarkdown(lockedDir).filter((f) => !f.endsWith('.keep')).sort();
+  const candidates = walkMarkdown(lockedDir).filter((f) => !f.endsWith('.keep')).sort();
+  // canonical.md is committed and loaded verbatim into every session prompt, so a
+  // gitignored file under shared/locked/ must never reach it. The index builder applies
+  // this same filter; without it here, a local-only-*.md dropped into this directory is
+  // published to the repo and broadcast to every session.
+  const candidatePaths = candidates.map((f) => relative(workspaceRoot, f).split(sep).join('/'));
+  const gitIgnored = gitIgnoredPaths(workspaceRoot, candidatePaths);
+  const files = candidates.filter(
+    (f, i) => !gitIgnored.has(candidatePaths[i]) && !isLocalOnlyName(f),
+  );
   const items = [];
   for (const f of files) {
     const name = f.split(sep).pop().replace(/\.md$/, '');
@@ -709,4 +727,6 @@ export {
   fingerprint,
   readDescription,
   stripFrontmatter,
+  gitIgnoredPaths,
+  isLocalOnlyName,
 };
