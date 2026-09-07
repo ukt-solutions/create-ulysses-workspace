@@ -110,6 +110,34 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     };
   }
 
+  // Listing merged PRs is how /release proves the unreleased-notes pile is
+  // complete rather than merely empty (gh:89). `search` takes gh's raw search
+  // syntax so callers can bound by merge date without this adapter growing a
+  // date-range vocabulary of its own.
+  async function prList({ state = 'merged', base, search, limit = 100, repo }) {
+    const target = repoFor(repo);
+    const args = [
+      'pr', 'list', '--repo', target,
+      '--state', state,
+      '--limit', String(limit),
+      '--json', 'number,title,url,headRefName,baseRefName,mergedAt,state',
+    ];
+    if (base) args.push('--base', base);
+    if (search) args.push('--search', search);
+    const stdout = ghOrThrow(args).trim();
+    const raw = stdout ? JSON.parse(stdout) : [];
+    return raw.map((p) => ({
+      id: `${target}#${p.number}`,
+      number: p.number,
+      title: p.title,
+      url: p.url,
+      headRefName: p.headRefName,
+      baseRefName: p.baseRefName,
+      mergedAt: p.mergedAt,
+      state: p.state,
+    }));
+  }
+
   async function releaseView({ tag, repo }) {
     if (!tag) throw new Error('releaseView: tag is required');
     const target = repoFor(repo);
@@ -181,6 +209,7 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     prCreate,
     prMerge,
     prView,
+    prList,
     releaseView,
     workflowRunFind,
     workflowRunWatch,

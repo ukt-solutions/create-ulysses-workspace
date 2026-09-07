@@ -6,7 +6,7 @@
 //
 // When implemented, this adapter wraps the `glab` CLI the same way
 // github.mjs wraps `gh`: same method surface (prCreate, prMerge, prView,
-// releaseView, workflowRunFind, workflowRunWatch), same spawnFn-injectable
+// prList, releaseView, workflowRunFind, workflowRunWatch), same spawnFn-injectable
 // shape for testability, same error types from interface.mjs.
 
 import { ForgeError } from './interface.mjs';

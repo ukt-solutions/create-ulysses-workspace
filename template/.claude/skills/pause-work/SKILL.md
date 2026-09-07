@@ -28,7 +28,15 @@ This is a coherent rewrite of the Progress section, not an append (coherent-revi
 
 ### Step 3: Update frontmatter status and post pause comment on tracker
 
-Use the session-frontmatter helper to set `status: paused` in the tracker's frontmatter.
+Set `status: paused` in the tracker's frontmatter. `.claude/lib/session-frontmatter.mjs` is
+a library, not a CLI — running it with flags does nothing and exits 2:
+
+```bash
+node --input-type=module -e '
+import { updateSessionFile } from "./.claude/lib/session-frontmatter.mjs";
+updateSessionFile("session.md", { status: "paused" });
+'
+```
 
 If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, post a pause comment on the linked issue via the adapter:
 

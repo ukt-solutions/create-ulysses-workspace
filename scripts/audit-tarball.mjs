@@ -193,6 +193,10 @@ function checkRequiredFiles(files) {
     // Claude to price a placement before writing it. If this script does not
     // ship, that instruction silently becomes advice nobody can follow.
     'template/.claude/scripts/context-footprint.mjs',
+    // /release Step 2 refuses to write a changelog without this guard. If it
+    // does not ship, the skill falls back to the silent-empty-release bug it
+    // was written to close (gh:89).
+    'template/.claude/scripts/check-release-coverage.mjs',
     'LICENSE',
   ];
   const present = new Set(files.map((f) => f.path));

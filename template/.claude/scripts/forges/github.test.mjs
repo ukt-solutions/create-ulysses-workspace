@@ -161,6 +161,43 @@ console.log('# prView');
   else fail(`prView not-found wrong: ${threw?.message ?? 'no throw'}`);
 }
 
+console.log('# prList');
+{
+  const listJson = JSON.stringify([
+    { number: 78, title: 'fix: three context bugs', url: 'https://x/pull/78',
+      headRefName: 'chore/framework-modernization', baseRefName: 'main',
+      mergedAt: '2026-09-06T07:19:52Z', state: 'MERGED' },
+    { number: 77, title: 'release: v0.17.0-beta.0', url: 'https://x/pull/77',
+      headRefName: 'release/v0.17.0-beta.0', baseRefName: 'main',
+      mergedAt: '2026-08-01T00:00:00Z', state: 'MERGED' },
+  ]);
+  const key = 'pr list --repo foo/bar --state merged --limit 100 --json '
+    + 'number,title,url,headRefName,baseRefName,mergedAt,state --base main '
+    + '--search merged:>2026-07-01';
+  const spawnFn = buildSpawn({ [key]: listJson });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const prs = await forge.prList({ base: 'main', search: 'merged:>2026-07-01' });
+  if (prs.length === 2) ok(); else fail(`prList returned ${prs.length}`);
+  if (prs[0]?.id === 'foo/bar#78') ok(); else fail(`prList id wrong: ${prs[0]?.id}`);
+  if (prs[0]?.headRefName === 'chore/framework-modernization') ok();
+  else fail(`prList headRefName wrong: ${prs[0]?.headRefName}`);
+  if (prs[0]?.mergedAt === '2026-09-06T07:19:52Z') ok(); else fail('prList mergedAt wrong');
+  if (spawnFn.calls[0].args.includes('--search')) ok(); else fail('prList did not pass --search');
+  if (spawnFn.calls[0].args.includes('merged')) ok(); else fail('prList did not pass state');
+}
+
+{
+  // An empty list is a legitimate answer, not a parse error. gh prints
+  // nothing at all in some versions, so the adapter must tolerate '' too.
+  const key = 'pr list --repo foo/bar --state merged --limit 100 --json '
+    + 'number,title,url,headRefName,baseRefName,mergedAt,state';
+  const spawnFn = buildSpawn({ [key]: '' });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const prs = await forge.prList({});
+  if (Array.isArray(prs) && prs.length === 0) ok();
+  else fail(`prList on empty stdout should be [], got ${JSON.stringify(prs)}`);
+}
+
 console.log('# releaseView');
 
 // Normalizes the JSON gh release view returns.
