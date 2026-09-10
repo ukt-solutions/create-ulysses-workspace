@@ -197,6 +197,10 @@ function checkRequiredFiles(files) {
     // does not ship, the skill falls back to the silent-empty-release bug it
     // was written to close (gh:89).
     'template/.claude/scripts/check-release-coverage.mjs',
+    // The chat record is the durable per-chat state in the post-inversion
+    // session model (gh:132). Without it the new lifecycle has nowhere to
+    // record scope, concerns, or open tasks.
+    'template/.claude/scripts/chat-record.mjs',
     'LICENSE',
   ];
   const present = new Set(files.map((f) => f.path));
