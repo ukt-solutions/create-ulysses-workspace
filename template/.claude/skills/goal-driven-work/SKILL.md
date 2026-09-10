@@ -197,11 +197,38 @@ The `/goal` evaluator runs after every turn against the conversation transcript.
 - **Demonstrable from transcript.** The main agent's own output must be able to evidence completion. "The PR URL was reported in the transcript and `git status` showed clean" rather than "the work feels done."
 - **Bounded.** Includes a turn budget as a backstop (e.g., "or stop after 60 turns") so the loop can't run away if something goes wrong.
 - **Within the 4000-char limit.** Up to four kilobytes of condition text are accepted.
+- **Reachable by the agent.** This is the one that gets written wrong. If any phase carries
+  `gate: review`, or the goal depends on a merge, a deploy, or anything else only the
+  operator can authorise, then a condition demanding those be *done* can never be satisfied
+  by the agent — and the evaluator will re-ping indefinitely against work that is correctly
+  waiting. Either the condition names the blocked state as terminal, or the goal cannot end
+  without the backstop.
+
+**The failure this prevents, observed.** A goal was started with
+
+> All 6 phases show status: complete. […] The seven PRs are merged or closed.
+
+while three of its phases were `gate: review` and the PRs depended on two prerequisite PRs
+merging to `main`. Everything the agent could do was done inside about forty turns; the
+remaining eighty were spent re-reporting the same three blockers, because the condition had
+no terminal state for "built, verified, awaiting authorisation."
+
+Write the disjunction in from the start:
+
+```
+Every phase shows status: complete, or status: awaiting-review with its artifact
+written. […] Either <external step> is done, or it is still pending and that is
+stated in the transcript. Or stop after <N> turns.
+```
+
+Editing the artifact afterwards does not rescue a running goal: the evaluator's text is
+fixed from the original `/goal` invocation. The corrected condition only takes effect after
+`/goal clear` and a re-run of the `## Start command`.
 
 A reasonable template:
 
 ```
-All phases in goal-<topic>.md show status: complete. Phase artifacts exist at: <list paths>. The /complete-work skill has produced release notes and opened the final PR; the PR URL appeared in the transcript. Or stop after <N> turns.
+Every phase in goal-<topic>.md shows status: complete, or status: awaiting-review with its artifact written. Phase artifacts exist at: <list paths>. Either the /complete-work skill has produced release notes and opened the final PR with the URL in the transcript, or the goal is blocked on a named operator step and that is stated. Or stop after <N> turns.
 ```
 
 Fill in `<topic>`, paths, and `<N>` per goal. Anchor on artifacts and committed state, not on feelings.
