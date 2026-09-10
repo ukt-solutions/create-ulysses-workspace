@@ -28,7 +28,7 @@
 // Stale wins over over-budget when both apply.
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
@@ -180,11 +180,10 @@ function buildSharedIndex(workspaceRoot) {
   return entries;
 }
 
-function renderSharedIndex(entries, generatedAt) {
+function renderSharedIndex(entries) {
   const lines = [
     '---',
     'type: index',
-    `generated: ${generatedAt}`,
     '---',
     '',
     '# workspace-context — index',
@@ -519,9 +518,9 @@ function summarizeSelection(selection) {
   return `over budget by ${selection.overBy} bytes`;
 }
 
-function renderCanonical(resolvedItems, selection, generatedAt) {
+function renderCanonical(resolvedItems, selection) {
   const showBudget = selection && selection.budgetBytes !== null && selection.budgetBytes !== undefined;
-  const fmLines = ['---', 'type: canonical', `generated: ${generatedAt}`];
+  const fmLines = ['---', 'type: canonical'];
   if (showBudget) {
     fmLines.push(`budget: ${selection.budgetBytes}`);
     fmLines.push(`status: ${selection.status}`);
@@ -574,11 +573,10 @@ function buildTeamMemberIndex(workspaceRoot, user) {
   return entries;
 }
 
-function renderTeamMemberIndex(user, entries, generatedAt) {
+function renderTeamMemberIndex(user, entries) {
   const lines = [
     '---',
     'type: index',
-    `generated: ${generatedAt}`,
     '---',
     '',
     `# ${user}'s context`,
@@ -608,6 +606,23 @@ function listTeamMembers(workspaceRoot) {
 
 // ---------- orchestration ----------
 
+// Artifacts no longer carry a `generated:` line — it changed on every build,
+// nothing read it, and it made every long-lived branch conflict on files whose
+// content was identical (gh:132). This filter stays so a checkout still holding
+// a pre-fix artifact compares clean on body rather than reporting false staleness.
+// An artifact git is configured to ignore is regenerated per machine, so its
+// absence is expected rather than a failure. Falls back to treating the file
+// as tracked when git is unavailable, which keeps the stricter behaviour.
+function isUntrackedArtifact(root, absPath) {
+  const rel = relative(root, absPath).split(sep).join('/');
+  const r = spawnSync('git', ['-C', root, 'check-ignore', '-q', rel], { encoding: 'utf-8' });
+  return r.status === 0;
+}
+
+function workspaceRootOf(root) {
+  return resolve(root);
+}
+
 function fingerprint(content) {
   return content
     .split('\n')
@@ -615,7 +630,7 @@ function fingerprint(content) {
     .join('\n');
 }
 
-function regenerateAll(workspaceRoot, generatedAt) {
+function regenerateAll(workspaceRoot) {
   const wcRoot = join(workspaceRoot, WC_DIR);
   if (!existsSync(wcRoot)) return [];
 
@@ -624,7 +639,7 @@ function regenerateAll(workspaceRoot, generatedAt) {
   out.push({
     path: join(wcRoot, INDEX_FILENAME),
     label: 'index.md',
-    content: renderSharedIndex(sharedEntries, generatedAt) + '\n',
+    content: renderSharedIndex(sharedEntries) + '\n',
   });
 
   const canonicalItems = buildCanonical(workspaceRoot);
@@ -635,7 +650,7 @@ function regenerateAll(workspaceRoot, generatedAt) {
   out.push({
     path: join(wcRoot, CANONICAL_FILENAME),
     label: 'canonical.md',
-    content: renderCanonical(resolvedItems, selection, generatedAt) + '\n',
+    content: renderCanonical(resolvedItems, selection) + '\n',
     selection,
   });
 
@@ -644,7 +659,7 @@ function regenerateAll(workspaceRoot, generatedAt) {
     out.push({
       path: join(wcRoot, TEAM_MEMBER_DIR, user, INDEX_FILENAME),
       label: `team-member/${user}/index.md`,
-      content: renderTeamMemberIndex(user, entries, generatedAt),
+      content: renderTeamMemberIndex(user, entries),
     });
   }
 
@@ -666,14 +681,22 @@ function regenerateAll(workspaceRoot, generatedAt) {
  */
 function main() {
   const args = parseArgs(process.argv);
-  const generatedAt = new Date().toISOString();
-  const artifacts = regenerateAll(args.root, generatedAt);
+  const artifacts = regenerateAll(args.root);
 
   if (args.mode === 'check') {
     const stale = [];
     const missing = [];
+    const regenerable = [];
     for (const a of artifacts) {
-      if (!existsSync(a.path)) { missing.push(a.label); continue; }
+      if (!existsSync(a.path)) {
+        // Per-user indexes are gitignored (gh:132): absent is the normal state
+        // on a fresh checkout, not a staleness failure. Reporting them as
+        // missing would make --check, and therefore /maintenance and CI, fail
+        // on every clone. They are regenerated on demand instead.
+        if (isUntrackedArtifact(workspaceRootOf(args.root), a.path)) regenerable.push(a.label);
+        else missing.push(a.label);
+        continue;
+      }
       const onDisk = readFileSync(a.path, 'utf-8');
       if (fingerprint(onDisk) !== fingerprint(a.content)) stale.push(a.label);
     }
@@ -692,6 +715,7 @@ function main() {
     if (missing.length === 0 && stale.length === 0) {
       const overBudget = sel && sel.status === 'over-budget';
       const payload = { status: 'current', missing: [], stale: [] };
+      if (regenerable.length) payload.regenerable = regenerable;
       if (canonicalBlock) payload.canonical = canonicalBlock;
       payload.artifacts = artifacts.length;
       process.stdout.write(JSON.stringify(payload) + '\n');
@@ -699,6 +723,7 @@ function main() {
     }
 
     const payload = { status: 'stale', missing, stale };
+    if (regenerable.length) payload.regenerable = regenerable;
     if (canonicalBlock) payload.canonical = canonicalBlock;
     process.stdout.write(JSON.stringify(payload) + '\n');
     process.exit(1);
