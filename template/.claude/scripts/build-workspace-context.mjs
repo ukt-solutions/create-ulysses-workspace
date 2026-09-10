@@ -180,11 +180,10 @@ function buildSharedIndex(workspaceRoot) {
   return entries;
 }
 
-function renderSharedIndex(entries, generatedAt) {
+function renderSharedIndex(entries) {
   const lines = [
     '---',
     'type: index',
-    `generated: ${generatedAt}`,
     '---',
     '',
     '# workspace-context — index',
@@ -519,9 +518,9 @@ function summarizeSelection(selection) {
   return `over budget by ${selection.overBy} bytes`;
 }
 
-function renderCanonical(resolvedItems, selection, generatedAt) {
+function renderCanonical(resolvedItems, selection) {
   const showBudget = selection && selection.budgetBytes !== null && selection.budgetBytes !== undefined;
-  const fmLines = ['---', 'type: canonical', `generated: ${generatedAt}`];
+  const fmLines = ['---', 'type: canonical'];
   if (showBudget) {
     fmLines.push(`budget: ${selection.budgetBytes}`);
     fmLines.push(`status: ${selection.status}`);
@@ -574,11 +573,10 @@ function buildTeamMemberIndex(workspaceRoot, user) {
   return entries;
 }
 
-function renderTeamMemberIndex(user, entries, generatedAt) {
+function renderTeamMemberIndex(user, entries) {
   const lines = [
     '---',
     'type: index',
-    `generated: ${generatedAt}`,
     '---',
     '',
     `# ${user}'s context`,
@@ -608,6 +606,10 @@ function listTeamMembers(workspaceRoot) {
 
 // ---------- orchestration ----------
 
+// Artifacts no longer carry a `generated:` line — it changed on every build,
+// nothing read it, and it made every long-lived branch conflict on files whose
+// content was identical (gh:132). This filter stays so a checkout still holding
+// a pre-fix artifact compares clean on body rather than reporting false staleness.
 function fingerprint(content) {
   return content
     .split('\n')
@@ -615,7 +617,7 @@ function fingerprint(content) {
     .join('\n');
 }
 
-function regenerateAll(workspaceRoot, generatedAt) {
+function regenerateAll(workspaceRoot) {
   const wcRoot = join(workspaceRoot, WC_DIR);
   if (!existsSync(wcRoot)) return [];
 
@@ -624,7 +626,7 @@ function regenerateAll(workspaceRoot, generatedAt) {
   out.push({
     path: join(wcRoot, INDEX_FILENAME),
     label: 'index.md',
-    content: renderSharedIndex(sharedEntries, generatedAt) + '\n',
+    content: renderSharedIndex(sharedEntries) + '\n',
   });
 
   const canonicalItems = buildCanonical(workspaceRoot);
@@ -635,7 +637,7 @@ function regenerateAll(workspaceRoot, generatedAt) {
   out.push({
     path: join(wcRoot, CANONICAL_FILENAME),
     label: 'canonical.md',
-    content: renderCanonical(resolvedItems, selection, generatedAt) + '\n',
+    content: renderCanonical(resolvedItems, selection) + '\n',
     selection,
   });
 
@@ -644,7 +646,7 @@ function regenerateAll(workspaceRoot, generatedAt) {
     out.push({
       path: join(wcRoot, TEAM_MEMBER_DIR, user, INDEX_FILENAME),
       label: `team-member/${user}/index.md`,
-      content: renderTeamMemberIndex(user, entries, generatedAt),
+      content: renderTeamMemberIndex(user, entries),
     });
   }
 
@@ -666,8 +668,7 @@ function regenerateAll(workspaceRoot, generatedAt) {
  */
 function main() {
   const args = parseArgs(process.argv);
-  const generatedAt = new Date().toISOString();
-  const artifacts = regenerateAll(args.root, generatedAt);
+  const artifacts = regenerateAll(args.root);
 
   if (args.mode === 'check') {
     const stale = [];

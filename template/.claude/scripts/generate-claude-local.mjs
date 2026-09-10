@@ -19,6 +19,7 @@
 
 import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 function isMainModule(metaUrl) {
@@ -85,11 +86,29 @@ function generateClaudeLocal(root, { force = false } = {}) {
   return { path: target, status: existsSync(target) ? 'written' : 'written' };
 }
 
+// The per-user index CLAUDE.local.md imports is generated, not tracked
+// (gh:132) — so on a fresh clone it does not exist yet, and writing an
+// importer for a missing file leaves a dangling @-import. Regenerate the
+// workspace-context artifacts here, where the importer is created, rather
+// than leaving the gap for /workspace-init to remember.
+function ensurePerUserIndex(root) {
+  const builder = join(root, '.claude', 'scripts', 'build-workspace-context.mjs');
+  if (!existsSync(builder)) return { regenerated: false, reason: 'builder not present' };
+  const r = spawnSync(process.execPath, [builder, '--write', '--root', root], {
+    encoding: 'utf-8',
+  });
+  if (r.status !== 0) {
+    return { regenerated: false, reason: (r.stderr || '').trim() || `exit ${r.status}` };
+  }
+  return { regenerated: true };
+}
+
 function main() {
   const args = parseArgs(process.argv);
   const root = resolve(args.root);
   const result = generateClaudeLocal(root, { force: args.force });
-  process.stdout.write(JSON.stringify(result) + '\n');
+  const index = ensurePerUserIndex(root);
+  process.stdout.write(JSON.stringify({ ...result, index }) + '\n');
 }
 
 if (isMainModule(import.meta.url)) {
@@ -101,4 +120,4 @@ if (isMainModule(import.meta.url)) {
   }
 }
 
-export { readWorkspaceUser, renderClaudeLocal, generateClaudeLocal };
+export { readWorkspaceUser, renderClaudeLocal, generateClaudeLocal, ensurePerUserIndex };
