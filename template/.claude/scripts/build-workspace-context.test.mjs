@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   buildSharedIndex,
   renderSharedIndex,
@@ -672,6 +673,42 @@ console.log('# generated artifacts are byte-identical across rebuilds (gh:132)')
   for (const a of first) {
     assert(!/^generated:/m.test(a.content), `${a.label} carries no generated timestamp`);
   }
+  cleanup(root);
+}
+
+
+console.log('# --check treats a gitignored artifact as regenerable, not missing (gh:132)');
+{
+  // Per-user indexes are gitignored, so on a fresh clone they are simply
+  // absent. Reporting that as "missing" would fail --check on every clone and
+  // take /maintenance and CI down with it.
+  const root = setupFixture();
+  gitInit(root);
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'a.md'),
+    '---\ndescription: A.\n---\n\nAlpha.\n',
+  );
+  mkdirSync(join(root, 'workspace-context', 'team-member', 'alice'), { recursive: true });
+  writeFileSync(
+    join(root, 'workspace-context', 'team-member', 'alice', 'note.md'),
+    '---\ndescription: N.\n---\n\nNote.\n',
+  );
+  writeFileSync(join(root, '.gitignore'), 'workspace-context/team-member/*/index.md\n');
+
+  const res = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('./build-workspace-context.mjs', import.meta.url)), '--check', '--root', root],
+    { encoding: 'utf-8' },
+  );
+  const payload = JSON.parse(res.stdout);
+  assert(
+    !payload.missing.includes('team-member/alice/index.md'),
+    'gitignored per-user index must not be reported missing',
+  );
+  assert(
+    (payload.regenerable || []).includes('team-member/alice/index.md'),
+    'gitignored per-user index is reported as regenerable',
+  );
   cleanup(root);
 }
 
