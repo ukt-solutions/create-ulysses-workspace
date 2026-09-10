@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
   listRecords, reconcile, parseArgs,
+  addTask, removeTask, setScope,
 } from './chat-record.mjs';
 
 let passed = 0;
@@ -140,11 +141,76 @@ console.log('# a corrupt record does not throw');
   } finally { clean(r); }
 }
 
+
+console.log('# task lifecycle');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-t', name: 'worker' });
+
+    addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a', repo: 'app' });
+    addTask(r, 'worker', { workItem: 'gh:2', branch: 'feature/b', repo: 'app' });
+    assertEq(readRecord(r, 'worker').tasks.length, 2, 'two tasks recorded');
+
+    // Re-recording the same work item must update, not duplicate — /start-work
+    // is not guaranteed to run exactly once per task.
+    const again = addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a-v2', repo: 'app' });
+    assert(again.updated === true, 're-adding reports an update');
+    assertEq(readRecord(r, 'worker').tasks.length, 2, 'no duplicate created');
+    assertEq(
+      readRecord(r, 'worker').tasks.find((t) => t.workItem === 'gh:1').branch,
+      'feature/a-v2',
+      'branch updated in place',
+    );
+
+    // The same issue against two repos is a legitimate multi-repo task.
+    addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a-v2', repo: 'api' });
+    assertEq(readRecord(r, 'worker').tasks.length, 3, 'same issue in a second repo is a separate task');
+
+    const rm = removeTask(r, 'worker', { workItem: 'gh:1', repo: 'app' });
+    assertEq(rm.removed, 1, 'one task removed');
+    assertEq(readRecord(r, 'worker').tasks.length, 2, 'only the matching repo removed');
+    assert(
+      readRecord(r, 'worker').tasks.some((t) => t.workItem === 'gh:1' && t.repo === 'api'),
+      'the other repo\'s task survives',
+    );
+
+    assertEq(removeTask(r, 'worker', { workItem: 'nope' }).removed, 0, 'removing an absent task is a no-op');
+  } finally { clean(r); }
+}
+
+console.log('# scope declaration');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-s', name: 'scoped' });
+    setScope(r, 'scoped', { epic: 'engine', labels: ['llm-quality'], paths: ['src/metrics/**'] });
+    const rec = readRecord(r, 'scoped');
+    assertEq(rec.scope.epic, 'engine', 'epic recorded');
+    assertEq(rec.scope.labels, ['llm-quality'], 'labels recorded');
+    assertEq(rec.scope.paths, ['src/metrics/**'], 'paths recorded');
+  } finally { clean(r); }
+}
+
+console.log('# task ops refuse to invent a record');
+{
+  const r = root();
+  try {
+    throws(() => addTask(r, 'ghost', { workItem: 'gh:1', branch: 'b' }), 'addTask on a missing record throws');
+    throws(() => removeTask(r, 'ghost', { workItem: 'gh:1' }), 'removeTask on a missing record throws');
+    reconcile(r, { sessionId: 'x', name: 'real' });
+    throws(() => addTask(r, 'real', { workItem: 'gh:1' }), 'addTask requires a branch');
+    throws(() => addTask(r, 'real', { branch: 'b' }), 'addTask requires a workItem');
+  } finally { clean(r); }
+}
+
 console.log('# parseArgs validation');
 {
   throws(() => parseArgs(['node', 's']), 'a mode is required');
   throws(() => parseArgs(['node', 's', '--reconcile']), '--reconcile needs session-id and name');
   throws(() => parseArgs(['node', 's', '--bogus']), 'unknown flag rejected');
+  throws(() => parseArgs(['node', 's', '--add-task', '--chat', 'c']), '--add-task needs work-item and branch');
+  throws(() => parseArgs(['node', 's', '--remove-task']), '--remove-task needs chat and work-item');
   const ok = parseArgs(['node', 's', '--root', '/tmp/x', '--reconcile', '--session-id', 'i', '--name', 'n']);
   assertEq([ok.root, ok.mode, ok.sessionId, ok.name], ['/tmp/x', 'reconcile', 'i', 'n'], 'valid args parse');
 }

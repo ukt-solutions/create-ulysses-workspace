@@ -165,8 +165,51 @@ function readSessionRegistry(homeDir = homedir()) {
   return out;
 }
 
+
+// A task is a tracker issue plus a branch plus the repo it lands in. It is
+// created on demand and disappears when it merges — nothing about it is
+// durable except the issue and the commits, so the record holds only the
+// pointer, never a copy of the issue.
+//
+// Identity is workItem + repo: the same issue can legitimately be open against
+// two repos in a multi-repo task, and re-recording the same one must update
+// rather than duplicate. /start-work is not always run exactly once.
+function addTask(root, chatName, { workItem, branch, repo = null } = {}) {
+  if (!workItem) throw new Error('addTask: workItem is required');
+  if (!branch) throw new Error('addTask: branch is required');
+  const rec = readRecord(root, chatName);
+  if (!rec) throw new Error(`addTask: no chat record for "${chatName}"`);
+  const i = rec.tasks.findIndex((t) => t.workItem === workItem && (t.repo ?? null) === repo);
+  const task = { workItem, branch, repo };
+  if (i >= 0) rec.tasks[i] = task;
+  else rec.tasks.push(task);
+  writeRecord(root, rec);
+  return { record: rec, updated: i >= 0 };
+}
+
+function removeTask(root, chatName, { workItem, repo = null } = {}) {
+  if (!workItem) throw new Error('removeTask: workItem is required');
+  const rec = readRecord(root, chatName);
+  if (!rec) throw new Error(`removeTask: no chat record for "${chatName}"`);
+  const before = rec.tasks.length;
+  rec.tasks = rec.tasks.filter((t) => !(t.workItem === workItem && (t.repo ?? null) === repo));
+  writeRecord(root, rec);
+  return { record: rec, removed: before - rec.tasks.length };
+}
+
+// Scope is what a chat declares it owns. The Aug 26 coordination burst had
+// sessions declaring this by hand in chat messages; recording it makes it
+// answerable without asking.
+function setScope(root, chatName, { epic = null, labels = [], paths = [] } = {}) {
+  const rec = readRecord(root, chatName);
+  if (!rec) throw new Error(`setScope: no chat record for "${chatName}"`);
+  rec.scope = { epic, labels, paths };
+  writeRecord(root, rec);
+  return rec;
+}
+
 function parseArgs(argv) {
-  const args = { root: '.', mode: null, chat: null, sessionId: null, name: null };
+  const args = { root: '.', mode: null, chat: null, sessionId: null, name: null, workItem: null, branch: null, repo: null };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
@@ -174,6 +217,12 @@ function parseArgs(argv) {
     if (a === '--list') { args.mode = 'list'; continue; }
     if (a === '--read') { args.mode = 'read'; args.chat = rest[++i]; continue; }
     if (a === '--reconcile') { args.mode = 'reconcile'; continue; }
+    if (a === '--add-task') { args.mode = 'add-task'; continue; }
+    if (a === '--remove-task') { args.mode = 'remove-task'; continue; }
+    if (a === '--chat') { args.chat = rest[++i]; continue; }
+    if (a === '--work-item') { args.workItem = rest[++i]; continue; }
+    if (a === '--branch') { args.branch = rest[++i]; continue; }
+    if (a === '--repo') { args.repo = rest[++i]; continue; }
     if (a === '--session-id') { args.sessionId = rest[++i]; continue; }
     if (a === '--name') { args.name = rest[++i]; continue; }
     throw new Error(`unknown argument: ${a}`);
@@ -181,6 +230,12 @@ function parseArgs(argv) {
   if (!args.mode) throw new Error('one of --list, --read <chat>, --reconcile is required');
   if (args.mode === 'reconcile' && (!args.sessionId || !args.name)) {
     throw new Error('--reconcile requires --session-id and --name');
+  }
+  if (args.mode === 'add-task' && (!args.chat || !args.workItem || !args.branch)) {
+    throw new Error('--add-task requires --chat, --work-item and --branch');
+  }
+  if (args.mode === 'remove-task' && (!args.chat || !args.workItem)) {
+    throw new Error('--remove-task requires --chat and --work-item');
   }
   return args;
 }
@@ -190,7 +245,11 @@ function main() {
   let out;
   if (args.mode === 'list') out = listRecords(args.root);
   else if (args.mode === 'read') out = readRecord(args.root, args.chat);
-  else out = reconcile(args.root, { sessionId: args.sessionId, name: args.name });
+  else if (args.mode === 'add-task') {
+    out = addTask(args.root, args.chat, { workItem: args.workItem, branch: args.branch, repo: args.repo });
+  } else if (args.mode === 'remove-task') {
+    out = removeTask(args.root, args.chat, { workItem: args.workItem, repo: args.repo });
+  } else out = reconcile(args.root, { sessionId: args.sessionId, name: args.name });
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
 }
 
@@ -205,5 +264,6 @@ if (isMainModule(import.meta.url)) {
 
 export {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
-  listRecords, reconcile, parseArgs, readSessionRegistry, CHATS_DIR,
+  listRecords, reconcile, parseArgs, readSessionRegistry,
+  addTask, removeTask, setScope, CHATS_DIR,
 };
