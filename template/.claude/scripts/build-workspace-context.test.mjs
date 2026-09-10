@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   buildSharedIndex,
   renderSharedIndex,
@@ -406,16 +407,16 @@ console.log('# renderSharedIndex output');
     { rel: 'shared/locked/a.md', isLocked: true, description: 'A.' },
     { rel: 'shared/b.md', isLocked: false, description: 'B.' },
   ];
-  const out = renderSharedIndex(entries, '2026-04-27T00:00:00Z');
+  const out = renderSharedIndex(entries);
   assert(out.includes('## Canonical (in CLAUDE.md context verbatim)'), 'has canonical heading');
   assert(out.includes('## Shared'), 'has shared heading');
   assert(out.includes('- [shared/locked/a.md](shared/locked/a.md) — A.'), 'locked entry rendered');
   assert(out.includes('- [shared/b.md](shared/b.md) — B.'), 'shared entry rendered');
-  assert(out.includes('generated: 2026-04-27T00:00:00Z'), 'frontmatter has generated timestamp');
+  assert(!/^generated:/m.test(out), 'frontmatter carries no generated timestamp (gh:132)');
 }
 
 {
-  const out = renderSharedIndex([], '2026-04-27T00:00:00Z');
+  const out = renderSharedIndex([]);
   assert(out.includes('_(no shared workspace-context files yet)_'), 'empty state rendered');
 }
 
@@ -482,7 +483,7 @@ console.log('# renderCanonical output');
     { name: 'naming', content: 'Use kebab-case.' },
     { name: 'status', content: 'Beta.' },
   ];
-  const out = renderCanonical(resolvedFromOldShape(items), NULL_SELECTION, '2026-04-27T00:00:00Z');
+  const out = renderCanonical(resolvedFromOldShape(items), NULL_SELECTION);
   assert(out.includes('## naming'), 'section header from name');
   assert(out.includes('## status'), 'second section header');
   assert(out.includes('Use kebab-case.'), 'body included');
@@ -492,7 +493,7 @@ console.log('# renderCanonical output');
 }
 
 {
-  const out = renderCanonical([], NULL_SELECTION, '2026-04-27T00:00:00Z');
+  const out = renderCanonical([], NULL_SELECTION);
   assert(out.includes('_(no canonical entries yet'), 'empty state rendered');
 }
 
@@ -577,7 +578,7 @@ console.log('# renderTeamMemberIndex output');
 }
 
 {
-  const out = renderTeamMemberIndex('alice', [], '2026-04-27T00:00:00Z');
+  const out = renderTeamMemberIndex('alice', []);
   assert(out.includes('_(no personal context files yet)_'), 'empty state rendered');
 }
 
@@ -624,7 +625,7 @@ description: Note.
 body
 `,
   );
-  const out = regenerateAll(root, '2026-04-27T00:00:00Z');
+  const out = regenerateAll(root);
   assertEq(out.length, 3, '3 artifacts: index, canonical, alice/index');
   assertEq(out[0].label, 'index.md', 'index first');
   assertEq(out[1].label, 'canonical.md', 'canonical second');
@@ -635,8 +636,79 @@ body
 {
   // missing workspace-context root → no artifacts (no crash)
   const root = mkdtempSync(join(tmpdir(), 'wc-bare-'));
-  const out = regenerateAll(root, '2026-04-27T00:00:00Z');
+  const out = regenerateAll(root);
   assertEq(out, [], 'missing wcRoot yields empty plan');
+  cleanup(root);
+}
+
+
+console.log('# generated artifacts are byte-identical across rebuilds (gh:132)');
+{
+  // Seven blog PRs sat unmergeable for three and a half months because every
+  // rebuild rewrote a `generated:` timestamp nothing reads. Two rebuilds over
+  // unchanged sources must now produce identical bytes, so git merges them
+  // with no conflict at all.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'a.md'),
+    '---\ndescription: A.\n---\n\nAlpha.\n',
+  );
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'b.md'),
+    '---\ndescription: B.\n---\n\nBravo.\n',
+  );
+  mkdirSync(join(root, 'workspace-context', 'team-member', 'alice'), { recursive: true });
+  writeFileSync(
+    join(root, 'workspace-context', 'team-member', 'alice', 'note.md'),
+    '---\ndescription: N.\n---\n\nNote.\n',
+  );
+
+  const first = regenerateAll(root);
+  const second = regenerateAll(root);
+  assertEq(
+    first.map((a) => a.content),
+    second.map((a) => a.content),
+    'two rebuilds over unchanged sources are byte-identical',
+  );
+  for (const a of first) {
+    assert(!/^generated:/m.test(a.content), `${a.label} carries no generated timestamp`);
+  }
+  cleanup(root);
+}
+
+
+console.log('# --check treats a gitignored artifact as regenerable, not missing (gh:132)');
+{
+  // Per-user indexes are gitignored, so on a fresh clone they are simply
+  // absent. Reporting that as "missing" would fail --check on every clone and
+  // take /maintenance and CI down with it.
+  const root = setupFixture();
+  gitInit(root);
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'a.md'),
+    '---\ndescription: A.\n---\n\nAlpha.\n',
+  );
+  mkdirSync(join(root, 'workspace-context', 'team-member', 'alice'), { recursive: true });
+  writeFileSync(
+    join(root, 'workspace-context', 'team-member', 'alice', 'note.md'),
+    '---\ndescription: N.\n---\n\nNote.\n',
+  );
+  writeFileSync(join(root, '.gitignore'), 'workspace-context/team-member/*/index.md\n');
+
+  const res = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('./build-workspace-context.mjs', import.meta.url)), '--check', '--root', root],
+    { encoding: 'utf-8' },
+  );
+  const payload = JSON.parse(res.stdout);
+  assert(
+    !payload.missing.includes('team-member/alice/index.md'),
+    'gitignored per-user index must not be reported missing',
+  );
+  assert(
+    (payload.regenerable || []).includes('team-member/alice/index.md'),
+    'gitignored per-user index is reported as regenerable',
+  );
   cleanup(root);
 }
 
@@ -1025,14 +1097,14 @@ console.log('# renderCanonical with budget');
     trimmedFiles: [],
     stubbedFiles: [],
   };
-  const out = renderCanonical(resolved, sel, '2026-04-28T00:00:00Z');
+  const out = renderCanonical(resolved, sel);
   assert(out.includes('budget: 40960'), 'frontmatter has budget');
   assert(out.includes('status: ok'), 'frontmatter has status');
   assert(out.includes('Budget: 40960 bytes (body); current: 12 bytes; status: ok (full).'), 'header blockquote present');
   assert(out.includes('## a'), 'item rendered');
 
   // Disabled budget: no budget frontmatter, no blockquote.
-  const out2 = renderCanonical(resolved, NULL_SELECTION, '2026-04-28T00:00:00Z');
+  const out2 = renderCanonical(resolved, NULL_SELECTION);
   assert(!out2.includes('budget:'), 'no budget frontmatter when disabled');
   assert(!out2.includes('Budget:'), 'no header blockquote when disabled');
 
@@ -1044,7 +1116,7 @@ console.log('# renderCanonical with budget');
     trimmedFiles: ['x', 'y'],
     stubbedFiles: [],
   };
-  const out3 = renderCanonical(resolved, sel3, '2026-04-28T00:00:00Z');
+  const out3 = renderCanonical(resolved, sel3);
   assert(out3.includes('2 reference files trimmed'), 'trimmed summary count');
 
   // Over-budget summary.
@@ -1056,7 +1128,7 @@ console.log('# renderCanonical with budget');
     trimmedFiles: [],
     stubbedFiles: ['z'],
   };
-  const out4 = renderCanonical(resolved, sel4, '2026-04-28T00:00:00Z');
+  const out4 = renderCanonical(resolved, sel4);
   assert(out4.includes('over budget by 100 bytes'), 'over-budget summary');
 }
 
@@ -1109,7 +1181,7 @@ Short body.
     JSON.stringify({ workspace: { canonicalBudgetBytes: 1500 } }),
   );
 
-  const artifacts = regenerateAll(root, '2026-04-28T00:00:00Z');
+  const artifacts = regenerateAll(root);
   const canonicalArt = artifacts.find((a) => a.label === 'canonical.md');
   assert(canonicalArt, 'canonical artifact present');
   const sel = canonicalArt.selection;
