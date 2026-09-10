@@ -16,6 +16,7 @@ import {
   sessionFolderPath,
   timeAgo,
 } from './_utils.mjs';
+import { reconcile, readSessionRegistry } from '../scripts/chat-record.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
 const input = await readStdin();
@@ -33,6 +34,30 @@ if (!config) {
 }
 
 lines.push(`Workspace: ${config.workspace?.name || 'unnamed'}`);
+
+// Keep this chat's record in step with its identity (gh:132). The record is
+// keyed on sessionId and filed under the chat name, so a rename moves the file
+// and its drawer rather than orphaning them.
+//
+// No live set is passed, deliberately: the registry lists running processes,
+// not chats that exist, so a chat the operator merely closed is
+// indistinguishable from one that is gone. Pruning here would delete the scope
+// and open tasks of every chat not currently open.
+if (chatId) {
+  try {
+    const registry = readSessionRegistry();
+    const me = registry.find((r) => r.sessionId === chatId);
+    if (me && me.name) {
+      const res = reconcile(root, { sessionId: chatId, name: me.name });
+      if (res.renamed) {
+        lines.push(`Chat renamed: ${res.renamed.from} -> ${res.renamed.to} (record and drawer moved)`);
+      }
+    }
+  } catch {
+    // The chat record is a convenience, not a precondition for a session.
+    // A failure here must never stop Claude from starting.
+  }
+}
 
 // If we're inside a workspace worktree, its .claude/.active-session.json
 // tells us which session this is.

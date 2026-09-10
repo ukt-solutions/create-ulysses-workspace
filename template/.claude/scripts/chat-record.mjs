@@ -26,6 +26,7 @@ import {
   readdirSync, renameSync, rmSync, realpathSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 function isMainModule(metaUrl) {
@@ -142,6 +143,28 @@ function reconcile(root, { sessionId, name, liveSessionIds = null } = {}) {
   return result;
 }
 
+
+// Claude Code's session registry: one file per running process, carrying both
+// the stable sessionId and the current, renameable name.
+//
+// Note what this is NOT: a list of chats that exist. It holds only processes
+// running right now, so a chat the operator closed looks exactly like one that
+// never existed. That is why reconcile() will not prune from it unless a caller
+// explicitly says to.
+function readSessionRegistry(homeDir = homedir()) {
+  const dir = join(homeDir, '.claude', 'sessions');
+  if (!existsSync(dir)) return [];
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const rec = JSON.parse(readFileSync(join(dir, name), 'utf-8'));
+      if (rec && rec.sessionId) out.push(rec);
+    } catch { /* a half-written registry file is not our problem to fix */ }
+  }
+  return out;
+}
+
 function parseArgs(argv) {
   const args = { root: '.', mode: null, chat: null, sessionId: null, name: null };
   const rest = argv.slice(2);
@@ -182,5 +205,5 @@ if (isMainModule(import.meta.url)) {
 
 export {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
-  listRecords, reconcile, parseArgs, CHATS_DIR,
+  listRecords, reconcile, parseArgs, readSessionRegistry, CHATS_DIR,
 };
