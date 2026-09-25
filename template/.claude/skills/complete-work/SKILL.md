@@ -542,7 +542,7 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 
 ## Task completion (session model v2)
 
-Reached from Step 1 when detection says `model: task`. The state is the branch, the chat record's task entries, and the linked issue — there is no session folder and no `session.md`. This chat runs at the workspace root (the launcher), so every input comes from the detect result, never from cwd:
+Reached from Step 1 when detection says `model: task`. The state is the branch, the chat record's task entries, and the linked issue — there is no session folder and no `session.md`. This chat normally runs at the workspace root (the launcher) but may be running inside one of the worktrees; either way, every input comes from the detect result, never from cwd. Run `cd "{launcher-root}"` first — steps 2–6 and every relative path in them are anchored there:
 
 - `{chat}` — the `Chat record:` line injected by the SessionStart hook (the same value Step 1 passed as `--chat`)
 - `{tasks}` — the detect result's task entries from the chat record, each carrying `{workItem}`, `{branch}`, `{repo}`. When detection came from cwd alone (`source: 'worktree'`, no chat record entry — e.g. a no-tracker task) there are no task entries: take `{repo}` and `{branch}` from the detect result itself and treat `{workItem}` as absent
@@ -555,44 +555,81 @@ If several tasks are open, ask the user which one to complete — group by branc
 
 1. **Rebase each task worktree onto `origin/{defaultBranch}`** (`git -C "{worktree}" fetch origin`, then `git -C "{worktree}" rebase "origin/{defaultBranch}"`). Freshness first: the PR in step 4 must describe the branch as it will merge. If conflicts arise, STOP and present them — do not auto-resolve.
 
-2. **Route durable thinking.** List anything in the chat drawer `workspace-scratchpad/chats/{chat}/` and ask which items to `/promote` into `workspace-context/`. The drawer is per-chat, so it survives task teardown — but it is machine-local and backed up nowhere, and this review, with the work fresh in mind, is the moment to decide what graduates. Items left behind are not lost, only unreviewed.
+2. **Route durable thinking.** List anything in the chat drawer `{launcher-root}/workspace-scratchpad/chats/{chat}/` and ask which items to `/promote` into `workspace-context/`. The drawer is per-chat, so it survives task teardown — but it is machine-local and backed up nowhere, and this review, with the work fresh in mind, is the moment to decide what graduates. Items left behind are not lost, only unreviewed.
 
 3. **Release notes: not supported on this path yet.** If `workspace.publishes` is `true` in `workspace.json`, STOP and tell the user: release-note synthesis writes into a workspace-repo branch, and the task model has no workspace-repo worktree — complete this work under the session model (`workspace.sessionModel: "session"`) instead, or write the notes manually in a workspace-repo branch. If `workspace.publishes` is not set, skip and say it was skipped.
 
-4. **Push and open one PR per repo, through the forge adapter** — never `gh pr` directly. The chat runs at the launcher, where a bare `createForge()` resolves the workspace repo and the launcher's branch, so the forge is constructed per repo and aimed at that worktree's own origin:
+4. **Check each origin, push, then open one PR per repo through the forge adapter** — never `gh pr` directly. In that order: the origin decides whether this path can proceed at all (nothing is pushed to a repo this path cannot finish), and the forge is constructed per repo so it aims at the worktree's own remote, never the launcher's.
+
+   ```bash
+   git -C "{worktree}" remote get-url origin   # → parse {owner}/{name} FIRST
+   ```
+
+   If the URL does not parse into `{owner}/{name}` (a local/bare remote) or is a forge the adapter does not support, STOP before pushing anything: the task path supports forge-hosted repos only in this stage — complete that repo under the session model.
 
    ```bash
    git -C "{worktree}" push -u origin "{branch}"
-   git -C "{worktree}" remote get-url origin   # → parse {owner}/{name} from this URL
    ```
 
    If the push is rejected as non-fast-forward — the branch already existed on origin and step 1 rebased it — ask the user before retrying with `git -C "{worktree}" push --force-with-lease`. Never force without asking.
 
-   If a repo's origin does not parse into `{owner}/{name}` (a local/bare remote) or is a forge the adapter does not support, STOP: the task path supports forge-hosted repos only in this stage — complete that repo under the session model.
+   If `workspace.forge` is `false` in `workspace.json`, STOP here: forge operations are disabled in this workspace — the push above is done, the PR is opened by hand.
 
    ```javascript
-   import { createForge } from './.claude/scripts/forges/interface.mjs';
+   import { createForge } from '{launcher-root}/.claude/scripts/forges/interface.mjs';
+   import { createTracker } from '{launcher-root}/.claude/scripts/trackers/interface.mjs';
    import { readFileSync } from 'node:fs';
-   const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+   const ws = JSON.parse(readFileSync('{launcher-root}/workspace.json', 'utf-8'));
+
    // Constructed per repo, so the adapter never resolves the launcher's own remote.
    const forge = createForge({ ...ws.workspace?.forge, repo: '{owner}/{name}' });
-   const pr = await forge.prCreate({
-     title: `${type}: ${description}`,
-     body: prBody,
-     head: '{branch}',
-     base: '{defaultBranch}',
-   });
+
+   // PR title: the linked issue's title — tracker.getIssue(workItem).title —
+   // or, with no workItem, the subject of the branch's first commit beyond
+   // the base: git log "origin/{defaultBranch}..HEAD" --reverse --format=%s
+   // (run in "{worktree}").
+   const title = workItem
+     ? (await createTracker(ws.workspace.tracker).getIssue(workItem)).title
+     : firstCommitSubject;
+
+   // PR body: one line per commit from
+   // git -C "{worktree}" log "origin/{defaultBranch}..HEAD" --oneline,
+   // then a blank line and `Closes {workItem}` when a workItem exists.
+   const pr = await forge.prCreate({ title, body, head: '{branch}', base: '{defaultBranch}' });
    ```
 
-5. **Merge, then close the linked issue.** Merge through the same per-repo forge (merge must precede close — an issue closed before its PR merges points at work that never landed):
+5. **Ask before merging, then merge, then close the linked issue.** Present a summary per repo and ask once:
+
+   ```
+   Task complete:
+
+   PROJECT: {owner}/{name}
+     PR: {pr.url}
+     Branch: {branch} → {defaultBranch}
+     Commits: {n}   # git -C "{worktree}" rev-list --count "origin/{defaultBranch}..{branch}"
+
+   Merge all? [Y/n]
+   ```
+
+   On "n", stop: the PRs stay open and the worktrees, branches, and record entries stay in place — say so.
+
+   On "y", merge each PR through the same per-repo forge — merge must precede close, because an issue closed before its PR merges points at work that never landed:
 
    ```javascript
    await forge.prMerge({ id: pr.id, strategy: 'squash', deleteBranch: true });
    ```
 
-   Then close the linked issue with the same `createTracker(ws.workspace.tracker)` + `tracker.closeIssue(workItem, { comment })` call Step 11 uses — only if a `{workItem}` exists. Without one (no tracker, or the task was never recorded), skip the close and say so.
+   Then close the linked issue — only if a `{workItem}` exists — with a one-line comment naming the merged PR URL(s):
 
-6. **Tear down: worktree first, then the record entry**, per repo of the task:
+   ```javascript
+   const tracker = createTracker(ws.workspace.tracker);
+   const comment = `Merged: ${prUrls.join(' ')}`; // prUrls = the .url of each PR merged above
+   await tracker.closeIssue(workItem, { comment });
+   ```
+
+   Without a `{workItem}` (no tracker, or the task was never recorded), skip the close and say so.
+
+6. **Tear down only what merged — worktree first, then the record entry**, and only for a repo whose PR merged in step 5. If a repo's push, PR, or merge failed, or the user declined the merge, leave that repo's worktree, branch, and record entry exactly in place and say so: `--delete-branch` would otherwise `branch -D` commits that exist nowhere but the local worktree.
 
    ```bash
    node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --remove --repo "{repo}" --branch "{branch}" --delete-branch

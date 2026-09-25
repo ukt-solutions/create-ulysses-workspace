@@ -46,7 +46,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
 
    Remember `workItem: {issue.id}`.
 
-2. **Pick repo(s)** — the same numbered multi-select as Blank step 7 (e.g. `1,3` or `all`), defaulting to the primary repo: the first entry under `repos` in `workspace.json`.
+2. **Pick repo(s)** — the same numbered multi-select as Blank step 7 (e.g. `1,3` or `all`), defaulting to the repo marked `"primary": true` under `repos` in `workspace.json`, falling back to the first entry when none is marked.
 
 3. **Propose the branch** — `{prefix}/{slug}` with the prefix from type (`feature/`, `bugfix/`, `chore/`), per the branch-naming step in Flow: Blank.
 
@@ -62,7 +62,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
    ```
    `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, say so and skip recording rather than guessing a name.
 
-6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. For a single-repo task, mention that Claude Code's native EnterWorktree on that path adds its isolation enforcement; multi-repo tasks reach their worktrees by path.
+6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. Work continues from this chat by path; if the user prefers, they can start a Claude Code session directly in that worktree directory.
 
 ## Flow: No Parameter
 

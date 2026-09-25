@@ -182,11 +182,12 @@ function createTaskWorktree(root, { repo, branch, base = null, gitFn = spawnSync
     return { repo, branch, path, created: false };
   }
 
-  // Best-effort refresh before choosing anything from origin: a fetch that
-  // fails (offline, or hung past its 10 s ceiling — same budget as the
-  // session-start hook) must not block work, and a prune clears records of
-  // worktree directories deleted out from under us.
-  run(gitFn, repoDir, ['fetch', 'origin'], { timeout: 10000 }); // status deliberately ignored
+  // Best-effort refresh before choosing anything from origin — deliberately
+  // NOT via run(): a hung remote makes spawnSync return an ETIMEDOUT error
+  // object, and run() throws on any error, which would turn "merely slow"
+  // into a hard failure. The 10 s ceiling matches the session-start hook's
+  // fetch budget; a failed or timed-out fetch just means a staler base.
+  gitFn('git', ['-C', repoDir, 'fetch', 'origin'], { encoding: 'utf8', timeout: 10000 });
   run(gitFn, repoDir, ['worktree', 'prune']);
 
   // The base is a starting point, not a freshness guarantee: it is

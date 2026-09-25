@@ -7,7 +7,7 @@
 // config is isolated (no global/system file) and the identity pinned in
 // the env, so the suite behaves the same on any machine.
 
-import { execSync, execFileSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, realpathSync,
 } from 'node:fs';
@@ -155,6 +155,23 @@ console.log('# a remote-only branch resumes tracked from origin');
     assertEq(git(again.path, 'log -1 --format=%s').trim(), 'remote work', 'landed on the remote commit');
     assertEq(git(app, 'rev-parse --abbrev-ref "feature/remote@{u}"').trim(), 'origin/feature/remote', 'upstream tracks origin');
   } finally { clean(root); clean(bare); }
+}
+
+console.log('# a hung origin fetch does not fail create');
+{
+  const { root } = makeRoot();
+  try {
+    // spawnSync with a timeout returns an error object (ETIMEDOUT) rather
+    // than a status; create must treat that as "offline", not as a failure.
+    const hungFetchGitFn = (cmd, args, opts) => (
+      args.includes('fetch')
+        ? { status: null, error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }) }
+        : spawnSync(cmd, args, { encoding: 'utf8', ...opts })
+    );
+    const res = createTaskWorktree(root, { repo: 'app', branch: 'feature/hang', gitFn: hungFetchGitFn });
+    assert(res.created === true, 'create succeeds despite the hung fetch');
+    assertEq(git(res.path, 'rev-parse --abbrev-ref HEAD').trim(), 'feature/hang', 'worktree is on the branch');
+  } finally { clean(root); }
 }
 
 console.log('# idempotent re-create');
