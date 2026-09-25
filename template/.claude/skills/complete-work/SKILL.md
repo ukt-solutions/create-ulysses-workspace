@@ -576,8 +576,10 @@ If several tasks are open, ask the user which one to complete — group by branc
    If `workspace.forge` is `false` in `workspace.json`, STOP here: forge operations are disabled in this workspace — the push above is done, the PR is opened by hand.
 
    ```javascript
-   import { createForge } from '{launcher-root}/.claude/scripts/forges/interface.mjs';
-   import { createTracker } from '{launcher-root}/.claude/scripts/trackers/interface.mjs';
+   // Run from {launcher-root} (see above). Imports stay relative: an absolute
+   // path is not a valid ESM specifier on Windows.
+   import { createForge } from './.claude/scripts/forges/interface.mjs';
+   import { createTracker } from './.claude/scripts/trackers/interface.mjs';
    import { readFileSync } from 'node:fs';
    const ws = JSON.parse(readFileSync('{launcher-root}/workspace.json', 'utf-8'));
 
