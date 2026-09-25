@@ -13,7 +13,7 @@ import {
   cpSync, mkdtempSync, mkdirSync, symlinkSync, rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isTaskWorktreeWrite } from './repo-write-detection.mjs';
 
@@ -65,7 +65,14 @@ const CLAUDE_DIR = resolve(HERE, '..');
 
 function makeFixture() {
   const fx = mkdtempSync(join(tmpdir(), 'rwd-fx-'));
-  cpSync(CLAUDE_DIR, join(fx, '.claude'), { recursive: true });
+  // Leave machine-local state behind: copied from inside a session worktree,
+  // .active-session.json would make the fixture look like a session and
+  // route the hook down the session branch instead of the launcher checks.
+  const LOCAL = new Set(['.active-session.json', 'settings.local.json']);
+  cpSync(CLAUDE_DIR, join(fx, '.claude'), {
+    recursive: true,
+    filter: (src) => !LOCAL.has(basename(src)),
+  });
   return fx;
 }
 
