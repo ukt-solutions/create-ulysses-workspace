@@ -11,6 +11,14 @@ Finalize the active work session. Handles all project repos (code changes, relea
 
 ### Step 1: Detect context
 
+First detect which lifecycle the current directory is under:
+
+```bash
+node .claude/scripts/task-worktree.mjs --root {workspace-root} --detect
+```
+
+`model: task` → this is task-model work: jump to **Task completion (session model v2)** below. `model: none` → "No active work session. Nothing to complete." `model: session` → continue with this flow.
+
 Read the active-session pointer from `.claude/.active-session.json` in the current worktree.
 If no active session: "No active work session. Nothing to complete."
 
@@ -528,6 +536,29 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 - **Stash for later** — create a user-scoped handoff describing what was done, stash the changes
 - **Hand off to someone** — create a team-visible handoff at root workspace-context/ for another member to pick up
 - **Revert** — undo the changes (with confirmation)
+
+## Task completion (session model v2)
+
+When Step 1 detects `model: task`, the work lives in task worktrees at `repos/{repo}/.claude/worktrees/{slug}/` and the state is the branch, the chat record entry, and the linked issue — there is no session folder and no `session.md`. The steps run in this order because each one consumes something a later step still needs.
+
+1. **Rebase each task worktree onto `origin/{defaultBranch}`** (`git fetch origin`, then `git rebase origin/{defaultBranch}`). Freshness first: the notes in step 3 and the PR in step 4 must describe the branch as it will merge. If conflicts arise, STOP and present them — do not auto-resolve.
+
+2. **Route durable thinking before the branch goes away.** List anything in the chat drawer `workspace-scratchpad/chats/{chat}/` and ask which items to `/promote` into `workspace-context/`. The drawer is machine-local and regenerable — once the task is torn down in step 6 it no longer backs anything, so promotion decisions happen here or never.
+
+3. **Release notes only if `workspace.publishes` is `true`** in `workspace.json`. If it is, follow the Step 5–6 synthesis for this branch's commits (`git log origin/{defaultBranch}..HEAD --oneline` in each worktree) and write the branch notes under `{releaseNotesDir}/unreleased/{repo}/`. If not, skip — and say it was skipped so the silence is explained.
+
+4. **Push and open the PR through the forge adapter** — the same `createForge(ws.workspace?.forge)` and `forge.prCreate({ title, body })` calls Step 10a uses; never `gh pr` directly.
+
+5. **Merge, then close the linked issue.** Merge via the same adapter (`forge.prMerge({ id, strategy: 'squash', deleteBranch: true })`), then close the issue with the same `createTracker(ws.workspace.tracker)` + `tracker.closeIssue(workItem, { comment })` call Step 11 uses. Merge must precede close — an issue closed before its PR merges points at work that never landed.
+
+6. **Tear down, record before worktree**, for each repo the task touched:
+   ```bash
+   node .claude/scripts/chat-record.mjs --root . --remove-task --chat {chat} --work-item {workItem} --repo {repo}
+   node .claude/scripts/task-worktree.mjs --root . --remove --repo {repo} --branch {branch}
+   ```
+   Dropping the record entry first means a failure midway leaves the work intact in its worktree, not a record pointing at work that is already gone. `--remove` refuses uncommitted changes by design; never pass `--force` without asking the user.
+
+The release-branch publish sub-steps (10a.1–10a.3) are out of scope for the task path in this stage.
 
 ## Notes
 - Branch release notes live in the WORKSPACE repo at `{releaseNotesDir}/unreleased/{repo-name}/` (resolved from `workspace.json` → `workspace.releaseNotesDir`, default `workspace-context/release-notes`) — never in project repos. Project repos only ever see code commits and (at release time) `CHANGELOG.md` entries written by `/release`.

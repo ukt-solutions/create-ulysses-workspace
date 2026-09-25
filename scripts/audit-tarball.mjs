@@ -40,20 +40,22 @@ const TEXT_FILENAMES = new Set(['LICENSE', '_gitignore']);
 
 const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 
-// Hard size ceiling. Current tarball is ~172 kB after the context-footprint
-// and workspace-diagnostics scripts landed; 185 kB leaves headroom for the
-// next bit of growth. Trips loudly if something like docs/ or node_modules/
-// gets pulled in by accident.
+// Hard size ceiling. Current tarball is ~188 kB after the task-model
+// scripts landed; 190 kB leaves headroom for the next bit of growth. Trips
+// loudly if something like docs/ or node_modules/ gets pulled in by
+// accident.
 //
 // Bump history: 150 kB initial → 155 kB after BP-10's session-end reflection
 // added ~750 bytes → 170 kB after the forges/ adapter family added ~13 kB of
 // adapter code + ~15 kB of tests → 185 kB after context-footprint.mjs and
-// workspace-diagnostics.mjs added ~59 kB, of which ~26 kB is test code.
+// workspace-diagnostics.mjs added ~59 kB, of which ~26 kB is test code →
+// 190 kB after the task-model scripts (gh:132 stage 2): task-worktree.mjs
+// plus its real-git test suite, ~4 kB combined.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 185 * 1024;
+const SIZE_LIMIT_BYTES = 190 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -201,6 +203,10 @@ function checkRequiredFiles(files) {
     // session model (gh:132). Without it the new lifecycle has nowhere to
     // record scope, concerns, or open tasks.
     'template/.claude/scripts/chat-record.mjs',
+    // Task worktrees are the task lifecycle's on-disk half (gh:132 stage 2).
+    // Without this script /start-work cannot create them and /complete-work
+    // cannot tell the two lifecycles apart.
+    'template/.claude/scripts/task-worktree.mjs',
     'LICENSE',
   ];
   const present = new Set(files.map((f) => f.path));

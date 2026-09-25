@@ -5,6 +5,8 @@ description: Begin or resume a work session. Creates a self-contained work-sessi
 
 # Start Work
 
+Two lifecycles share this skill. `workspace.sessionModel` in `workspace.json` selects for new work: `"task"` routes new work to **Flow: Task** (session model v2 — no session folder, no `session.md`); absent or `"session"` keeps the existing flows below, unchanged. Resuming an existing `work-sessions/` session always uses the existing Resume flow regardless of the setting.
+
 Begin or resume a persistent work session. Each session lives in its own `work-sessions/{name}/` folder containing one workspace worktree, nested project worktrees, and a unified `session.md` tracker. Sessions can run in parallel from separate terminals.
 
 ## Parameters
@@ -12,6 +14,51 @@ Begin or resume a persistent work session. Each session lives in its own `work-s
 - `/start-work blank` — start new work from scratch
 - `/start-work handoff` — list shared context to resume from
 - `/start-work all` — list active sessions across all users (for shared debugging or multi-user workspaces)
+
+## Flow: Task (session model v2)
+
+New work as a task: one tracker issue, one branch, one worktree per repo the work touches. This flow creates no `work-sessions/` folder, no `session.md`, and seeds no task list — the issue, the branch, and the chat record are the entire state.
+
+1. **Identify or create the tracker issue and claim it** — the same adapter calls as Flow: Blank steps 2–6:
+
+   ```javascript
+   import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+   import { readFileSync } from 'node:fs';
+   const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+   const tracker = createTracker(ws.workspace.tracker);
+   const assigned = await tracker.listAssignedToMe();
+   const candidates = assigned.length > 0 ? assigned : await tracker.listUnassigned();
+   ```
+
+   Present the list as Flow: Blank step 4 does. When the pick came from the unassigned fallback, claim it atomically and re-fetch on `ALREADY_ASSIGNED` exactly as Blank step 5 shows; for "something new", create and self-assign per Blank step 6:
+
+   ```javascript
+   const newIssue = await tracker.createIssue({
+     title: description,
+     body: `Created at /start-work by ${user}.`,
+     labels: [type, priority],
+     milestone: milestone || null,
+   });
+   await tracker.claim(newIssue.id);
+   ```
+
+   Remember `workItem: {issue.id}`.
+
+2. **Propose the branch** — `{prefix}/{slug}` with the prefix from type (`feature/`, `bugfix/`, `chore/`), per the branch-naming step in Flow: Blank.
+
+3. **Create one worktree per repo the work touches:**
+   ```bash
+   node .claude/scripts/task-worktree.mjs --root . --create --repo {repo} --branch {branch}
+   ```
+   The worktree lands at `repos/{repo}/.claude/worktrees/{slug}/` — Claude Code's native worktree location — based on `origin/{defaultBranch}` when that ref exists.
+
+4. **Record the task on this chat's record:**
+   ```bash
+   node .claude/scripts/chat-record.mjs --root . --add-task --chat {chat} --work-item {workItem} --branch {branch} --repo {repo}
+   ```
+   `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, say so and skip recording rather than guessing a name.
+
+5. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. For a single-repo task, mention that Claude Code's native EnterWorktree on that path adds its isolation enforcement; multi-repo tasks reach their worktrees by path.
 
 ## Flow: No Parameter
 

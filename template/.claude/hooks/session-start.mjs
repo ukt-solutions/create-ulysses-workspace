@@ -47,12 +47,16 @@ if (chatId) {
   try {
     const registry = readSessionRegistry();
     const me = registry.find((r) => r.sessionId === chatId);
-    if (me && me.name) {
-      const res = reconcile(root, { sessionId: chatId, name: me.name });
-      if (res.renamed) {
-        lines.push(`Chat renamed: ${res.renamed.from} -> ${res.renamed.to} (record and drawer moved)`);
-      }
+    // An unnamed chat still gets a record, keyed by its id — the name can
+    // arrive later with a rename, and reconcile moves the record then.
+    const name = me?.name || chatId;
+    const res = reconcile(root, { sessionId: chatId, name });
+    if (res.renamed) {
+      lines.push(`Chat renamed: ${res.renamed.from} -> ${res.renamed.to} (record and drawer moved)`);
     }
+    // Name the record so a skill can find its own chat's state without
+    // guessing (gh:132) — /start-work's task flow keys off this line.
+    lines.push(`Chat record: ${name}`);
   } catch {
     // The chat record is a convenience, not a precondition for a session.
     // A failure here must never stop Claude from starting.
