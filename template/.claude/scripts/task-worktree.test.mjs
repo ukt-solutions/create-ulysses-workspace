@@ -277,7 +277,23 @@ console.log('# deleteBranch removes the local branch after the worktree');
     createTaskWorktree(root, { repo: 'app', branch: 'feature/bye' });
     const res = removeTaskWorktree(root, { repo: 'app', branch: 'feature/bye', deleteBranch: true });
     assert(res.removed === true, 'worktree removed');
+    assert(res.branchDeleted === true, 'branch deletion reported');
     assert(!gitOk(app, 'show-ref --verify --quiet refs/heads/feature/bye'), 'local branch deleted');
+  } finally { clean(root); }
+}
+
+console.log('# a retry after a hand-deleted worktree still honors deleteBranch');
+{
+  const { root, app } = makeRoot();
+  try {
+    createTaskWorktree(root, { repo: 'app', branch: 'feature/leak' });
+    rmSync(taskWorktreePath(root, 'app', 'feature/leak'), { recursive: true, force: true });
+    const res = removeTaskWorktree(root, { repo: 'app', branch: 'feature/leak', deleteBranch: true });
+    assert(res.removed === false, 'no worktree to remove');
+    assert(res.branchDeleted === true, 'but the branch is deleted — no leak');
+    assert(!gitOk(app, 'show-ref --verify --quiet refs/heads/feature/leak'), 'branch ref gone');
+    const again = removeTaskWorktree(root, { repo: 'app', branch: 'feature/leak', deleteBranch: true });
+    assertEq(again.branchDeleted, false, 'an empty retry reports branchDeleted: false without throwing');
   } finally { clean(root); }
 }
 

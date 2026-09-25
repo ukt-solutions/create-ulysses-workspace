@@ -19,9 +19,9 @@ If no pointer is present, run work-model detection — this covers the task mode
 node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --detect --chat "{chat}"
 ```
 
-- `{launcher-root}` is the main workspace checkout: the parent directory of `git rev-parse --path-format=absolute --git-common-dir`.
+- `{launcher-root}` is the absolute path on the `Workspace root:` line the SessionStart hook injects. If that line is absent, derive it from git: run `git rev-parse --git-common-dir` (when it prints a relative path, resolve it against the cwd) and take its parent directory. That derivation lands on the source clone `…/repos/{repo}` when run from inside a task worktree — there the launcher is two levels up.
 - `{chat}` is the name from the `Chat record:` line the SessionStart hook injects. If that line is absent, omit `--chat` — detection then relies on cwd alone.
-- `model: session` → continue with this flow (read the session tracker as below).
+- `model: session` → continue with this flow (read the session tracker as below), taking `{session-name}` from the detect result's `sessionName`.
 - `model: task` → go to **Task completion (session model v2)**. The result's `tasks` come from the chat record; if several are open, ask the user which one to complete — group by branch, a multi-repo task is several entries sharing a branch.
 - `model: none` → "No active work session. Nothing to complete."
 
@@ -136,7 +136,7 @@ The `repo:` frontmatter field is what `/release` uses to know which project repo
 After all repos are processed, commit once on the workspace branch:
 ```bash
 cd "work-sessions/{session-name}/workspace"
-git add {releaseNotesDir}/unreleased/
+git add "{releaseNotesDir}/unreleased/"
 git commit -m "docs: add release notes for {branch}"
 ```
 
@@ -358,7 +358,7 @@ version_tag="${branch#release/}"   # e.g. "v0.15.0-beta.0"
 
 # For each project repo with a package.json containing a version field:
 for repo in {project-repos-with-package-json}; do
-  cd repos/{repo}
+  cd "repos/{repo}"
 
   # Verify package.json version matches the tag.
   pkg_version=$(node -p "require('./package.json').version")
@@ -472,15 +472,15 @@ cd "repos/{repo}" && git checkout "{repo-branch}" && git pull origin "{repo-bran
 # Workspace repo — same pattern from the workspace worktree
 cd "work-sessions/{session-name}/workspace"
 git push origin HEAD:main
-git push origin --delete {branch}
-cd {main-workspace-root} && git pull origin main
+git push origin --delete "{branch}"
+cd "{main-workspace-root}" && git pull origin main
 ```
 
 If the fast-forward push fails because the remote's default branch has moved ahead, STOP and present the divergence — the user decides whether to rebase and retry or handle it another way. Do not auto-resolve.
 
 For repos with no remote at all (user chose "keep local"): skip push entirely. The branch lives only in the source clone after cleanup merges it:
 ```bash
-cd repos/{repo} && git merge --ff-only "{branch}"
+cd "repos/{repo}" && git merge --ff-only "{branch}"
 ```
 
 ### Step 11: Close the linked issue on the tracker
@@ -545,8 +545,9 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 Reached from Step 1 when detection says `model: task`. The state is the branch, the chat record's task entries, and the linked issue — there is no session folder and no `session.md`. This chat runs at the workspace root (the launcher), so every input comes from the detect result, never from cwd:
 
 - `{chat}` — the `Chat record:` line injected by the SessionStart hook (the same value Step 1 passed as `--chat`)
-- `{tasks}` — the detect result's task entries from the chat record, each carrying `{workItem}`, `{branch}`, `{repo}`
+- `{tasks}` — the detect result's task entries from the chat record, each carrying `{workItem}`, `{branch}`, `{repo}`. When detection came from cwd alone (`source: 'worktree'`, no chat record entry — e.g. a no-tracker task) there are no task entries: take `{repo}` and `{branch}` from the detect result itself and treat `{workItem}` as absent
 - `{worktree}` — `{launcher-root}/repos/{repo}/.claude/worktrees/{slug}`, where `{slug}` is the branch with `/` replaced by `-`
+- `{defaultBranch}` — `workspace.json` → `repos.{repo}.branch`, default `main`
 
 If several tasks are open, ask the user which one to complete — group by branch; a multi-repo task is several entries sharing a branch — and complete one branch at a time.
 
@@ -558,34 +559,38 @@ If several tasks are open, ask the user which one to complete — group by branc
 
 3. **Release notes: not supported on this path yet.** If `workspace.publishes` is `true` in `workspace.json`, STOP and tell the user: release-note synthesis writes into a workspace-repo branch, and the task model has no workspace-repo worktree — complete this work under the session model (`workspace.sessionModel: "session"`) instead, or write the notes manually in a workspace-repo branch. If `workspace.publishes` is not set, skip and say it was skipped.
 
-4. **Push and open one PR per repo, through the forge adapter** — never `gh pr` directly. The chat runs at the launcher, where `createForge()` alone would target the workspace repo and the launcher's branch, so every PR is aimed explicitly at the repo the worktree belongs to:
+4. **Push and open one PR per repo, through the forge adapter** — never `gh pr` directly. The chat runs at the launcher, where a bare `createForge()` resolves the workspace repo and the launcher's branch, so the forge is constructed per repo and aimed at that worktree's own origin:
 
    ```bash
    git -C "{worktree}" push -u origin "{branch}"
    git -C "{worktree}" remote get-url origin   # → parse {owner}/{name} from this URL
    ```
 
+   If the push is rejected as non-fast-forward — the branch already existed on origin and step 1 rebased it — ask the user before retrying with `git -C "{worktree}" push --force-with-lease`. Never force without asking.
+
+   If a repo's origin does not parse into `{owner}/{name}` (a local/bare remote) or is a forge the adapter does not support, STOP: the task path supports forge-hosted repos only in this stage — complete that repo under the session model.
+
    ```javascript
    import { createForge } from './.claude/scripts/forges/interface.mjs';
    import { readFileSync } from 'node:fs';
    const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
-   const forge = createForge(ws.workspace?.forge);
+   // Constructed per repo, so the adapter never resolves the launcher's own remote.
+   const forge = createForge({ ...ws.workspace?.forge, repo: '{owner}/{name}' });
    const pr = await forge.prCreate({
      title: `${type}: ${description}`,
      body: prBody,
-     repo: '{owner}/{name}',   // parsed from remote get-url origin in that worktree
      head: '{branch}',
      base: '{defaultBranch}',
    });
    ```
 
-5. **Merge, then close the linked issue.** Merge through the same adapter with the same `repo` (merge must precede close — an issue closed before its PR merges points at work that never landed):
+5. **Merge, then close the linked issue.** Merge through the same per-repo forge (merge must precede close — an issue closed before its PR merges points at work that never landed):
 
    ```javascript
-   await forge.prMerge({ repo: '{owner}/{name}', id: pr.id, strategy: 'squash', deleteBranch: true });
+   await forge.prMerge({ id: pr.id, strategy: 'squash', deleteBranch: true });
    ```
 
-   Then close the issue with the same `createTracker(ws.workspace.tracker)` + `tracker.closeIssue(workItem, { comment })` call Step 11 uses.
+   Then close the linked issue with the same `createTracker(ws.workspace.tracker)` + `tracker.closeIssue(workItem, { comment })` call Step 11 uses — only if a `{workItem}` exists. Without one (no tracker, or the task was never recorded), skip the close and say so.
 
 6. **Tear down: worktree first, then the record entry**, per repo of the task:
 
@@ -594,7 +599,7 @@ If several tasks are open, ask the user which one to complete — group by branc
    node "{launcher-root}/.claude/scripts/chat-record.mjs" --root "{launcher-root}" --remove-task --chat "{chat}" --work-item "{workItem}" --repo "{repo}"
    ```
 
-   Worktree first because a refusal (dirty worktree, slug collision) then leaves both the worktree and its record entry in place — nothing orphaned, safe to retry. `--delete-branch` also removes the local branch: the forge's `deleteBranch` removed only the remote one, so post-merge teardown passes it to clean the local clone; this is the only step that ever passes it. Never pass `--force` without asking the user.
+   Skip the `--remove-task` line when there is no record entry (no `{workItem}`). Worktree first because a refusal (dirty worktree, slug collision) then leaves both the worktree and its record entry in place — nothing orphaned, safe to retry. `--delete-branch` also removes the local branch: the forge's `deleteBranch` removed only the remote one, so post-merge teardown passes it to clean the local clone; this is the only step that ever passes it. Never pass `--force` without asking the user.
 
 The release-branch publish sub-steps (10a.1–10a.3) are out of scope for the task path in this stage.
 

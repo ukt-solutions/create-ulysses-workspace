@@ -17,11 +17,11 @@ Begin or resume a persistent work session. Each session lives in its own `work-s
 
 ## Flow: Task (session model v2)
 
-New work as a task: one tracker issue, one branch, one worktree per repo the work touches. This flow creates no `work-sessions/` folder, no `session.md`, and seeds no task list — the issue, the branch, and the chat record are the entire state. The chat stays at the workspace root; the worktrees are reached by path.
+New work as a task: one tracker issue, one branch, one worktree per repo the work touches. This flow creates no `work-sessions/` folder, no `session.md`, and seeds no task list — the issue, the branch, and the chat record are the entire state. The chat stays at the workspace root — `{launcher-root}`, the absolute path on the `Workspace root:` line the SessionStart hook injects (at /start-work time you are normally already there); the worktrees are reached by path.
 
-If `workspace.tracker` is absent, say tracking is off and skip step 1 entirely — then note that the task cannot be recorded on the chat record (recording requires a `workItem`) and continue with the branch, worktree, and close-out steps below.
+If `workspace.tracker` is absent, say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. Tell the user plainly what that costs: without a tracker there is no `workItem`, the task is not recorded on the chat record, and `/complete-work` cannot find it from the launcher. It is completed either by running `/complete-work` from inside the worktree (cwd detection) or by opening the PR by hand.
 
-1. **Identify or create the tracker issue and claim it** — the same adapter calls as Flow: Blank steps 2–6:
+1. **Identify or create the tracker issue and claim it** — the same adapter calls as Flow: Blank steps 3–6:
 
    ```javascript
    import { createTracker } from './.claude/scripts/trackers/interface.mjs';
@@ -46,21 +46,23 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 entirely �
 
    Remember `workItem: {issue.id}`.
 
-2. **Propose the branch** — `{prefix}/{slug}` with the prefix from type (`feature/`, `bugfix/`, `chore/`), per the branch-naming step in Flow: Blank.
+2. **Pick repo(s)** — the same numbered multi-select as Blank step 7 (e.g. `1,3` or `all`), defaulting to the primary repo: the first entry under `repos` in `workspace.json`.
 
-3. **Create one worktree per repo the work touches:**
+3. **Propose the branch** — `{prefix}/{slug}` with the prefix from type (`feature/`, `bugfix/`, `chore/`), per the branch-naming step in Flow: Blank.
+
+4. **Create one worktree per repo the work touches:**
    ```bash
    node .claude/scripts/task-worktree.mjs --root . --create --repo "{repo}" --branch "{branch}"
    ```
    The script fetches origin best-effort (offline is fine) before choosing the base. The worktree lands at `repos/{repo}/.claude/worktrees/{slug}/` — Claude Code's native worktree location — based on `origin/{defaultBranch}` when that ref exists, and never tracking it.
 
-4. **Record the task on this chat's record** (only when a `workItem` exists — see the no-tracker note above):
+5. **Record the task on this chat's record** (only when a `workItem` exists — see the no-tracker note above):
    ```bash
    node .claude/scripts/chat-record.mjs --root . --add-task --chat "{chat}" --work-item "{workItem}" --branch "{branch}" --repo "{repo}"
    ```
    `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, say so and skip recording rather than guessing a name.
 
-5. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. For a single-repo task, mention that Claude Code's native EnterWorktree on that path adds its isolation enforcement; multi-repo tasks reach their worktrees by path.
+6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. For a single-repo task, mention that Claude Code's native EnterWorktree on that path adds its isolation enforcement; multi-repo tasks reach their worktrees by path.
 
 ## Flow: No Parameter
 

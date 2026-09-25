@@ -62,6 +62,11 @@ if (chatId) {
     // The chat record is a convenience, not a precondition for a session.
     // A failure here must never stop Claude from starting.
   }
+
+  // Name the workspace root so skills can address it without deriving it
+  // from git internals — which resolve to the source clone, not the
+  // launcher, when a chat runs from inside a task worktree (gh:132).
+  lines.push(`Workspace root: ${root}`);
 }
 
 // If we're inside a workspace worktree, its .claude/.active-session.json

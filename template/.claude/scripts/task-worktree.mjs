@@ -64,8 +64,8 @@ function sessionsDirFor(root) {
 
 // gitFn is injectable so callers (or tests) can observe or fake git; the
 // default is spawnSync itself, called as (command, args, options).
-function run(gitFn, cwd, args) {
-  const res = gitFn('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+function run(gitFn, cwd, args, opts = {}) {
+  const res = gitFn('git', ['-C', cwd, ...args], { encoding: 'utf8', ...opts });
   if (res.error) throw new Error(`git: ${res.error.message}`);
   return res;
 }
@@ -122,6 +122,14 @@ function listWorktrees(gitFn, repoDir) {
   return out;
 }
 
+// A branch checked out in any worktree cannot be deleted; report rather
+// than error, so the partial-teardown retry can return a clean false.
+function deleteLocalBranch(gitFn, repoDir, branch) {
+  if (!refExists(gitFn, repoDir, `refs/heads/${branch}`)) return false;
+  if (listWorktrees(gitFn, repoDir).some((w) => w.branch === `refs/heads/${branch}`)) return false;
+  return run(gitFn, repoDir, ['branch', '-D', branch]).status === 0;
+}
+
 // A worktree inside the source clone's working tree would show up as
 // untracked noise on every git status. The clone's local exclude file is
 // the place to hide it: machine-local, so nothing is imposed on the shared
@@ -175,9 +183,10 @@ function createTaskWorktree(root, { repo, branch, base = null, gitFn = spawnSync
   }
 
   // Best-effort refresh before choosing anything from origin: a fetch that
-  // fails (offline) must not block work, and a prune clears records of
+  // fails (offline, or hung past its 10 s ceiling — same budget as the
+  // session-start hook) must not block work, and a prune clears records of
   // worktree directories deleted out from under us.
-  run(gitFn, repoDir, ['fetch', 'origin']); // status deliberately ignored
+  run(gitFn, repoDir, ['fetch', 'origin'], { timeout: 10000 }); // status deliberately ignored
   run(gitFn, repoDir, ['worktree', 'prune']);
 
   // The base is a starting point, not a freshness guarantee: it is
@@ -219,7 +228,16 @@ function removeTaskWorktree(root, { repo, branch, force = false, deleteBranch = 
   const rootDir = resolve(root);
   const repoDir = join(rootDir, 'repos', repo);
   const path = taskWorktreePath(rootDir, repo, branch);
-  if (!existsSync(path)) return { repo, branch, path, removed: false };
+  if (!existsSync(path)) {
+    // A hand-deleted worktree directory leaves a stale record — prune it so
+    // a later create is clean, and still honor deleteBranch: a retry after
+    // a partial teardown must not leak the branch.
+    run(gitFn, repoDir, ['worktree', 'prune']);
+    if (deleteBranch) {
+      return { repo, branch, path, removed: false, branchDeleted: deleteLocalBranch(gitFn, repoDir, branch) };
+    }
+    return { repo, branch, path, removed: false };
+  }
 
   // The slug is lossy — feature/y and feature-y share one. Resolve through
   // git's registry so the worktree at this path must really be {branch}'s;
@@ -242,13 +260,12 @@ function removeTaskWorktree(root, { repo, branch, force = false, deleteBranch = 
     throw new Error(`removeTaskWorktree: git worktree remove failed: ${String(res.stderr || '').trim()}`);
   }
   run(gitFn, repoDir, ['worktree', 'prune']);
-  if (deleteBranch) {
-    const del = run(gitFn, repoDir, ['branch', '-D', branch]);
-    if (del.status !== 0) {
-      throw new Error(`removeTaskWorktree: git branch -D failed: ${String(del.stderr || '').trim()}`);
-    }
+  if (deleteBranch && !deleteLocalBranch(gitFn, repoDir, branch)) {
+    throw new Error(`removeTaskWorktree: git branch -D failed for ${branch}`);
   }
-  return { repo, branch, path, removed: true };
+  return deleteBranch
+    ? { repo, branch, path, removed: true, branchDeleted: true }
+    : { repo, branch, path, removed: true };
 }
 
 // relative() output is "inside" when it is a plain descent — not '', '..',
