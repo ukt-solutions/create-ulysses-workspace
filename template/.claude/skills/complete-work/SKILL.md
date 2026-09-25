@@ -11,16 +11,19 @@ Finalize the active work session. Handles all project repos (code changes, relea
 
 ### Step 1: Detect context
 
-First detect which lifecycle the current directory is under:
+Read the active-session pointer from `.claude/.active-session.json` in the current worktree. If it is present, this chat runs inside a session worktree: continue with this flow unchanged.
+
+If no pointer is present, run work-model detection — this covers the task model, whose chats run at the workspace root (the launcher), not inside a worktree:
 
 ```bash
-node .claude/scripts/task-worktree.mjs --root {workspace-root} --detect
+node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --detect --chat "{chat}"
 ```
 
-`model: task` → this is task-model work: jump to **Task completion (session model v2)** below. `model: none` → "No active work session. Nothing to complete." `model: session` → continue with this flow.
-
-Read the active-session pointer from `.claude/.active-session.json` in the current worktree.
-If no active session: "No active work session. Nothing to complete."
+- `{launcher-root}` is the main workspace checkout: the parent directory of `git rev-parse --path-format=absolute --git-common-dir`.
+- `{chat}` is the name from the `Chat record:` line the SessionStart hook injects. If that line is absent, omit `--chat` — detection then relies on cwd alone.
+- `model: session` → continue with this flow (read the session tracker as below).
+- `model: task` → go to **Task completion (session model v2)**. The result's `tasks` come from the chat record; if several are open, ask the user which one to complete — group by branch, a multi-repo task is several entries sharing a branch.
+- `model: none` → "No active work session. Nothing to complete."
 
 Read the full session tracker at `work-sessions/{session-name}/workspace/session.md` (use the frontmatter helper in `.claude/lib/session-frontmatter.mjs` — scripts and hooks use `_utils.mjs` which wraps it).
 
@@ -36,9 +39,9 @@ Determine paths:
 For each repo in the tracker's `repos:`:
 ```bash
 # {repo-branch} = repos.{repo}.branch from workspace.json
-cd work-sessions/{session-name}/workspace/repos/{repo}
+cd "work-sessions/{session-name}/workspace/repos/{repo}"
 git fetch origin
-git rebase origin/{repo-branch}
+git rebase "origin/{repo-branch}"
 ```
 If conflicts arise in any repo, STOP and present them to the user. Do not auto-resolve.
 
@@ -52,7 +55,7 @@ If the user declines or there's nothing to capture, skip.
 Before reading sources for synthesis, flush current `TodoWrite` state to `## Tasks` per the `task-list-mirroring` rule. This ensures the synthesis in Step 6 sees the final state:
 
 ```bash
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 echo '<JSON-of-current-todos>' | node .claude/scripts/sync-tasks.mjs --write session.md
 ```
 
@@ -81,8 +84,8 @@ Formally read ALL sources before synthesizing — do not write release notes fro
 4. **Branch commit logs** (per repo):
    ```bash
    # For each repo in the tracker's repos list:
-   cd work-sessions/{session-name}/workspace/repos/{repo}
-   git log origin/{repo-branch}..HEAD --oneline
+   cd "work-sessions/{session-name}/workspace/repos/{repo}"
+   git log "origin/{repo-branch}..HEAD" --oneline
    ```
 
 ### Step 6: Synthesize release notes
@@ -92,10 +95,10 @@ Branch notes are written to the **workspace** repo, not the project repo. They a
 For each repo in the tracker's `repos:` list that has commits beyond the base branch:
 
 ```bash
-cd work-sessions/{session-name}/workspace/repos/{repo}
+cd "work-sessions/{session-name}/workspace/repos/{repo}"
 COMMIT_ID=$(git rev-parse --short HEAD)
 cd ../..  # back to the workspace worktree
-mkdir -p {releaseNotesDir}/unreleased/{repo-name}
+mkdir -p "{releaseNotesDir}/unreleased/{repo-name}"
 ```
 
 **File 1: `{releaseNotesDir}/unreleased/{repo-name}/branch-release-notes-{COMMIT_ID}.md`** (relative to the workspace worktree)
@@ -132,7 +135,7 @@ The `repo:` frontmatter field is what `/release` uses to know which project repo
 
 After all repos are processed, commit once on the workspace branch:
 ```bash
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 git add {releaseNotesDir}/unreleased/
 git commit -m "docs: add release notes for {branch}"
 ```
@@ -152,7 +155,7 @@ The entire `work-sessions/{session-name}/` folder is removed by the cleanup scri
 **Goal sub-branch pre-flight (only when a `goal-*.md` artifact is present).** A `/goal`-driven session can produce per-phase sub-branches for code phases (any phase declaring `integration.strategy: sub-branch` in the goal artifact). Those sub-branches must be merged into the session branch before completion, or their work is lost when the session folder is torn down. Before stripping anything, check each repo in the session — the workspace worktree itself and every `repos/{repo}/` project worktree:
 
 ```bash
-cd work-sessions/{session-name}/workspace/repos/{repo}   # repeat for the workspace worktree too
+cd "work-sessions/{session-name}/workspace/repos/{repo}"   # repeat for the workspace worktree too
 session_branch=$(git rev-parse --abbrev-ref HEAD)
 for sub in $(git branch --format='%(refname:short)' --list "${session_branch}-*"); do
   git merge-base --is-ancestor "$sub" "$session_branch" || echo "UNMERGED: $sub"
@@ -168,7 +171,7 @@ delete the artifacts. Stop and report before stripping.
 The right message depends on where the session's work actually lives, so check first:
 
 ```bash
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 git log origin/main..HEAD --oneline -- . ':(exclude)session.md' ':(exclude)design-*.md' \
   ':(exclude)plan-*.md' ':(exclude)goal-*.md' ':(exclude)research-*.md' ':(exclude)crossref-*.md'
 ```
@@ -198,7 +201,7 @@ unconditionally. Keeping artifacts on the branch does not preserve them — it c
 Session content lives at the top of the workspace worktree on the session branch. Once the pre-flight passes, remove these files from the branch before the final push so main's top level stays free of session artifacts:
 
 ```bash
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 git rm -f session.md 2>/dev/null || true
 git rm -f design-*.md 2>/dev/null || true
 git rm -f plan-*.md 2>/dev/null || true
@@ -219,7 +222,7 @@ This commit persists in the branch's history. On squash merge or rebase merge, b
 For each repo in the tracker's `repos:` plus the workspace repo, determine the remote type. This drives how Step 9 and Step 10 push and merge.
 
 ```bash
-cd work-sessions/{session-name}/workspace/repos/{repo}
+cd "work-sessions/{session-name}/workspace/repos/{repo}"
 git remote get-url origin 2>&1
 ```
 
@@ -236,28 +239,28 @@ Classify the result:
 
 ```bash
 # Each project repo with a GitHub remote
-cd work-sessions/{session-name}/workspace/repos/{repo}
-git push -u origin {branch}
+cd "work-sessions/{session-name}/workspace/repos/{repo}"
+git push -u origin "{branch}"
 
 # Workspace repo — from the workspace worktree
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 git add .
 git commit -m "chore: finalize context for {session-name}"
-git push -u origin {branch}
+git push -u origin "{branch}"
 ```
 
 #### Step 9b: Local/bare remotes
 
 ```bash
 # Push the feature branch to the bare remote so it exists there
-cd work-sessions/{session-name}/workspace/repos/{repo}
-git push -u origin {branch}
+cd "work-sessions/{session-name}/workspace/repos/{repo}"
+git push -u origin "{branch}"
 
 # Workspace repo — same commit + push pattern
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 git add .
 git commit -m "chore: finalize context for {session-name}"
-git push -u origin {branch}
+git push -u origin "{branch}"
 ```
 
 The push shape is the same as 9a — what differs is the merge mechanics in Step 10b.
@@ -329,8 +332,8 @@ Then pull all repos to their default branches (still plain git):
 
 ```bash
 # For each repo in the tracker's repos:
-cd repos/{repo} && git pull origin {repo-branch}
-cd {main-workspace-root} && git pull origin main
+cd "repos/{repo}" && git pull origin "{repo-branch}"
+cd "{main-workspace-root}" && git pull origin main
 ```
 
 **Step 10a.1: Tag the merge commit (release sessions only, project repos with `package.json`)**
@@ -461,13 +464,13 @@ Merge all locally? [Y/n]
 If yes — fast-forward merge on each remote, delete the feature branch, pull the source clone:
 ```bash
 # For each repo in the tracker's repos with a local/bare remote:
-cd work-sessions/{session-name}/workspace/repos/{repo}
-git push origin HEAD:{repo-branch}        # fast-forward the default branch
-git push origin --delete {branch}         # remove the feature branch from the remote
-cd repos/{repo} && git checkout {repo-branch} && git pull origin {repo-branch}
+cd "work-sessions/{session-name}/workspace/repos/{repo}"
+git push origin "HEAD:{repo-branch}"        # fast-forward the default branch
+git push origin --delete "{branch}"         # remove the feature branch from the remote
+cd "repos/{repo}" && git checkout "{repo-branch}" && git pull origin "{repo-branch}"
 
 # Workspace repo — same pattern from the workspace worktree
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 git push origin HEAD:main
 git push origin --delete {branch}
 cd {main-workspace-root} && git pull origin main
@@ -477,7 +480,7 @@ If the fast-forward push fails because the remote's default branch has moved ahe
 
 For repos with no remote at all (user chose "keep local"): skip push entirely. The branch lives only in the source clone after cleanup merges it:
 ```bash
-cd repos/{repo} && git merge --ff-only {branch}
+cd repos/{repo} && git merge --ff-only "{branch}"
 ```
 
 ### Step 11: Close the linked issue on the tracker
@@ -539,24 +542,59 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 
 ## Task completion (session model v2)
 
-When Step 1 detects `model: task`, the work lives in task worktrees at `repos/{repo}/.claude/worktrees/{slug}/` and the state is the branch, the chat record entry, and the linked issue — there is no session folder and no `session.md`. The steps run in this order because each one consumes something a later step still needs.
+Reached from Step 1 when detection says `model: task`. The state is the branch, the chat record's task entries, and the linked issue — there is no session folder and no `session.md`. This chat runs at the workspace root (the launcher), so every input comes from the detect result, never from cwd:
 
-1. **Rebase each task worktree onto `origin/{defaultBranch}`** (`git fetch origin`, then `git rebase origin/{defaultBranch}`). Freshness first: the notes in step 3 and the PR in step 4 must describe the branch as it will merge. If conflicts arise, STOP and present them — do not auto-resolve.
+- `{chat}` — the `Chat record:` line injected by the SessionStart hook (the same value Step 1 passed as `--chat`)
+- `{tasks}` — the detect result's task entries from the chat record, each carrying `{workItem}`, `{branch}`, `{repo}`
+- `{worktree}` — `{launcher-root}/repos/{repo}/.claude/worktrees/{slug}`, where `{slug}` is the branch with `/` replaced by `-`
 
-2. **Route durable thinking before the branch goes away.** List anything in the chat drawer `workspace-scratchpad/chats/{chat}/` and ask which items to `/promote` into `workspace-context/`. The drawer is machine-local and regenerable — once the task is torn down in step 6 it no longer backs anything, so promotion decisions happen here or never.
+If several tasks are open, ask the user which one to complete — group by branch; a multi-repo task is several entries sharing a branch — and complete one branch at a time.
 
-3. **Release notes only if `workspace.publishes` is `true`** in `workspace.json`. If it is, follow the Step 5–6 synthesis for this branch's commits (`git log origin/{defaultBranch}..HEAD --oneline` in each worktree) and write the branch notes under `{releaseNotesDir}/unreleased/{repo}/`. If not, skip — and say it was skipped so the silence is explained.
+0. **Pre-flight: the worktrees must be clean.** For each `{worktree}` of the chosen task, `git -C "{worktree}" status --porcelain` must be empty. If it is not, stop here — before the rebase — and ask the user to commit or discard: rebasing over uncommitted work silently invalidates it.
 
-4. **Push and open the PR through the forge adapter** — the same `createForge(ws.workspace?.forge)` and `forge.prCreate({ title, body })` calls Step 10a uses; never `gh pr` directly.
+1. **Rebase each task worktree onto `origin/{defaultBranch}`** (`git -C "{worktree}" fetch origin`, then `git -C "{worktree}" rebase "origin/{defaultBranch}"`). Freshness first: the PR in step 4 must describe the branch as it will merge. If conflicts arise, STOP and present them — do not auto-resolve.
 
-5. **Merge, then close the linked issue.** Merge via the same adapter (`forge.prMerge({ id, strategy: 'squash', deleteBranch: true })`), then close the issue with the same `createTracker(ws.workspace.tracker)` + `tracker.closeIssue(workItem, { comment })` call Step 11 uses. Merge must precede close — an issue closed before its PR merges points at work that never landed.
+2. **Route durable thinking.** List anything in the chat drawer `workspace-scratchpad/chats/{chat}/` and ask which items to `/promote` into `workspace-context/`. The drawer is per-chat, so it survives task teardown — but it is machine-local and backed up nowhere, and this review, with the work fresh in mind, is the moment to decide what graduates. Items left behind are not lost, only unreviewed.
 
-6. **Tear down, record before worktree**, for each repo the task touched:
+3. **Release notes: not supported on this path yet.** If `workspace.publishes` is `true` in `workspace.json`, STOP and tell the user: release-note synthesis writes into a workspace-repo branch, and the task model has no workspace-repo worktree — complete this work under the session model (`workspace.sessionModel: "session"`) instead, or write the notes manually in a workspace-repo branch. If `workspace.publishes` is not set, skip and say it was skipped.
+
+4. **Push and open one PR per repo, through the forge adapter** — never `gh pr` directly. The chat runs at the launcher, where `createForge()` alone would target the workspace repo and the launcher's branch, so every PR is aimed explicitly at the repo the worktree belongs to:
+
    ```bash
-   node .claude/scripts/chat-record.mjs --root . --remove-task --chat {chat} --work-item {workItem} --repo {repo}
-   node .claude/scripts/task-worktree.mjs --root . --remove --repo {repo} --branch {branch}
+   git -C "{worktree}" push -u origin "{branch}"
+   git -C "{worktree}" remote get-url origin   # → parse {owner}/{name} from this URL
    ```
-   Dropping the record entry first means a failure midway leaves the work intact in its worktree, not a record pointing at work that is already gone. `--remove` refuses uncommitted changes by design; never pass `--force` without asking the user.
+
+   ```javascript
+   import { createForge } from './.claude/scripts/forges/interface.mjs';
+   import { readFileSync } from 'node:fs';
+   const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+   const forge = createForge(ws.workspace?.forge);
+   const pr = await forge.prCreate({
+     title: `${type}: ${description}`,
+     body: prBody,
+     repo: '{owner}/{name}',   // parsed from remote get-url origin in that worktree
+     head: '{branch}',
+     base: '{defaultBranch}',
+   });
+   ```
+
+5. **Merge, then close the linked issue.** Merge through the same adapter with the same `repo` (merge must precede close — an issue closed before its PR merges points at work that never landed):
+
+   ```javascript
+   await forge.prMerge({ repo: '{owner}/{name}', id: pr.id, strategy: 'squash', deleteBranch: true });
+   ```
+
+   Then close the issue with the same `createTracker(ws.workspace.tracker)` + `tracker.closeIssue(workItem, { comment })` call Step 11 uses.
+
+6. **Tear down: worktree first, then the record entry**, per repo of the task:
+
+   ```bash
+   node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --remove --repo "{repo}" --branch "{branch}" --delete-branch
+   node "{launcher-root}/.claude/scripts/chat-record.mjs" --root "{launcher-root}" --remove-task --chat "{chat}" --work-item "{workItem}" --repo "{repo}"
+   ```
+
+   Worktree first because a refusal (dirty worktree, slug collision) then leaves both the worktree and its record entry in place — nothing orphaned, safe to retry. `--delete-branch` also removes the local branch: the forge's `deleteBranch` removed only the remote one, so post-merge teardown passes it to clean the local clone; this is the only step that ever passes it. Never pass `--force` without asking the user.
 
 The release-branch publish sub-steps (10a.1–10a.3) are out of scope for the task path in this stage.
 

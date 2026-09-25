@@ -16,7 +16,7 @@ import {
   sessionFolderPath,
   timeAgo,
 } from './_utils.mjs';
-import { reconcile, readSessionRegistry } from '../scripts/chat-record.mjs';
+import { reconcile, readSessionRegistry, resolveChatName } from '../scripts/chat-record.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
 const input = await readStdin();
@@ -47,9 +47,10 @@ if (chatId) {
   try {
     const registry = readSessionRegistry();
     const me = registry.find((r) => r.sessionId === chatId);
-    // An unnamed chat still gets a record, keyed by its id — the name can
-    // arrive later with a rename, and reconcile moves the record then.
-    const name = me?.name || chatId;
+    // The registry only knows names for chats it has seen. An unnamed chat
+    // keeps whatever name its record already carries rather than being
+    // relabeled with its raw UUID; only a truly new chat falls back to the id.
+    const name = resolveChatName(root, { sessionId: chatId, registryName: me?.name });
     const res = reconcile(root, { sessionId: chatId, name });
     if (res.renamed) {
       lines.push(`Chat renamed: ${res.renamed.from} -> ${res.renamed.to} (record and drawer moved)`);

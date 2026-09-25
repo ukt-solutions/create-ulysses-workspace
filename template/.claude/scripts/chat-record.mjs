@@ -165,6 +165,19 @@ function readSessionRegistry(homeDir = homedir()) {
   return out;
 }
 
+/**
+ * Decide the name a chat's record should live under. The registry's name
+ * wins when it has one; otherwise an existing record for the same
+ * sessionId keeps its own name — a chat the registry has not named yet
+ * must not have its named record relabeled with the raw UUID. A genuinely
+ * new, unnamed chat falls back to the id so a record still exists.
+ */
+function resolveChatName(root, { sessionId, registryName = null } = {}) {
+  if (registryName) return registryName;
+  const existing = listRecords(root).find((r) => r.sessionId === sessionId);
+  return existing ? existing.chat : sessionId;
+}
+
 
 // A task is a tracker issue plus a branch plus the repo it lands in. It is
 // created on demand and disappears when it merges — nothing about it is
@@ -264,6 +277,6 @@ if (isMainModule(import.meta.url)) {
 
 export {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
-  listRecords, reconcile, parseArgs, readSessionRegistry,
+  listRecords, reconcile, parseArgs, readSessionRegistry, resolveChatName,
   addTask, removeTask, setScope, CHATS_DIR,
 };

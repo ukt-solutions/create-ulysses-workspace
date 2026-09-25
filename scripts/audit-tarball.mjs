@@ -40,22 +40,24 @@ const TEXT_FILENAMES = new Set(['LICENSE', '_gitignore']);
 
 const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 
-// Hard size ceiling. Current tarball is ~188 kB after the task-model
-// scripts landed; 190 kB leaves headroom for the next bit of growth. Trips
-// loudly if something like docs/ or node_modules/ gets pulled in by
-// accident.
+// Hard size ceiling. Current tarball is ~192 kB after the round-1
+// task-model fixes (detect --chat, remote-branch resume, the
+// repo-write-detection carve-out and its test); 195 kB leaves headroom for
+// the next bit of growth. Trips loudly if something like docs/ or
+// node_modules/ gets pulled in by accident.
 //
 // Bump history: 150 kB initial → 155 kB after BP-10's session-end reflection
 // added ~750 bytes → 170 kB after the forges/ adapter family added ~13 kB of
 // adapter code + ~15 kB of tests → 185 kB after context-footprint.mjs and
 // workspace-diagnostics.mjs added ~59 kB, of which ~26 kB is test code →
-// 190 kB after the task-model scripts (gh:132 stage 2): task-worktree.mjs
-// plus its real-git test suite, ~4 kB combined.
+// 190 kB after the task-model scripts (gh:132 stage 2) → 195 kB after the
+// stage-2 review fixes grew task-worktree.mjs and its suite and added the
+// repo-write-detection test.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 190 * 1024;
+const SIZE_LIMIT_BYTES = 195 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -329,7 +331,10 @@ function checkReadmeCounts() {
     optionalRules: countDirEntries(rulesDir, (name) => name.endsWith('.md.skip')),
     hooks: countDirEntries(
       hooksDir,
-      (name) => name.endsWith('.mjs') && !name.startsWith('_'),
+      // A hook is a non-test, non-underscore .mjs: *.test.mjs files share
+      // the directory (the `_` prefix is the older convention for the same
+      // thing) and must not inflate the shipped-hook count.
+      (name) => name.endsWith('.mjs') && !name.endsWith('.test.mjs') && !name.startsWith('_'),
     ),
   };
 

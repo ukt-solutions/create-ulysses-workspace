@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
-  listRecords, reconcile, parseArgs,
+  listRecords, reconcile, parseArgs, resolveChatName,
   addTask, removeTask, setScope,
 } from './chat-record.mjs';
 
@@ -201,6 +201,18 @@ console.log('# task ops refuse to invent a record');
     reconcile(r, { sessionId: 'x', name: 'real' });
     throws(() => addTask(r, 'real', { workItem: 'gh:1' }), 'addTask requires a branch');
     throws(() => addTask(r, 'real', { branch: 'b' }), 'addTask requires a workItem');
+  } finally { clean(r); }
+}
+
+console.log('# resolveChatName: a registry without a name must not rename to the UUID');
+{
+  const r = root();
+  try {
+    writeRecord(r, emptyRecord('real-name', 'sid-9'));
+    assertEq(resolveChatName(r, { sessionId: 'sid-9', registryName: null }), 'real-name', 'existing record name beats the raw id');
+    assertEq(resolveChatName(r, { sessionId: 'sid-9', registryName: 'from-registry' }), 'from-registry', 'registry name beats everything');
+    assertEq(resolveChatName(r, { sessionId: 'sid-fresh', registryName: null }), 'sid-fresh', 'a new unnamed chat falls back to its id');
+    assertEq(resolveChatName(r, { sessionId: 'sid-fresh', registryName: 'named-anyway' }), 'named-anyway', 'a named new chat uses the name');
   } finally { clean(r); }
 }
 
