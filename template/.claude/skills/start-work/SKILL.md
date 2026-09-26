@@ -62,7 +62,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
    ```
    `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, say so and skip recording rather than guessing a name.
 
-6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. Work continues from this chat by path; if the user prefers, they can start a Claude Code session directly in that worktree directory.
+6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. Work continues from this chat by path. A chat started inside a worktree would not load the workspace's conventions or hooks (a worktree is a context boundary), so staying here is the default.
 
 ## Flow: No Parameter
 

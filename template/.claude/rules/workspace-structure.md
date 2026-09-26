@@ -1,137 +1,80 @@
 # Workspace Structure
 
-This workspace follows the claude-workspace convention. All paths are relative to the workspace root.
+All paths are relative to the workspace root. Two work lifecycles coexist, selected for new work by `workspace.sessionModel` in `workspace.json`: **task** (the forward path — one issue, one branch, one worktree per touched repo, chat at the root) and **session** (supported — a self-contained `work-sessions/{name}/` folder per effort with a workspace worktree and a `session.md` tracker).
 
 ## Directory Layout
 
-| Directory | Purpose | Tracked in git? |
-|-----------|---------|-----------------|
-| `repos/` | Source clones of project repositories (one per repo, stays on default branch) | No (gitignored, lazy) |
-| `work-sessions/` | Per-session folders — one folder per active or paused work session | No (gitignored entirely at the launcher) |
-| `work-sessions/{name}/workspace/` | Workspace worktree for this session, on the session branch | Yes — on the session branch, not on main |
-| `work-sessions/{name}/workspace/session.md` | Unified session tracker at the top of the session branch (frontmatter = machine state, body = human content) | Yes — on the session branch |
-| `work-sessions/{name}/workspace/design-*.md` | Specs for this session — consumed into release notes by /complete-work | Yes — on the session branch |
-| `work-sessions/{name}/workspace/plan-*.md` | Plans for this session — consumed into release notes by /complete-work | Yes — on the session branch |
-| `work-sessions/{name}/workspace/goal-*.md` | Goal artifacts for /goal-driven multi-phase work — consumed into release notes by /complete-work | Yes — on the session branch |
-| `work-sessions/{name}/workspace/research-*.md` | Phase-output research artifacts produced by goal-driven sessions — consumed into release notes by /complete-work | Yes — on the session branch |
-| `work-sessions/{name}/workspace/crossref-*.md` | Phase-output crossref artifacts produced by goal-driven sessions — consumed into release notes by /complete-work | Yes — on the session branch |
-| `work-sessions/{name}/workspace/repos/` | Real directory holding nested project worktrees for this session | No (gitignored) |
-| `work-sessions/{name}/workspace/repos/{repo}/` | Project worktree nested inside the workspace worktree | No (gitignored) |
-| `workspace-context/` | Team knowledge and per-user context | Yes |
-| `workspace-context/shared/` | Team-visible content — handoffs, braindumps, research, references | Yes |
-| `workspace-context/shared/locked/` | Canonical team truths — auto-concatenated into `canonical.md` and loaded into every session | Yes |
-| `workspace-context/team-member/{user}/` | Per-user working context — default destination for personal captures | Yes |
-| `workspace-context/index.md` | Auto-generated navigation catalog of `shared/` (locked first, then ephemerals) | Yes |
-| `workspace-context/canonical.md` | Auto-generated verbatim concatenation of `shared/locked/*.md` | Yes |
-| `workspace-context/team-member/{user}/index.md` | Auto-generated per-user navigation catalog | Yes |
-| `workspace-context/.indexignore` | Path prefixes to exclude from `index.md` (e.g., archived release notes) | Yes |
-| `workspace-context/release-notes/` | Per-branch release-note artifacts — `unreleased/` and `archive/` | Yes |
-| `workspace-scratchpad/` | Machine-local, regenerable workspace state — session log, hook debug output, per-chat records | No (gitignored, lazy) |
-| `CLAUDE.md` | Workspace launcher prompt — imports `canonical.md` and `index.md` | Yes |
-| `CLAUDE.local.md` | Per-user prompt — imports `team-member/{user}/index.md` | No (gitignored) |
-| `.claude/` | Claude Code configuration — rules, agents, skills, hooks, scripts, lib | Yes (except settings.local.json) |
-
-Session content (tracker, specs, plans) lives at the top of each session's workspace worktree. It is tracked on the session branch, not on main. Pushing the session branch carries durable session thinking across machines. When `/complete-work` finalizes the session, it synthesizes the content into release notes and removes the files from the branch before the final PR so main's top level stays free of session artifacts.
+| Path | Purpose | Tracked? |
+|------|---------|----------|
+| `repos/{repo}/` | Source clones (always on the default branch) | No |
+| `repos/{repo}/.claude/worktrees/{slug}/` | Task worktree for a project repo (`{slug}` = branch with `/` → `-`) | No |
+| `.claude/worktrees/{slug}/` | Task worktree for the workspace repo (`--repo .`) — Claude Code's native worktree location; the two converge | No |
+| `work-sessions/{name}/workspace/…` | Session lifecycle: workspace worktree, nested project worktrees at `workspace/repos/{repo}/`, `session.md` + artifacts (`design/plan/goal/research/crossref-*.md`) on top | Session branch |
+| `workspace-context/` | Team knowledge: `shared/` (ephemerals), `shared/locked/` (canonical truths), `team-member/{user}/` (per-user), `release-notes/` | Yes |
+| `workspace-context/index.md`, `canonical.md`, `team-member/{user}/index.md` | Auto-generated catalogs (`canonical.md` = verbatim `shared/locked/`; `.indexignore` excludes paths) — regenerate with `build-workspace-context.mjs`, never hand-edit | Yes |
+| `workspace-scratchpad/` | Machine-local, regenerable: session log, hook debug output, chat records `chats/{chat}.json`, chat drawers `chats/{chat}/` (task-lifecycle designs, plans, braindumps, research in progress) | No |
+| `CLAUDE.md`, `CLAUDE.local.md`, `.claude/` | Launcher prompt (imports `canonical.md` + `index.md`); per-user prompt; rules, agents, skills, hooks, scripts | All but `CLAUDE.local.md` and `settings.local.json` |
 
 ## Workspace-Context Levels
 
-Three layers, in increasing trust order:
-
 | Level | Path | What lives there | How it gets there |
-|-------|------|-----------------|--------------------|
-| Personal | `team-member/{user}/` | Per-user braindumps, handoffs, research notes | Default destination for `/braindump`, `/handoff`, `/aside` |
-| Shared | `shared/` (root) | Team-visible ephemerals — cross-team handoffs, post-release leftovers, references | Explicit choice via `--scope shared` or `/promote` |
-| Canonical | `shared/locked/` | Promoted truths — naming conventions, post-release discipline, project status | Promoted by `/release` (or `/promote` with explicit locked target) |
+|-------|------|------------------|-------------------|
+| Personal | `team-member/{user}/` | Per-user braindumps, handoffs, research | Default for `/braindump`, `/handoff`, `/aside` |
+| Shared | `shared/` | Team-visible ephemerals | Explicit `--scope shared` or `/promote` |
+| Canonical | `shared/locked/` | Promoted truths — conventions, discipline, status | `/release` (or `/promote`, locked target) |
 
-Canonical content is verbatim-loaded into every session via `CLAUDE.md` → `@workspace-context/canonical.md`. Personal content is loaded only for the active user via the gitignored `CLAUDE.local.md`.
-
-Inflight session state lives inside the session worktree at `work-sessions/{name}/workspace/session.md`, not in `workspace-context/`. Workspace-context is for knowledge that outlives any individual session.
+Canonical loads verbatim into every session (`CLAUDE.md` → `@workspace-context/canonical.md`); personal only for the active user (`CLAUDE.local.md`). Inflight work state (session tracker, chat drawer) never lives in `workspace-context/` — that is for knowledge that outlives any single effort.
 
 ## Dynamic context loading (hooks)
 
-Two hooks extend static `CLAUDE.md` loading with context that varies per session and per invocation:
+- **`session-start.mjs`** (`SessionStart`): injects the workspace name, a `Chat record:` line naming this chat's record, and a `Workspace root:` line with the launcher's absolute path (git-derived roots land on the source clone from inside a task worktree); with an active session pointer, also the session's name, branch, work item, and shared-context catalog.
+- **`subagent-start.mjs`** (`SubagentStart`): gives subagents the canonical truths they miss (subagents do not load `CLAUDE.md`) — locked files under `workspace.subagentInlineMaxBytes` (8192) are inlined with frontmatter stripped, larger ones become pointers, and past `workspace.subagentContextMaxBytes` (32768) the largest demote first. Gitignored and `local-only-*` files are excluded.
 
-- **`session-start.mjs`** (`SessionStart` hook): reads the active session pointer from `workspace-scratchpad/` and injects the current session's name, branch, linked work item, and shared context catalog into Claude's context. The injection is conditional — if no session is active, or if the relevant fields are absent from the session frontmatter, nothing is added. This avoids noise in non-session contexts (e.g., a quick launcher query).
-
-- **`subagent-start.mjs`** (`SubagentStart` hook): gives subagents the canonical truths they would otherwise miss, since subagents do not load `CLAUDE.md`. Files under `workspace.subagentInlineMaxBytes` (default 8192) are inlined in full with frontmatter stripped; larger files become a pointer line carrying the file's `description:` and size, for the subagent to read on demand. If the total exceeds `workspace.subagentContextMaxBytes` (default 32768), the largest inlined files demote to pointers until it fits, so short constraints survive and long reference material degrades first. Gitignored files are excluded, and `local-only-*` is excluded by name as well so the exclusion does not depend on `git` being available.
-
-Both hooks are at `.claude/hooks/session-start.mjs` and `.claude/hooks/subagent-start.mjs`. They are registered as Node.js scripts — cross-platform, no shell dependency.
+Both are Node.js scripts — cross-platform, no shell dependency.
 
 ## Spec and Plan Locations — MANDATORY OVERRIDE
 
-**Specs, plans, and goal artifacts MUST be written at the top of the active session's workspace worktree, not to `docs/superpowers/` or any other location.**
+**Specs, plans, and goal artifacts MUST be written to the current lifecycle's work area, not to `docs/superpowers/` or any other location.**
 
-- Specs: `design-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`
-- Plans: `plan-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`
-- Goals: `goal-{topic}.md` at the top of `work-sessions/{session-name}/workspace/`, with goal-native phase outputs as `research-{topic}.md` and `crossref-{topic}.md` siblings. See the `goal-driven-work` rule for when to reach for `/goal`, and the same-named skill for the schema.
+- Session: top of the session worktree — `design-{topic}.md`, `plan-{topic}.md`, `goal-{topic}.md`, plus goal-native `research-*.md`/`crossref-*.md` siblings. On the session branch; stripped before the final PR.
+- Task: the chat drawer `workspace-scratchpad/chats/{chat}/` — same artifact names. Machine-local; `/complete-work` promotes what deserves to survive into `workspace-context/`.
 
-From inside the worktree, these are plain top-level files (`design-{topic}.md`, `plan-{topic}.md`, `goal-{topic}.md`) sitting alongside `CLAUDE.md` and `workspace.json`. They are tracked on the session branch and travel with the branch on `git push`.
-
-This overrides any default paths specified by external skills (e.g., Superpowers brainstorming defaults to `docs/superpowers/specs/`). Those skills state that user preferences override their defaults — this rule IS that override. Do not create `docs/superpowers/` directories. Do not write specs, plans, or goal artifacts anywhere other than the top of the active worktree.
-
-If a spec/plan/goal already exists for the current session, version it: `design-{topic}-v2.md`, `design-{topic}-v3.md`.
-
-`/complete-work` reads specs, plans, and goal artifacts (including `research-*.md` and `crossref-*.md` phase outputs) from the worktree to synthesize release notes, then removes them in a dedicated commit before the final PR so main's tree stays pristine.
+This overrides external skills' default paths (e.g., Superpowers' `docs/superpowers/specs/`) — those skills defer to user preferences, and this rule IS that override. Never create `docs/superpowers/` directories. Version an existing artifact: `design-{topic}-v2.md`.
 
 ## File Naming Conventions
 
-- Session folders: `work-sessions/{session-name}/`
-- Workspace worktrees: `work-sessions/{session-name}/workspace/`
-- Project worktrees: `work-sessions/{session-name}/workspace/repos/{repo-name}/`
-- Session trackers: `work-sessions/{session-name}/workspace/session.md`
-- Specs: `design-{topic}.md` (top of worktree)
-- Plans: `plan-{topic}.md` (top of worktree)
-- Goals: `goal-{topic}.md` (top of worktree)
-- Goal-native research outputs: `research-{topic}.md` (top of worktree)
-- Goal-native crossref outputs: `crossref-{topic}.md` (top of worktree)
-
-For ephemeral content under `shared/` and `team-member/{user}/`, the filename prefix signals the type:
+Ephemeral files under `shared/` and `team-member/{user}/` carry a type prefix:
 
 | Skill | Filename prefix |
 |-------|-----------------|
 | `/braindump` | `braindump_{topic}.md` |
 | `/handoff` | `handoff_{topic}.md` |
-| `/aside` (full mode, dispatches researcher) | `research_{topic}.md` |
-| `/aside --quick` | `braindump_{topic}.md` (with `variant: aside` in frontmatter) |
+| `/aside` (full) / `--quick` | `research_{topic}.md` / `braindump_{topic}.md` (`variant: aside`) |
 | `/promote` | preserves source prefix |
-| `/release` | strips prefix when locking — `shared/locked/` files use bare names since location signals the type |
+| `/release` | strips the prefix when locking — `shared/locked/` uses bare names |
 
-Local-only personal drafts get an additional `local-only-` prefix (e.g., `local-only-braindump_x.md`) which keeps them gitignored until promoted.
+Local-only drafts add a `local-only-` prefix to stay gitignored until promoted.
 
 ## Rules
 
-- The workspace root stays on main — it is the launcher, not the workspace.
-- All real work happens in workspace worktrees at `work-sessions/{name}/workspace/`.
-- Session content (tracker, specs, plans) is written from inside the worktree and committed on the session branch. Writes from the launcher cannot reach files that live inside a worktree's git-path space.
-- Source clones at `repos/{repo-name}/` stay on their default branch — never checkout a feature branch there.
-- `workspace-scratchpad/` is machine-local and regenerable — losing it costs a re-derivation, not the work. It holds the session log, hook debug output, per-chat records, and temporary pointers. Not everything in it is disposable: `session-log.jsonl` is real history no other file carries.
-- Project worktrees are nested inside the workspace worktree's real `repos/` directory — no symlink.
-- Hand edits to `index.md`, `canonical.md`, or any per-user `team-member/{user}/index.md` are overwritten by `build-workspace-context.mjs`. Update source files (or their `description:` frontmatter) instead.
+- The workspace root stays on its default branch — it is the launcher, not a worktree.
+- All real work happens in worktrees — `work-sessions/{name}/workspace/` (session) or a `.claude/worktrees/{slug}/` location (task). Source clones at `repos/{repo}/` never take a feature branch.
+- Session content commits to the session branch; task work to task worktrees; drawer writes need no commit (gitignored, machine-local).
+- `workspace-scratchpad/` is machine-local and regenerable — losing it costs a re-derivation, not the work. Not all of it is disposable: `session-log.jsonl` is real history no other file carries.
+- Hand edits to auto-generated catalogs are overwritten by `build-workspace-context.mjs` — update the source files (or their `description:` frontmatter) instead.
 
 ## Per-repo commands
 
-Per-repo test, lint, and build commands belong in `repos/{repo}/CLAUDE.md` under a `## Commands` section. This scopes Claude's command invocations to the specific repo rather than triggering monorepo-wide runs that may time out or produce irrelevant output. The `/workspace-init` skill scaffolds a blank `repos/{repo}/CLAUDE.md` stub with a `## Commands` placeholder — fill it in once the repo is cloned.
+Per-repo test, lint, and build commands belong in `repos/{repo}/CLAUDE.md` under `## Commands`, scoping invocations to that repo instead of the whole monorepo. `/workspace-init` scaffolds the stub.
 
 ## Explore before editing
 
-Before modifying files in a large or unfamiliar codebase, use read-only tools to map the affected surface. The workflow: dispatch a researcher-type subagent to read, grep, and navigate the codebase; have it return a summary of the affected files, callers, and dependencies; then edit only after the map is established.
+Before editing an unfamiliar codebase, map the affected surface first — typically a `researcher.md` subagent dispatch (`disallowedTools: [Edit, Write, Bash]`) returning affected files, callers, and dependencies. Edit only after the map is established.
 
-The `researcher.md` agent enforces this pattern mechanically via `disallowedTools: [Edit, Write, Bash]` — it can read and search but cannot change anything. Use it for initial exploration, then hand the findings back to the main agent for the actual edit. This avoids partial edits that break callers, catches ripple effects before they happen, and keeps the edit surface as small as possible.
+## Launching Claude inside a worktree
 
-## Launching Claude from a project worktree
-
-Claude can be launched from any directory, and it walks up the filesystem loading every `CLAUDE.md` it finds. This means starting `claude` from `work-sessions/{name}/workspace/repos/{repo}/` loads both the per-repo conventions (from `repos/{repo}/CLAUDE.md`, if it exists) and the full workspace conventions (from the workspace `CLAUDE.md` further up the tree) — all without extra configuration.
-
-For repo-focused work — debugging a single service, reviewing a specific module, running targeted tests — launching from the project worktree gives Claude a tighter codebase context. It sees the repo's own file tree first and reaches workspace-level conventions by traversal. The session hooks still fire (they read from `workspace-scratchpad/`, which is always relative to the workspace root), and `session.md` and all session artifacts remain at the workspace worktree top.
-
-This is purely a launch-point choice; no workspace configuration changes are needed to enable it.
+A git worktree is a context boundary: `CLAUDE.md` discovery stops at the worktree's root, and gitignored content (`repos/`, `local-only-*`, `workspace-scratchpad/`) is absent from it. So a chat launched inside a project worktree — a session's `workspace/repos/{repo}/` or a task's `repos/{repo}/.claude/worktrees/{slug}/` — sees only that repo's own `CLAUDE.md`, not the workspace conventions or hooks. Keep the chat at the workspace root and reach worktrees by path; launch inside one only for deliberately isolated, repo-only work.
 
 ## Grep vs LSP
 
-Two complementary search strategies cover different parts of the navigation surface:
-
-- **Grep / Ripgrep** — searches file content as text. Fast, requires no server, and works across any file type. Use for free-text pattern search: finding a string literal, locating config values, scanning comments, searching across heterogeneous files. The downside: no language awareness — a search for `_toMs` matches comments, string literals, and variable names alike, producing false positives that require manual filtering.
-
-- **LSP tools (`mcp__lsp__*`)** — powered by a running Language Server Protocol server that has indexed the codebase. LSP understands the language's type system and scope rules, so `find-all-references` on `_toMs` returns only actual symbol usages, not textual coincidences. Go-to-definition, rename-symbol, and callers/callees are accurate even across files and module boundaries. The tradeoff: requires a running LSP MCP server configured in `.mcp.json`.
-
-The practical rule: reach for Grep first when you don't know where to look or when the pattern is not a symbol. Switch to LSP when you have a specific symbol and need precise cross-file navigation — especially before refactoring or understanding a call graph. The `researcher.md` agent lists the LSP tool among its allowed tools; activating LSP requires adding the appropriate language server to `.mcp.json` (see the MCP servers step in `/workspace-init`).
+**Grep/Ripgrep** searches content as text — fast, no server, but no language awareness, so symbol searches surface false positives. **LSP** (`mcp__lsp__*`) understands types and scope — find-all-references returns only real usages — but needs an LSP MCP server in `.mcp.json`. Grep when you don't know where to look; LSP for precise navigation of a specific symbol.

@@ -11,7 +11,7 @@ Save structured workstream state to workspace-context. Usable anytime, any numbe
 - `/handoff {name}` — create or update a named handoff
 - `/handoff` (no param) — analyze session and suggest name(s)
 
-## Session-Aware Behavior
+## Lifecycle-Aware Behavior
 
 When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
 
@@ -26,9 +26,14 @@ When called within an active work session (the active-session pointer at `.claud
   git commit -m "handoff: update {session-name} tracker"
   ```
 
-When called from the workspace root (no active session):
-- Only `local-only-*` files are writable from the root
-- Suggest starting a work session first, or use the helper with `--local-only`
+When running under the task model (the SessionStart hook injected a `Chat record:` line; `{chat}` is its name):
+
+- Default behavior: write `handoff_{topic}.md` directly into that chat's drawer at `workspace-scratchpad/chats/{chat}/` — the drawer sits outside `workspace-context/`, so `capture-context.mjs` is not involved
+- No commit for drawer writes: the drawer is gitignored and machine-local; `/complete-work` lists it and asks what to promote into `workspace-context/`
+- If the `Chat record:` line is absent, fall back to the `team-member/{user}/` destination in the flows below (with `--local-only`, since the root only allows local-only writes) and say so
+
+When called from the workspace root with neither an active session nor a chat record:
+- Suggest starting work (`/start-work`) first, or use the helper with `--local-only`
 
 The flows below apply when NOT in an active work session, or when the user explicitly asks for a standalone handoff file.
 

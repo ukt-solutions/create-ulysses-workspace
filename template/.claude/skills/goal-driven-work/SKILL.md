@@ -14,10 +14,10 @@ the work at hand. This skill covers everything after that decision.
 
 ## File layout
 
-- One `goal-{topic}.md` artifact at the top of the active worktree, alongside `session.md`. One goal per worktree.
+- One `goal-{topic}.md` artifact per effort. Session model: at the top of the session worktree, alongside `session.md`. Task model: in the chat drawer at `workspace-scratchpad/chats/{chat}/`, alongside its phase outputs. One goal per worktree or task either way.
 - The artifact's frontmatter holds machine state; its body holds the human-readable goal statement, per-phase intent, and a mandatory `## Start command` section (see "Kicking off the goal") with the literal `/goal "..."` invocation the user runs to start the loop.
 - Phase output artifacts live as siblings. `research-*.md` and `crossref-*.md` are goal-native (produced by `parallel-research` and `crossref` phase types). `design-*.md` and `plan-*.md` are pre-existing session-artifact patterns that `type: skill` phases reuse when the wrapped skill is `superpowers:brainstorming` or `superpowers:writing-plans`; they are not goal-specific.
-- The artifact is tracked on the session branch and lives there until `/complete-work` runs. It is removed from the branch before the final PR alongside other session artifacts.
+- Session model: the artifact is tracked on the session branch and lives there until `/complete-work` runs, which strips it before the final PR. Task model: the drawer is machine-local and untracked; `/complete-work` routes the artifact (promote into `workspace-context/` or discard) at completion.
 
 ## Frontmatter schema
 
@@ -122,7 +122,7 @@ This guidance is workspace-side mitigation only. The underlying friction — the
 
 ## Integration branch and per-phase sub-PRs
 
-While a `/goal`-driven session is running, the session branch (`feature/{session-name}`) acts as the goal's integration branch. Main is untouched until `/complete-work` opens the final session→main PR for human review. This is the key autonomy boundary: phase agents can merge their own work, repeatedly, throughout the goal — but only into the integration branch, never into main.
+While a `/goal`-driven effort is running, its work branch (`feature/{session-name}` for a session, the task's branch for a task) acts as the goal's integration branch. Main is untouched until `/complete-work` opens the final PR for human review. This is the key autonomy boundary: phase agents can merge their own work, repeatedly, throughout the goal — but only into the integration branch, never into main. The integration-branch and sub-branch guidance in this section applies to task branches unchanged.
 
 Two merge strategies, picked per phase:
 
@@ -257,9 +257,9 @@ When the artifact is drafted and the user has reviewed it, the agent's hand-off 
 
 ## Lifecycle integration
 
-- `/goal` runs inside an active work session. It does NOT replace `/start-work`. The session is created the normal way, the goal artifact is drafted at the worktree top (including its `## Start command` block), and the user runs that block's `/goal "..."` command to kick off the loop.
-- The goal artifact lives on the session branch and travels with `git push`. It survives across machines and `--resume`.
-- `session.md`'s `## Tasks` should mirror the phase list at coarse grain (one task per phase) so `TodoWrite` shows high-level progress. The main agent updates `## Tasks` at phase transitions via the helper specified by the `task-list-mirroring` rule, in addition to updating `goal-{topic}.md`.
+- `/goal` runs inside started work. It does NOT replace `/start-work`. Session model: the session is created the normal way and the goal artifact is drafted at the worktree top (including its `## Start command` block). Task model: the task is started the normal way and the artifact is drafted into the chat drawer. Either way the user runs the `## Start command` block's `/goal "..."` to kick off the loop.
+- Session model: the goal artifact lives on the session branch and travels with `git push`, surviving across machines and `--resume`. Task model: the drawer is machine-local — push the task branch for the code, and `/promote` the artifact if it must travel.
+- Session model: `session.md`'s `## Tasks` should mirror the phase list at coarse grain (one task per phase) so `TodoWrite` shows high-level progress; the main agent updates `## Tasks` at phase transitions via the helper specified by the `task-list-mirroring` rule, in addition to updating `goal-{topic}.md`. Task model: TodoWrite is the live mirror and there is no durable `## Tasks` — the goal artifact's own `phases:` list is the durable state.
 - `/pause-work` works without special handling. The goal-evaluator state resets on resume per the Claude Code docs; phase state is durable in the artifact.
 - `/complete-work` reads `goal-*.md`, `research-*.md`, and `crossref-*.md` for release-note synthesis and strips them from the branch before the final PR, alongside the existing `design-*.md` and `plan-*.md` handling. When a goal artifact is present, it also runs a pre-flight check that every declared sub-branch (from phases with `integration.strategy: sub-branch`) has been merged into the session branch. Unmerged sub-branches abort completion with a clear list to resolve.
 

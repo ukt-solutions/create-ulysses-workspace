@@ -80,6 +80,20 @@ function writeSession(root, sessionName, { branch, repos, status = 'active' } = 
   writeFileSync(join(dir, 'session.md'), content);
 }
 
+// A chat record in the task model's shape (gh:146), with the drawer
+// directory present too — only the .json matters to the guard.
+function writeChatRecord(root, chat, tasks) {
+  const dir = join(root, 'workspace-scratchpad', 'chats');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${chat}.json`), JSON.stringify({
+    chat,
+    sessionId: `sid-${chat}`,
+    scope: { epic: null, labels: [], paths: [] },
+    concerns: [],
+    tasks,
+  }, null, 2));
+}
+
 function fakeForge(prs) {
   return {
     async prList() { return prs; },
@@ -408,6 +422,73 @@ async function run15() {
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
+// ---------- 16-19: stale chat-record tasks (task model, gh:146) ----------
+
+async function run16() {
+  const root = makeRoot();
+  try {
+    writeWorkspaceJson(root);
+    writeChatRecord(root, 'worker', [
+      { workItem: 'gh:31', branch: 'feature/task-gone', repo: 'create-ulysses-workspace' },
+    ]);
+    const forge = fakeForge([]);
+    const result = await checkReleaseCoverage({ root, repo: 'create-ulysses-workspace', forge, isBranchMerged: allBranchesMerged() });
+    assertEq(result.staleTasks, [{ chat: 'worker', workItem: 'gh:31', branch: 'feature/task-gone' }], 'merged + uncovered task entry is reported');
+    assert(result.shouldRefuse === true, 'stale task forces refusal');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+async function run17() {
+  const root = makeRoot();
+  try {
+    writeWorkspaceJson(root);
+    // repo "." targets the workspace repo itself; "ulysses-app" is another
+    // project repo. Neither is this repo's coverage problem.
+    writeChatRecord(root, 'worker', [
+      { workItem: 'gh:32', branch: 'feature/ws-repo', repo: '.' },
+      { workItem: 'gh:33', branch: 'feature/other-repo', repo: 'ulysses-app' },
+    ]);
+    const forge = fakeForge([]);
+    const result = await checkReleaseCoverage({ root, repo: 'create-ulysses-workspace', forge, isBranchMerged: allBranchesMerged() });
+    assertEq(result.staleTasks, [], 'task entries for "." and other repos are ignored');
+    assert(result.shouldRefuse === false, 'ignored entries do not force refusal');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+async function run18() {
+  const root = makeRoot();
+  try {
+    writeWorkspaceJson(root);
+    writeChatRecord(root, 'worker', [
+      { workItem: 'gh:34', branch: 'feature/covered-task', repo: 'create-ulysses-workspace' },
+    ]);
+    writeBranchNotes(root, RELEASE_NOTES_DIR, 'create-ulysses-workspace', 'branch-release-notes-task.md', 'feature/covered-task');
+    const forge = fakeForge([]);
+    const result = await checkReleaseCoverage({ root, repo: 'create-ulysses-workspace', forge, isBranchMerged: allBranchesMerged() });
+    assertEq(result.staleTasks, [], 'a task branch with notes on hand is covered');
+    assert(result.shouldRefuse === false, 'covered task does not force refusal');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+async function run19() {
+  const root = makeRoot();
+  try {
+    writeWorkspaceJson(root);
+    writeChatRecord(root, 'busy', [
+      { workItem: 'gh:35', branch: 'feature/in-flight', repo: 'create-ulysses-workspace' },
+    ]);
+    // A corrupt record is machine-local regenerable state — skipped, not a
+    // coverage problem and not a crash.
+    const chatsDir = join(root, 'workspace-scratchpad', 'chats');
+    mkdirSync(chatsDir, { recursive: true });
+    writeFileSync(join(chatsDir, 'broken.json'), '{ not json');
+    const forge = fakeForge([]);
+    const result = await checkReleaseCoverage({ root, repo: 'create-ulysses-workspace', forge, isBranchMerged: noBranchesMerged() });
+    assertEq(result.staleTasks, [], 'unmerged task and corrupt record are not reported');
+    assert(result.shouldRefuse === false, 'neither forces refusal');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 async function main() {
   await run4();
   await run5();
@@ -420,6 +501,10 @@ async function main() {
   await run13();
   await run14();
   await run15();
+  await run16();
+  await run17();
+  await run18();
+  await run19();
 
   console.log(`${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);

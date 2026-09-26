@@ -56,6 +56,8 @@ For each repo in `workspace.json`:
 - If confirmed: `git clone {remote} repos/{name}`
 - If exists: report "repos/{name} already present"
 
+While workspace.json is open, confirm the work lifecycle. `workspace.sessionModel` selects where `/start-work` routes new work: `"task"` (one tracker issue + one branch + one worktree per touched repo; recommended for new workspaces) or `"session"` (self-contained `work-sessions/{name}/` folders; the template default — keep it for teams already mid-flight on sessions). Ask: "Which lifecycle should new work use — task (recommended for a new workspace) or session (default)?" and write the answer to `workspace.sessionModel` only if it differs from the current value. Never flip an existing non-default value silently.
+
 ### Step 3: Identify documentation sources
 
 Ask the user:
@@ -447,6 +449,6 @@ This session is done. Start a fresh Claude Code session and run /start-work to b
 - Documentation sources are first-class — always ask, always confirm access, always report failures
 - Chat history scanning uses a manifest to survive auto-compaction
 - Existing worktrees are formalized with session markers, trackers, and linked chat history
-- **Subdirectory launch:** Once initialized, `claude` can be launched from `work-sessions/{name}/workspace/repos/{repo}/` instead of the workspace root. Claude walks up the filesystem loading every `CLAUDE.md` it finds, so starting from inside a project worktree loads both the per-repo conventions and the workspace conventions automatically. This is useful for repo-focused tasks — no configuration change needed, just a different launch point.
+- **Launch point:** Launch `claude` from the workspace root. A worktree is a context boundary — `CLAUDE.md` discovery stops at its root and gitignored content is absent — so a chat started inside a project worktree (a session's `work-sessions/{name}/workspace/repos/{repo}/` or a task's `repos/{repo}/.claude/worktrees/{slug}/`) loads only that repo's own `CLAUDE.md`, without the workspace conventions or hooks. That is occasionally what you want for isolated, repo-only work; for normal work, stay at the root and reach worktrees by path.
 - **Skills are on-demand, not pre-loaded:** Skills are invoked explicitly by name (`/skill-name`) when needed; they are not loaded at session start. The `.skip` mechanism in `.claude/rules/` provides the analogous progressive-disclosure pattern for rules — a `.md.skip` file is present but inactive; rename it to `.md` to activate, rename it back to deactivate. Step 6 of this skill walks through the activation choices.
 - **`scope:` for path-scoped skills:** The `scope:` frontmatter field (shown as a commented-out example at the top of this file) restricts a skill so it activates only when the working directory is inside the declared path. Removing the `#` prefix from the example line turns this skill into a path-scoped skill — useful when you want a repo-specific skill available only from inside that repo's worktree.
