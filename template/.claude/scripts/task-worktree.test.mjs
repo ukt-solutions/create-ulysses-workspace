@@ -80,8 +80,9 @@ function makeOrigin(app) {
 }
 
 // A workspace root that is itself a git repo (the launcher) with an origin
-// bare remote — the shape repo "." operates on. No refs/remotes/origin/HEAD
-// is set, so the default-branch fallback is "main" until a test sets one.
+// bare remote — the shape repo "." operates on. The .gitignore carries the
+// template's .claude/worktrees/ line, and no refs/remotes/origin/HEAD is
+// set, so the default-branch fallback is "main" until a test sets one.
 function makeLauncherRoot() {
   const root = mkdtempSync(join(tmpdir(), 'task-worktree-'));
   writeFileSync(join(root, 'workspace.json'), JSON.stringify({
@@ -89,6 +90,7 @@ function makeLauncherRoot() {
     repos: {},
   }, null, 2));
   git(root, 'init -q -b main');
+  writeFileSync(join(root, '.gitignore'), '.claude/worktrees/\n');
   writeFileSync(join(root, 'README.md'), '# launcher\n');
   git(root, 'add -A');
   git(root, 'commit -q -m init');
@@ -361,7 +363,7 @@ console.log('# workspace repo ("."): create, idempotency, collisions, remove');
   } finally { clean(root); clean(bare); }
 }
 
-console.log('# workspace repo: no .git/info/exclude write');
+console.log('# workspace repo: no .git/info/exclude write when .gitignore covers the path');
 {
   const { root, bare } = makeLauncherRoot();
   try {
@@ -371,6 +373,21 @@ console.log('# workspace repo: no .git/info/exclude write');
     const excludePath = join(root, '.git', 'info', 'exclude');
     const content = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8') : '';
     assert(!content.split(/\r?\n/).includes('.claude/worktrees/'), 'no exclude line written for "."');
+  } finally { clean(root); clean(bare); }
+}
+
+console.log('# workspace repo: a legacy .gitignore without the line gets the exclude');
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    // A workspace created before the .claude/worktrees/ line shipped: the
+    // worktree would stage as an embedded repo on the next `git add -A` at
+    // the launcher unless the machine-local exclude covers it.
+    writeFileSync(join(root, '.gitignore'), 'repos\n');
+    createTaskWorktree(root, { repo: '.', branch: 'feature/legacy' });
+    const exclude = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+    assert(exclude.split(/\r?\n/).includes('.claude/worktrees/'), 'exclude line written as a safety net');
+    assertEq(git(root, 'check-ignore -q .claude/worktrees/probe && echo ignored').trim(), 'ignored', 'git now ignores the worktree path');
   } finally { clean(root); clean(bare); }
 }
 
@@ -398,21 +415,67 @@ console.log('# workspace repo: default branch from origin HEAD, main fallback');
   } finally { clean(root); clean(bare); }
 }
 
-console.log('# workspace repo: deleteBranch never deletes the launcher branch');
+console.log('# deleteBranch refuses the default branch, workspace and project alike');
 {
   const { root, bare } = makeLauncherRoot();
   try {
-    // main is checked out at the workspace root — the launcher's own
-    // branch. A remove for it must skip the deletion, not take it out.
-    const res = removeTaskWorktree(root, { repo: '.', branch: 'main', deleteBranch: true });
-    assertEq(res.removed, false, 'no worktree existed for main');
-    assertEq(res.branchDeleted, false, 'the root branch is never deleted');
+    // main is the workspace's default branch (no origin HEAD set → main
+    // fallback) — even with a detached-HEAD launcher that no worktree
+    // check would protect, deletion must refuse up front.
+    throws(() => removeTaskWorktree(root, { repo: '.', branch: 'main', deleteBranch: true }), 'workspace default branch refuses deleteBranch');
     assert(gitOk(root, 'show-ref --verify --quiet refs/heads/main'), 'main survives');
 
     createTaskWorktree(root, { repo: '.', branch: 'feature/bye' });
     const rm = removeTaskWorktree(root, { repo: '.', branch: 'feature/bye', deleteBranch: true });
     assertEq(rm.branchDeleted, true, 'a task branch deletes after the worktree');
     assert(!gitOk(root, 'show-ref --verify --quiet refs/heads/feature/bye'), 'local branch deleted');
+  } finally { clean(root); clean(bare); }
+}
+
+console.log('# deleteBranch refuses a project repo\'s configured default branch');
+{
+  const { root } = makeRoot(); // repos.app is configured with branch: main
+  try {
+    createTaskWorktree(root, { repo: 'app', branch: 'feature/keep' });
+    throws(() => removeTaskWorktree(root, { repo: 'app', branch: 'main', deleteBranch: true }), 'configured default branch refuses deleteBranch');
+    assert(gitOk(join(root, 'repos', 'app'), 'show-ref --verify --quiet refs/heads/main'), 'app main survives');
+  } finally { clean(root); }
+}
+
+console.log('# a stale non-worktree directory under worktrees/ detects as none');
+{
+  const { root } = makeRoot();
+  try {
+    // A plain directory squatting under .claude/worktrees/ must not detect
+    // as a task: rev-parse from inside it resolves to the repo around it —
+    // for the workspace layout, to the launcher itself, whose main a naive
+    // detect would then rebase and push (gh:146 round 1, S5).
+    const wsLeftover = join(root, '.claude', 'worktrees', 'leftover');
+    mkdirSync(wsLeftover, { recursive: true });
+    assertEq(detectWorkModel(wsLeftover, root).model, 'none', 'a stale directory at {root}/.claude/worktrees detects as none');
+
+    const projLeftover = join(root, 'repos', 'app', '.claude', 'worktrees', 'leftover');
+    mkdirSync(projLeftover, { recursive: true });
+    assertEq(detectWorkModel(projLeftover, root).model, 'none', 'a stale directory at repos/{repo}/.claude/worktrees detects as none');
+
+    // A real worktree beside the leftovers still detects.
+    const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/real' });
+    assertEq(detectWorkModel(wt.path, root).model, 'task', 'a real worktree beside the leftovers still detects');
+  } finally { clean(root); }
+}
+
+console.log('# a workspace worktree on the default branch never detects as a task');
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    // If origin's HEAD names trunk the default is trunk — a worktree on
+    // trunk is the launcher's own line of work, not a task.
+    git(root, 'checkout -q -b trunk');
+    git(root, 'push -q origin trunk');
+    git(root, 'checkout -q main');
+    git(root, 'remote set-head origin trunk');
+    const wt = createTaskWorktree(root, { repo: '.', branch: 'trunk' });
+    assertEq(detectWorkModel(wt.path, root).model, 'none', 'the default branch does not surface as a task');
   } finally { clean(root); clean(bare); }
 }
 

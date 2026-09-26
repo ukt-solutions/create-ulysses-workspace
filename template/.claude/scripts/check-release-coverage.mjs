@@ -27,8 +27,8 @@
 // Exit codes:
 //   0 — release may proceed (including under --force, which still reports
 //       but does not refuse)
-//   1 — release should be refused: at least one uncovered merged PR or one
-//       stale (merged-but-not-completed) session was found
+//   1 — release should be refused: at least one uncovered merged PR, or a
+//       stale (merged-but-not-completed) session or chat-record task
 //   2 — unexpected error (stderr prefixed `check-release-coverage:`)
 
 import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs';
@@ -328,11 +328,18 @@ async function checkReleaseCoverage({ root = '.', repo, force = false, forge, is
   // Entries for other repos — including repo "." (the workspace repo
   // itself, whose PRs never land in a project CHANGELOG) — are not this
   // repo's coverage problem.
+  //
+  // Merged-ness comes from the forge's PR list, NOT mergedCheck: a task
+  // branch lives in repos/{repo}, while mergedCheck's default asks the
+  // LAUNCHER repo, where every project-repo branch is absent — which would
+  // report every open task as merged. The PR list also handles squash
+  // merges, which are never git ancestors.
+  const mergedHeads = new Set(prs.map((pr) => pr.headRefName));
   const staleTasks = [];
   for (const task of chatRecordTasks(resolvedRoot)) {
     if (task.repo !== repo) continue;
     if (coveredBranches.has(task.branch)) continue;
-    if (mergedCheck(task.branch)) {
+    if (mergedHeads.has(task.branch)) {
       staleTasks.push({ chat: task.chat, workItem: task.workItem, branch: task.branch });
     }
   }

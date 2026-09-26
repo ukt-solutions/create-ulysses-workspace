@@ -7,6 +7,7 @@
 // these tests never hit the network or real git state.
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -431,7 +432,11 @@ async function run16() {
     writeChatRecord(root, 'worker', [
       { workItem: 'gh:31', branch: 'feature/task-gone', repo: 'create-ulysses-workspace' },
     ]);
-    const forge = fakeForge([]);
+    // Merged-ness comes from the forge's PR heads — even with isBranchMerged
+    // claiming everything merged, no PR means no stale task (B1).
+    const forge = fakeForge([
+      { number: 8, title: 'feat: task', url: 'https://github.com/o/n/pull/8', headRefName: 'feature/task-gone', baseRefName: 'main', mergedAt: '2026-09-01', state: 'MERGED' },
+    ]);
     const result = await checkReleaseCoverage({ root, repo: 'create-ulysses-workspace', forge, isBranchMerged: allBranchesMerged() });
     assertEq(result.staleTasks, [{ chat: 'worker', workItem: 'gh:31', branch: 'feature/task-gone' }], 'merged + uncovered task entry is reported');
     assert(result.shouldRefuse === true, 'stale task forces refusal');
@@ -489,6 +494,85 @@ async function run19() {
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
+// ---------- 20-21: stale tasks judge merged-ness by the forge, not local git ----------
+//
+// Regression (gh:146 round 1, B1): the stale-task check used to run
+// defaultIsBranchMerged against the LAUNCHER repo, where every project-repo
+// branch is absent — so every open task looked merged and /release refused.
+// Task entries now consult the forge's merged-PR heads instead.
+
+// Isolate git config so commits work with no user identity (same pattern
+// as task-worktree.test.mjs).
+const GIT_CFG = mkdtempSync(join(tmpdir(), 'crc-git-cfg-'));
+const GIT_ENV = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: join(GIT_CFG, 'global'),
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 'Test User',
+  GIT_AUTHOR_EMAIL: 'test@example.com',
+  GIT_COMMITTER_NAME: 'Test User',
+  GIT_COMMITTER_EMAIL: 'test@example.com',
+};
+writeFileSync(join(GIT_CFG, 'global'), '');
+
+function gitIn(cwd, args) {
+  return execSync(`git -C "${cwd}" ${args}`, { stdio: 'pipe', encoding: 'utf-8', env: GIT_ENV });
+}
+
+// A real repos/app clone with an unmerged task branch — the honest fixture
+// for the case the buggy path got wrong.
+function makeAppClone(root) {
+  const app = join(root, 'repos', 'app');
+  mkdirSync(app, { recursive: true });
+  gitIn(app, 'init -q -b main');
+  writeFileSync(join(app, 'README.md'), '# app\n');
+  gitIn(app, 'add -A');
+  gitIn(app, 'commit -q -m init');
+  gitIn(app, 'checkout -q -b feature/in-progress');
+  writeFileSync(join(app, 'work.txt'), 'wip\n');
+  gitIn(app, 'add -A');
+  gitIn(app, 'commit -q -m wip');
+  gitIn(app, 'checkout -q main');
+  return app;
+}
+
+async function run20() {
+  const root = makeRoot();
+  try {
+    writeWorkspaceJson(root, {
+      repos: { app: { remote: 'https://github.com/ukt-solutions/ulysses-app.git', branch: 'main' } },
+    });
+    makeAppClone(root);
+    writeChatRecord(root, 'worker', [
+      { workItem: 'gh:41', branch: 'feature/in-progress', repo: 'app' },
+    ]);
+    // isBranchMerged deliberately NOT injected: the default asks the
+    // launcher repo, where this branch is absent — the bug's exact path.
+    const result = await checkReleaseCoverage({ root, repo: 'app', forge: fakeForge([]) });
+    assertEq(result.staleTasks, [], 'an open task with no merged PR is not stale');
+    assert(result.shouldRefuse === false, 'an open task does not refuse the release');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+async function run21() {
+  const root = makeRoot();
+  try {
+    writeWorkspaceJson(root, {
+      repos: { app: { remote: 'https://github.com/ukt-solutions/ulysses-app.git', branch: 'main' } },
+    });
+    makeAppClone(root);
+    writeChatRecord(root, 'worker', [
+      { workItem: 'gh:42', branch: 'feature/done-task', repo: 'app' },
+    ]);
+    const forge = fakeForge([
+      { number: 12, title: 'feat: done', url: 'https://github.com/o/n/pull/12', headRefName: 'feature/done-task', baseRefName: 'main', mergedAt: '2026-09-01', state: 'MERGED' },
+    ]);
+    const result = await checkReleaseCoverage({ root, repo: 'app', forge });
+    assertEq(result.staleTasks, [{ chat: 'worker', workItem: 'gh:42', branch: 'feature/done-task' }], 'a task branch with a merged PR and no notes is stale');
+    assert(result.shouldRefuse === true, 'merged-but-uncompleted task refuses the release');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 async function main() {
   await run4();
   await run5();
@@ -505,6 +589,8 @@ async function main() {
   await run17();
   await run18();
   await run19();
+  await run20();
+  await run21();
 
   console.log(`${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);

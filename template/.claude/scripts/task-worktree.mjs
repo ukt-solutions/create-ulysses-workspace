@@ -175,6 +175,17 @@ function ensureExcluded(repoDir) {
   writeFileSync(excludePath, `${content}${gap}${EXCLUDE_LINE}\n`);
 }
 
+// The workspace's .gitignore normally covers .claude/worktrees/ (the
+// template ships the line), so no machine-local exclude is needed — but a
+// workspace whose .gitignore predates the line would stage the worktree as
+// an embedded repo on the next `git add -A` at the launcher. Trust
+// .gitignore only after git itself confirms the path is ignored.
+function ensureWorkspaceExcluded(gitFn, rootDir) {
+  const res = gitFn('git', ['-C', rootDir, 'check-ignore', '-q', `${EXCLUDE_LINE}probe`], { encoding: 'utf8' });
+  if (res && res.status === 0) return;
+  ensureExcluded(rootDir);
+}
+
 /**
  * Create (or return) the task worktree for {branch} in {repo}.
  *
@@ -207,9 +218,10 @@ function createTaskWorktree(root, { repo, branch, base = null, gitFn = spawnSync
     if (existing.branch !== branchRef) {
       throw new Error(`createTaskWorktree: ${path} is on ${existing.branch ?? 'a detached HEAD'}, not ${branch}`);
     }
-    // The workspace's own .gitignore ships the .claude/worktrees/ line, so
-    // only project clones need a machine-local exclude.
-    if (!isWorkspaceRepo(repo)) ensureExcluded(repoDir);
+    // Project clones always get the machine-local exclude; the workspace
+    // only when its .gitignore does not already cover the path.
+    if (isWorkspaceRepo(repo)) ensureWorkspaceExcluded(gitFn, repoDir);
+    else ensureExcluded(repoDir);
     return { repo, branch, path, created: false };
   }
 
@@ -241,7 +253,8 @@ function createTaskWorktree(root, { repo, branch, base = null, gitFn = spawnSync
   if (res.status !== 0) {
     throw new Error(`createTaskWorktree: git worktree add failed: ${String(res.stderr || '').trim()}`);
   }
-  if (!isWorkspaceRepo(repo)) ensureExcluded(repoDir);
+  if (isWorkspaceRepo(repo)) ensureWorkspaceExcluded(gitFn, repoDir);
+  else ensureExcluded(repoDir);
   return { repo, branch, path, created: true };
 }
 
@@ -251,10 +264,11 @@ function createTaskWorktree(root, { repo, branch, base = null, gitFn = spawnSync
  * deleteBranch: true it is deleted too, with -D because a squash merge is
  * never an ancestor; the forge's deleteBranch removed only the REMOTE
  * branch, so post-merge teardown passes this to clean the local clone.
- * For the workspace repo (".") that can never take the branch checked out
- * at the root — deleteLocalBranch refuses any branch held by a worktree,
- * and the launcher root is the main one. A missing worktree is a no-op so
- * cleanup can run unconditionally.
+ * deleteBranch always refuses the repo's default branch — the branch
+ * checked out at the launcher root is protected by the worktree check in
+ * deleteLocalBranch, but a detached-HEAD launcher would not be, and no
+ * repo's default branch is ever a task branch to clean up. A missing
+ * worktree is a no-op so cleanup can run unconditionally.
  */
 function removeTaskWorktree(root, { repo, branch, force = false, deleteBranch = false, gitFn = spawnSync } = {}) {
   if (!repo) throw new Error('removeTaskWorktree: repo is required');
@@ -263,6 +277,9 @@ function removeTaskWorktree(root, { repo, branch, force = false, deleteBranch = 
   const rootDir = resolve(root);
   const repoDir = repoDirFor(rootDir, repo);
   const path = taskWorktreePath(rootDir, repo, branch);
+  if (deleteBranch && branch === defaultBranchFor(rootDir, repo, gitFn)) {
+    throw new Error(`removeTaskWorktree: ${branch} is the default branch of ${isWorkspaceRepo(repo) ? 'the workspace repo' : `repo "${repo}"`}; refusing to delete it`);
+  }
   if (!existsSync(path)) {
     // A hand-deleted worktree directory leaves a stale record — prune it so
     // a later create is clean, and still honor deleteBranch: a retry after
@@ -356,6 +373,28 @@ function matchingTasks(rootDir, chat, branch) {
   return tasks.length > 0 ? tasks : null;
 }
 
+// One task worktree's detect payload, or null when {path} does not really
+// hold a task: a stale plain directory under .claude/worktrees/ would
+// otherwise detect through cwd and resolve to the repo around it — for the
+// workspace layout, to the launcher itself, whose default branch
+// /complete-work would then rebase and push. So require git to confirm the
+// path is a worktree root, and never report the repo's default branch.
+function taskWorktreeInfo(gitFn, rootReal, repo, path, chat) {
+  try {
+    const res = gitFn('git', ['-C', path, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+    if (!res || res.status !== 0) return null;
+    if (!samePath(String(res.stdout).trim(), path)) return null;
+    const branch = currentBranch(gitFn, path);
+    if (branch && branch === defaultBranchFor(rootReal, repo, gitFn)) return null;
+    const out = { model: 'task', source: 'worktree', repo, branch, path };
+    const tasks = matchingTasks(rootReal, chat, branch);
+    if (tasks) out.tasks = tasks;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Tell a skill which lifecycle the current directory is under, in order:
  * session (cwd in the old model's tree), task (cwd in a task worktree,
@@ -377,12 +416,8 @@ function detectWorkModel(cwd, root, { chat = null, gitFn = spawnSync } = {}) {
   if (isDescent(relRoot)) {
     const rootParts = relRoot.split(sep);
     if (rootParts.length >= 3 && rootParts[0] === '.claude' && rootParts[1] === 'worktrees') {
-      const path = join(rootReal, WORKTREES_DIR, rootParts[2]);
-      const branch = currentBranch(gitFn, path);
-      const out = { model: 'task', source: 'worktree', repo: WORKSPACE_REPO, branch, path };
-      const tasks = matchingTasks(rootReal, chat, branch);
-      if (tasks) out.tasks = tasks;
-      return out;
+      const hit = taskWorktreeInfo(gitFn, rootReal, WORKSPACE_REPO, join(rootReal, WORKTREES_DIR, rootParts[2]), chat);
+      if (hit) return hit;
     }
   }
 
@@ -391,12 +426,8 @@ function detectWorkModel(cwd, root, { chat = null, gitFn = spawnSync } = {}) {
   if (isDescent(relRepo)) {
     const parts = relRepo.split(sep);
     if (parts.length >= 4 && parts[1] === '.claude' && parts[2] === 'worktrees') {
-      const path = join(reposDir, parts[0], WORKTREES_DIR, parts[3]);
-      const branch = currentBranch(gitFn, path);
-      const out = { model: 'task', source: 'worktree', repo: parts[0], branch, path };
-      const tasks = matchingTasks(rootReal, chat, branch);
-      if (tasks) out.tasks = tasks;
-      return out;
+      const hit = taskWorktreeInfo(gitFn, rootReal, parts[0], join(reposDir, parts[0], WORKTREES_DIR, parts[3]), chat);
+      if (hit) return hit;
     }
   }
 

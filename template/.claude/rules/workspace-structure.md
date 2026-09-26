@@ -13,13 +13,13 @@ All paths are relative to the workspace root. Two work lifecycles coexist, selec
 | `workspace-context/` | Team knowledge: `shared/` (ephemerals), `shared/locked/` (canonical truths), `team-member/{user}/` (per-user), `release-notes/` | Yes |
 | `workspace-context/index.md`, `canonical.md`, `team-member/{user}/index.md` | Auto-generated catalogs (`canonical.md` = verbatim `shared/locked/`; `.indexignore` excludes paths) — regenerate with `build-workspace-context.mjs`, never hand-edit | Yes |
 | `workspace-scratchpad/` | Machine-local, regenerable: session log, hook debug output, chat records `chats/{chat}.json`, chat drawers `chats/{chat}/` (task-lifecycle designs, plans, braindumps, research in progress) | No |
-| `CLAUDE.md`, `CLAUDE.local.md`, `.claude/` | Launcher prompt (imports `canonical.md` + `index.md`); per-user prompt; rules, agents, skills, hooks, scripts | All but `CLAUDE.local.md` and `settings.local.json` |
+| `CLAUDE.md`, `CLAUDE.local.md`, `.claude/` | Launcher prompt (imports `canonical.md` + `index.md`); per-user prompt; rules, agents, skills, hooks, scripts | All but `CLAUDE.local.md`, `settings.local.json`, `.claude/.active-session.json`, and `.claude/worktrees/` |
 
 ## Workspace-Context Levels
 
 | Level | Path | What lives there | How it gets there |
 |-------|------|------------------|-------------------|
-| Personal | `team-member/{user}/` | Per-user braindumps, handoffs, research | Default for `/braindump`, `/handoff`, `/aside` |
+| Personal | `team-member/{user}/` | Per-user braindumps, handoffs, research | Default for `/braindump`, `/handoff`, `/aside` (session lifecycle / no drawer; task-lifecycle chats default to the chat drawer) |
 | Shared | `shared/` | Team-visible ephemerals | Explicit `--scope shared` or `/promote` |
 | Canonical | `shared/locked/` | Promoted truths — conventions, discipline, status | `/release` (or `/promote`, locked target) |
 

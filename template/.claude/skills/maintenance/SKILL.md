@@ -45,9 +45,9 @@ For each workspace-context `.md` file and each `work-sessions/*/workspace/sessio
 - Workspace repo on expected branch?
 - Orphan worktree records in project repos — run `git -C repos/{repo} worktree list` for each repo and flag any `prunable` markers. These usually come from a workspace-first teardown (the unsafe order) leaving stale admin records behind. Suggest `git worktree prune` on the affected repo.
 - Task-model state (gh:146), three checks:
-  - **Orphaned task worktrees** — list `repos/*/.claude/worktrees/*` and `.claude/worktrees/*` (excluding Claude Code's own `agent-*` worktrees), read the chat records (`node .claude/scripts/chat-record.mjs --root . --list`), and match each worktree's `{repo, branch}` (slug → branch by `-` → `/` is ambiguous; confirm with `node .claude/scripts/task-worktree.mjs --root . --detect --cwd "{worktree-path}"`) against the records' task entries. A worktree no record claims is orphaned — suggest `node .claude/scripts/task-worktree.mjs --root . --remove --repo "{repo}" --branch "{branch}"`.
+  - **Unrecorded task worktrees** — list `repos/*/.claude/worktrees/*` and `.claude/worktrees/*`, read each candidate's branch (`git -C "{path}" rev-parse --abbrev-ref HEAD`), and keep only those on a task-prefixed branch (`feature/`, `bugfix/`, `chore/`) — Claude Code's own worktrees carry other branch names, so the prefix filter skips them without guessing a name convention. Cross-reference the chat records (`node .claude/scripts/chat-record.mjs --root . --list`): a task-prefixed worktree no record entry claims is *unrecorded* — it may be a legitimate no-tracker task (those are never recorded), so present it and ask before suggesting `node .claude/scripts/task-worktree.mjs --root . --remove --repo "{repo}" --branch "{branch}"`.
   - **Stale record entries** — a record task entry whose worktree is gone (neither `repos/{repo}/.claude/worktrees/{slug}/` nor, for `repo: "."`, `.claude/worktrees/{slug}/` exists). Suggest `node .claude/scripts/chat-record.mjs --root . --remove-task --chat "{chat}" --work-item "{workItem}" --repo "{repo}"` (omit `--repo` when the entry has none).
-  - **Merged but never completed** — a recorded task branch that is already merged into its repo's default branch. `/complete-work` never ran. Suggest running `/complete-work` for that branch (detection from the chat record finds it).
+  - **Merged but never completed** — a recorded task branch that already merged. Judge merged-ness by the forge's merged PRs for that repo, matching on head branch — never `git branch --merged`, which a squash merge (never an ancestor) silently misses. `/complete-work` never ran. Suggest running `/complete-work` for that branch (detection from the chat record finds it).
 
 ### 5. Workspace-context auto-file integrity
 
@@ -130,9 +130,9 @@ When stale candidates are found, surface them as warnings in the output format a
 - Ephemeral files not updated in 7+ days — suggest resolve, update, or archive
 - `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
 - Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
-- Task worktrees with no chat-record entry claiming them — suggest `task-worktree.mjs --remove`
+- Unrecorded task-prefixed worktrees (no chat-record entry claims them; may be no-tracker tasks) — ask, then suggest `task-worktree.mjs --remove`
 - Chat-record task entries whose worktree is gone — suggest `chat-record.mjs --remove-task`
-- Recorded task branches already merged to the default branch — suggest `/complete-work`
+- Recorded task branches already merged (per the forge's merged PRs, not `git branch --merged`) — suggest `/complete-work`
 - Braindumps that overlap significantly — suggest merging (e.g., "workspace-branching.md and persistent-work-sessions.md cover the same topic")
 - Handoffs referencing deleted branches — suggest resolve or remove
 
