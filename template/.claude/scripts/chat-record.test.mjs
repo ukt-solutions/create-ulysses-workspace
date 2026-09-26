@@ -1,0 +1,247 @@
+#!/usr/bin/env node
+// Tests for chat-record.mjs
+// Run: node .claude/scripts/chat-record.test.mjs
+//
+// Every case builds its own fixture under tmpdir. Nothing reads the real
+// workspace or the real session registry.
+
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
+  listRecords, reconcile, parseArgs, resolveChatName,
+  addTask, removeTask, setScope,
+} from './chat-record.mjs';
+
+let passed = 0;
+let failed = 0;
+function assert(cond, msg) {
+  if (cond) { passed += 1; } else { failed += 1; console.error(`  FAIL: ${msg}`); }
+}
+function assertEq(a, e, msg) {
+  const x = JSON.stringify(a); const y = JSON.stringify(e);
+  if (x === y) { passed += 1; } else { failed += 1; console.error(`  FAIL: ${msg}\n    expected: ${y}\n    actual:   ${x}`); }
+}
+function throws(fn, msg) {
+  try { fn(); failed += 1; console.error(`  FAIL: ${msg} (did not throw)`); } catch { passed += 1; }
+}
+const root = () => mkdtempSync(join(tmpdir(), 'chat-record-'));
+const clean = (r) => rmSync(r, { recursive: true, force: true });
+
+console.log('# write and read round-trip');
+{
+  const r = root();
+  try {
+    const rec = emptyRecord('alpha', 'sid-1');
+    rec.tasks.push({ workItem: 'gh:1', branch: 'feature/x', repo: 'app' });
+    writeRecord(r, rec);
+    const back = readRecord(r, 'alpha');
+    assertEq(back.sessionId, 'sid-1', 'sessionId round-trips');
+    assertEq(back.tasks.length, 1, 'tasks round-trip');
+    assert(recordPath(r, 'alpha').includes(join('workspace-scratchpad', 'chats')), 'lives under scratchpad/chats');
+  } finally { clean(r); }
+}
+
+console.log('# a rename moves the record and keeps its state');
+{
+  const r = root();
+  try {
+    const rec = emptyRecord('old-name', 'sid-7');
+    rec.concerns.push('engine');
+    rec.tasks.push({ workItem: 'gh:9', branch: 'feature/y', repo: 'app' });
+    writeRecord(r, rec);
+
+    const res = reconcile(r, { sessionId: 'sid-7', name: 'new-name' });
+    assertEq(res.renamed, { from: 'old-name', to: 'new-name' }, 'rename reported with correct from');
+    assert(!existsSync(recordPath(r, 'old-name')), 'old record file is gone');
+    const moved = readRecord(r, 'new-name');
+    assertEq(moved.sessionId, 'sid-7', 'sessionId preserved across rename');
+    assertEq(moved.concerns, ['engine'], 'concerns survive the rename');
+    assertEq(moved.tasks.length, 1, 'tasks survive the rename');
+    assertEq(moved.chat, 'new-name', 'chat field updated');
+  } finally { clean(r); }
+}
+
+console.log('# the drawer follows the rename');
+{
+  const r = root();
+  try {
+    writeRecord(r, emptyRecord('before', 'sid-8'));
+    mkdirSync(drawerPath(r, 'before'), { recursive: true });
+    writeFileSync(join(drawerPath(r, 'before'), 'braindump_idea.md'), 'thinking\n');
+
+    reconcile(r, { sessionId: 'sid-8', name: 'after' });
+    assert(existsSync(join(drawerPath(r, 'after'), 'braindump_idea.md')), 'drawer contents moved with the rename');
+    assert(!existsSync(drawerPath(r, 'before')), 'old drawer is gone');
+  } finally { clean(r); }
+}
+
+console.log('# a first-seen chat gets a record created');
+{
+  const r = root();
+  try {
+    const res = reconcile(r, { sessionId: 'sid-new', name: 'fresh' });
+    assert(res.created === true, 'created flag set');
+    const rec = readRecord(r, 'fresh');
+    assertEq(rec.sessionId, 'sid-new', 'new record carries the sessionId');
+    assertEq(rec.tasks, [], 'new record starts with no tasks');
+  } finally { clean(r); }
+}
+
+console.log('# an unchanged name is a no-op');
+{
+  const r = root();
+  try {
+    writeRecord(r, emptyRecord('same', 'sid-2'));
+    const res = reconcile(r, { sessionId: 'sid-2', name: 'same' });
+    assertEq(res.renamed, null, 'no rename reported');
+    assertEq(res.created, false, 'nothing created');
+  } finally { clean(r); }
+}
+
+console.log('# stale records are pruned only when the live set is supplied');
+{
+  const r = root();
+  try {
+    writeRecord(r, emptyRecord('mine', 'sid-live'));
+    writeRecord(r, emptyRecord('ghost', 'sid-dead'));
+
+    // Without a live set, pruning must not be guessed at.
+    const noSet = reconcile(r, { sessionId: 'sid-live', name: 'mine' });
+    assertEq(noSet.pruned, [], 'no pruning without a live set');
+    assert(existsSync(recordPath(r, 'ghost')), 'ghost survives when the live set is unknown');
+
+    const withSet = reconcile(r, { sessionId: 'sid-live', name: 'mine', liveSessionIds: ['sid-live'] });
+    assertEq(withSet.pruned, ['ghost'], 'stale record pruned');
+    assert(!existsSync(recordPath(r, 'ghost')), 'ghost file removed');
+    assert(existsSync(recordPath(r, 'mine')), 'live record untouched');
+  } finally { clean(r); }
+}
+
+console.log('# concurrent chats do not collide');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-a', name: 'chat-a' });
+    reconcile(r, { sessionId: 'sid-b', name: 'chat-b' });
+    const all = listRecords(r).map((x) => x.chat).sort();
+    assertEq(all, ['chat-a', 'chat-b'], 'both records coexist, one file each');
+  } finally { clean(r); }
+}
+
+console.log('# a corrupt record does not throw');
+{
+  const r = root();
+  try {
+    mkdirSync(join(r, 'workspace-scratchpad', 'chats'), { recursive: true });
+    writeFileSync(recordPath(r, 'broken'), '{ not json');
+    assertEq(readRecord(r, 'broken'), null, 'corrupt record reads as null');
+    assertEq(listRecords(r), [], 'corrupt record is skipped in listings');
+  } finally { clean(r); }
+}
+
+
+console.log('# task lifecycle');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-t', name: 'worker' });
+
+    addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a', repo: 'app' });
+    addTask(r, 'worker', { workItem: 'gh:2', branch: 'feature/b', repo: 'app' });
+    assertEq(readRecord(r, 'worker').tasks.length, 2, 'two tasks recorded');
+
+    // Re-recording the same work item must update, not duplicate — /start-work
+    // is not guaranteed to run exactly once per task.
+    const again = addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a-v2', repo: 'app' });
+    assert(again.updated === true, 're-adding reports an update');
+    assertEq(readRecord(r, 'worker').tasks.length, 2, 'no duplicate created');
+    assertEq(
+      readRecord(r, 'worker').tasks.find((t) => t.workItem === 'gh:1').branch,
+      'feature/a-v2',
+      'branch updated in place',
+    );
+
+    // The same issue against two repos is a legitimate multi-repo task.
+    addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a-v2', repo: 'api' });
+    assertEq(readRecord(r, 'worker').tasks.length, 3, 'same issue in a second repo is a separate task');
+
+    const rm = removeTask(r, 'worker', { workItem: 'gh:1', repo: 'app' });
+    assertEq(rm.removed, 1, 'one task removed');
+    assertEq(readRecord(r, 'worker').tasks.length, 2, 'only the matching repo removed');
+    assert(
+      readRecord(r, 'worker').tasks.some((t) => t.workItem === 'gh:1' && t.repo === 'api'),
+      'the other repo\'s task survives',
+    );
+
+    assertEq(removeTask(r, 'worker', { workItem: 'nope' }).removed, 0, 'removing an absent task is a no-op');
+  } finally { clean(r); }
+}
+
+console.log('# scope declaration');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-s', name: 'scoped' });
+    setScope(r, 'scoped', { epic: 'engine', labels: ['llm-quality'], paths: ['src/metrics/**'] });
+    const rec = readRecord(r, 'scoped');
+    assertEq(rec.scope.epic, 'engine', 'epic recorded');
+    assertEq(rec.scope.labels, ['llm-quality'], 'labels recorded');
+    assertEq(rec.scope.paths, ['src/metrics/**'], 'paths recorded');
+  } finally { clean(r); }
+}
+
+console.log('# task ops refuse to invent a record');
+{
+  const r = root();
+  try {
+    throws(() => addTask(r, 'ghost', { workItem: 'gh:1', branch: 'b' }), 'addTask on a missing record throws');
+    throws(() => removeTask(r, 'ghost', { workItem: 'gh:1' }), 'removeTask on a missing record throws');
+    reconcile(r, { sessionId: 'x', name: 'real' });
+    throws(() => addTask(r, 'real', { workItem: 'gh:1' }), 'addTask requires a branch');
+    throws(() => addTask(r, 'real', { branch: 'b' }), 'addTask requires a workItem');
+  } finally { clean(r); }
+}
+
+console.log('# resolveChatName: a registry without a name must not rename to the UUID');
+{
+  const r = root();
+  try {
+    writeRecord(r, emptyRecord('real-name', 'sid-9'));
+    assertEq(resolveChatName(r, { sessionId: 'sid-9', registryName: null }), 'real-name', 'existing record name beats the raw id');
+    assertEq(resolveChatName(r, { sessionId: 'sid-9', registryName: 'from-registry' }), 'from-registry', 'registry name beats everything');
+    assertEq(resolveChatName(r, { sessionId: 'sid-fresh', registryName: null }), 'sid-fresh', 'a new unnamed chat falls back to its id');
+    assertEq(resolveChatName(r, { sessionId: 'sid-fresh', registryName: 'named-anyway' }), 'named-anyway', 'a named new chat uses the name');
+  } finally { clean(r); }
+}
+
+console.log('# parseArgs validation');
+{
+  throws(() => parseArgs(['node', 's']), 'a mode is required');
+  throws(() => parseArgs(['node', 's', '--reconcile']), '--reconcile needs session-id and name');
+  throws(() => parseArgs(['node', 's', '--bogus']), 'unknown flag rejected');
+  throws(() => parseArgs(['node', 's', '--add-task', '--chat', 'c']), '--add-task needs work-item and branch');
+  throws(() => parseArgs(['node', 's', '--remove-task']), '--remove-task needs chat and work-item');
+  const ok = parseArgs(['node', 's', '--root', '/tmp/x', '--reconcile', '--session-id', 'i', '--name', 'n']);
+  assertEq([ok.root, ok.mode, ok.sessionId, ok.name], ['/tmp/x', 'reconcile', 'i', 'n'], 'valid args parse');
+}
+
+console.log('# nothing is written outside the given root (gh:142 regression)');
+{
+  const r = root();
+  const elsewhere = mkdtempSync(join(tmpdir(), 'chat-cwd-'));
+  const original = process.cwd();
+  try {
+    process.chdir(elsewhere);
+    reconcile(r, { sessionId: 'sid-z', name: 'zed' });
+    assert(existsSync(recordPath(r, 'zed')), 'record written under the given root');
+    assertEq(readdirSync(elsewhere), [], 'nothing written into cwd');
+  } finally {
+    process.chdir(original);
+    clean(r); clean(elsewhere);
+  }
+}
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed > 0 ? 1 : 0);

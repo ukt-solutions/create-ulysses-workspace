@@ -16,6 +16,7 @@ import {
   sessionFolderPath,
   timeAgo,
 } from './_utils.mjs';
+import { reconcile, readSessionRegistry, resolveChatName } from '../scripts/chat-record.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
 const input = await readStdin();
@@ -33,6 +34,40 @@ if (!config) {
 }
 
 lines.push(`Workspace: ${config.workspace?.name || 'unnamed'}`);
+
+// Keep this chat's record in step with its identity (gh:132). The record is
+// keyed on sessionId and filed under the chat name, so a rename moves the file
+// and its drawer rather than orphaning them.
+//
+// No live set is passed, deliberately: the registry lists running processes,
+// not chats that exist, so a chat the operator merely closed is
+// indistinguishable from one that is gone. Pruning here would delete the scope
+// and open tasks of every chat not currently open.
+if (chatId) {
+  try {
+    const registry = readSessionRegistry();
+    const me = registry.find((r) => r.sessionId === chatId);
+    // The registry only knows names for chats it has seen. An unnamed chat
+    // keeps whatever name its record already carries rather than being
+    // relabeled with its raw UUID; only a truly new chat falls back to the id.
+    const name = resolveChatName(root, { sessionId: chatId, registryName: me?.name });
+    const res = reconcile(root, { sessionId: chatId, name });
+    if (res.renamed) {
+      lines.push(`Chat renamed: ${res.renamed.from} -> ${res.renamed.to} (record and drawer moved)`);
+    }
+    // Name the record so a skill can find its own chat's state without
+    // guessing (gh:132) — /start-work's task flow keys off this line.
+    lines.push(`Chat record: ${name}`);
+  } catch {
+    // The chat record is a convenience, not a precondition for a session.
+    // A failure here must never stop Claude from starting.
+  }
+
+  // Name the workspace root so skills can address it without deriving it
+  // from git internals — which resolve to the source clone, not the
+  // launcher, when a chat runs from inside a task worktree (gh:132).
+  lines.push(`Workspace root: ${root}`);
+}
 
 // If we're inside a workspace worktree, its .claude/.active-session.json
 // tells us which session this is.

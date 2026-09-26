@@ -5,6 +5,8 @@ description: Begin or resume a work session. Creates a self-contained work-sessi
 
 # Start Work
 
+Two lifecycles share this skill. `workspace.sessionModel` in `workspace.json` selects for new work: `"task"` routes new work to **Flow: Task** (session model v2 — no session folder, no `session.md`); absent or `"session"` keeps the existing flows below, unchanged. Resuming an existing `work-sessions/` session always uses the existing Resume flow regardless of the setting.
+
 Begin or resume a persistent work session. Each session lives in its own `work-sessions/{name}/` folder containing one workspace worktree, nested project worktrees, and a unified `session.md` tracker. Sessions can run in parallel from separate terminals.
 
 ## Parameters
@@ -12,6 +14,55 @@ Begin or resume a persistent work session. Each session lives in its own `work-s
 - `/start-work blank` — start new work from scratch
 - `/start-work handoff` — list shared context to resume from
 - `/start-work all` — list active sessions across all users (for shared debugging or multi-user workspaces)
+
+## Flow: Task (session model v2)
+
+New work as a task: one tracker issue, one branch, one worktree per repo the work touches. This flow creates no `work-sessions/` folder, no `session.md`, and seeds no task list — the issue, the branch, and the chat record are the entire state. The chat stays at the workspace root — `{launcher-root}`, the absolute path on the `Workspace root:` line the SessionStart hook injects (at /start-work time you are normally already there); the worktrees are reached by path.
+
+If `workspace.tracker` is absent, say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. Tell the user plainly what that costs: without a tracker there is no `workItem`, the task is not recorded on the chat record, and `/complete-work` cannot find it from the launcher. It is completed either by running `/complete-work` from inside the worktree (cwd detection) or by opening the PR by hand.
+
+1. **Identify or create the tracker issue and claim it** — the same adapter calls as Flow: Blank steps 3–6:
+
+   ```javascript
+   import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+   import { readFileSync } from 'node:fs';
+   const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+   const tracker = createTracker(ws.workspace.tracker);
+   const assigned = await tracker.listAssignedToMe();
+   const candidates = assigned.length > 0 ? assigned : await tracker.listUnassigned();
+   ```
+
+   Present the list as Flow: Blank step 4 does. When the pick came from the unassigned fallback, claim it atomically and re-fetch on `ALREADY_ASSIGNED` exactly as Blank step 5 shows; for "something new", create and self-assign per Blank step 6:
+
+   ```javascript
+   const newIssue = await tracker.createIssue({
+     title: description,
+     body: `Created at /start-work by ${user}.`,
+     labels: [type, priority],
+     milestone: milestone || null,
+   });
+   await tracker.claim(newIssue.id);
+   ```
+
+   Remember `workItem: {issue.id}`.
+
+2. **Pick repo(s)** — the same numbered multi-select as Blank step 7 (e.g. `1,3` or `all`), defaulting to the repo marked `"primary": true` under `repos` in `workspace.json`, falling back to the first entry when none is marked.
+
+3. **Propose the branch** — `{prefix}/{slug}` with the prefix from type (`feature/`, `bugfix/`, `chore/`), per the branch-naming step in Flow: Blank.
+
+4. **Create one worktree per repo the work touches:**
+   ```bash
+   node .claude/scripts/task-worktree.mjs --root . --create --repo "{repo}" --branch "{branch}"
+   ```
+   The script fetches origin best-effort (offline is fine) before choosing the base. The worktree lands at `repos/{repo}/.claude/worktrees/{slug}/` — Claude Code's native worktree location — based on `origin/{defaultBranch}` when that ref exists, and never tracking it.
+
+5. **Record the task on this chat's record** (only when a `workItem` exists — see the no-tracker note above):
+   ```bash
+   node .claude/scripts/chat-record.mjs --root . --add-task --chat "{chat}" --work-item "{workItem}" --branch "{branch}" --repo "{repo}"
+   ```
+   `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, say so and skip recording rather than guessing a name.
+
+6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. Work continues from this chat by path; if the user prefers, they can start a Claude Code session directly in that worktree directory.
 
 ## Flow: No Parameter
 
@@ -55,7 +106,7 @@ Begin or resume a persistent work session. Each session lives in its own `work-s
 4. Update the tracker `status:` to `active` if it was `paused`
 5. Restore the task list from `## Tasks` per the `task-list-mirroring` rule:
    ```bash
-   cd work-sessions/{name}/workspace
+   cd "work-sessions/{name}/workspace"
    node .claude/scripts/sync-tasks.mjs --read session.md
    ```
    Pass the parsed `todos` array to `TodoWrite` so the live UI matches the durable state. If the section is missing (legacy session predating this feature), seed it first via `--write` with an empty `todos` array — the helper will insert the bookends.
@@ -173,7 +224,7 @@ a session created without it looks fine until one of them silently cannot find t
 does nothing and exits 2. Import it:
 
 ```bash
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 node --input-type=module -e '
 import { updateSessionFile, readSessionFields } from "./.claude/lib/session-frontmatter.mjs";
 updateSessionFile("session.md", { workItem: "{workItem}" });
@@ -208,7 +259,7 @@ After session creation, seed the `## Tasks` section in the new tracker so `TodoW
 
 ```bash
 # Build the seed from inside the worktree so the helper resolves workspace.json correctly.
-cd work-sessions/{session-name}/workspace
+cd "work-sessions/{session-name}/workspace"
 echo '{"todos": []}' | node .claude/scripts/sync-tasks.mjs --write session.md
 ```
 
@@ -239,7 +290,7 @@ If yes:
 2. Write the summary into `work-sessions/{session-name}/workspace/session.md`'s body, in a `## Pre-session context` or `## Progress` section
 3. Auto-commit from inside the worktree so the capture lands on the session branch:
    ```bash
-   cd work-sessions/{session-name}/workspace
+   cd "work-sessions/{session-name}/workspace"
    git add session.md
    git commit -m "chore: capture pre-session discussion for {session-name}"
    ```

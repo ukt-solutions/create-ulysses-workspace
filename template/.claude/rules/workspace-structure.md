@@ -26,7 +26,7 @@ This workspace follows the claude-workspace convention. All paths are relative t
 | `workspace-context/team-member/{user}/index.md` | Auto-generated per-user navigation catalog | Yes |
 | `workspace-context/.indexignore` | Path prefixes to exclude from `index.md` (e.g., archived release notes) | Yes |
 | `workspace-context/release-notes/` | Per-branch release-note artifacts — `unreleased/` and `archive/` | Yes |
-| `workspace-scratchpad/` | Disposable workspace-scoped files — session log, hook debug output | No (gitignored, lazy) |
+| `workspace-scratchpad/` | Machine-local, regenerable workspace state — session log, hook debug output, per-chat records | No (gitignored, lazy) |
 | `CLAUDE.md` | Workspace launcher prompt — imports `canonical.md` and `index.md` | Yes |
 | `CLAUDE.local.md` | Per-user prompt — imports `team-member/{user}/index.md` | No (gitignored) |
 | `.claude/` | Claude Code configuration — rules, agents, skills, hooks, scripts, lib | Yes (except settings.local.json) |
@@ -104,7 +104,7 @@ Local-only personal drafts get an additional `local-only-` prefix (e.g., `local-
 - All real work happens in workspace worktrees at `work-sessions/{name}/workspace/`.
 - Session content (tracker, specs, plans) is written from inside the worktree and committed on the session branch. Writes from the launcher cannot reach files that live inside a worktree's git-path space.
 - Source clones at `repos/{repo-name}/` stay on their default branch — never checkout a feature branch there.
-- `workspace-scratchpad/` is for disposable files only — session log, hook debug output, temporary pointers.
+- `workspace-scratchpad/` is machine-local and regenerable — losing it costs a re-derivation, not the work. It holds the session log, hook debug output, per-chat records, and temporary pointers. Not everything in it is disposable: `session-log.jsonl` is real history no other file carries.
 - Project worktrees are nested inside the workspace worktree's real `repos/` directory — no symlink.
 - Hand edits to `index.md`, `canonical.md`, or any per-user `team-member/{user}/index.md` are overwritten by `build-workspace-context.mjs`. Update source files (or their `description:` frontmatter) instead.
 
