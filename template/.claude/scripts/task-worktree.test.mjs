@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   slugForBranch, taskWorktreePath, createTaskWorktree, removeTaskWorktree,
-  detectWorkModel, parseArgs,
+  detectWorkModel, parseArgs, defaultBranchFor,
 } from './task-worktree.mjs';
 import { reconcile, addTask } from './chat-record.mjs';
 
@@ -79,6 +79,23 @@ function makeOrigin(app) {
   return bare;
 }
 
+// A workspace root that is itself a git repo (the launcher) with an origin
+// bare remote — the shape repo "." operates on. No refs/remotes/origin/HEAD
+// is set, so the default-branch fallback is "main" until a test sets one.
+function makeLauncherRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'task-worktree-'));
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({
+    workspace: { name: 'fixture' },
+    repos: {},
+  }, null, 2));
+  git(root, 'init -q -b main');
+  writeFileSync(join(root, 'README.md'), '# launcher\n');
+  git(root, 'add -A');
+  git(root, 'commit -q -m init');
+  const bare = makeOrigin(root);
+  return { root, bare };
+}
+
 const clean = (r) => rmSync(r, { recursive: true, force: true });
 const real = (p) => realpathSync(p);
 
@@ -90,6 +107,11 @@ console.log('# slug and path');
     taskWorktreePath('/w', 'app', 'feature/x'),
     join('/w', 'repos', 'app', '.claude', 'worktrees', 'feature-x'),
     'path is the native worktree location',
+  );
+  assertEq(
+    taskWorktreePath('/w', '.', 'feature/x'),
+    join('/w', '.claude', 'worktrees', 'feature-x'),
+    'workspace repo path is the native worktree location at the root',
   );
 }
 
@@ -314,6 +336,136 @@ console.log('# a retry after a hand-deleted worktree still honors deleteBranch')
   } finally { clean(root); }
 }
 
+console.log('# workspace repo ("."): create, idempotency, collisions, remove');
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    const res = createTaskWorktree(root, { repo: '.', branch: 'feature/ws' });
+    assert(res.created === true, 'created flag set');
+    assertEq(res.path, taskWorktreePath(root, '.', 'feature/ws'), 'worktree path returned');
+    assertEq(res.path, join(root, '.claude', 'worktrees', 'feature-ws'), 'worktree at the native location at the root');
+    assertEq(git(res.path, 'rev-parse --abbrev-ref HEAD').trim(), 'feature/ws', 'worktree is on the task branch');
+    assert(gitOk(root, 'show-ref --verify --quiet refs/heads/feature/ws'), 'branch exists in the workspace repo');
+
+    const again = createTaskWorktree(root, { repo: '.', branch: 'feature/ws' });
+    assert(again.created === false, 're-create reports created: false');
+    assertEq(again.path, res.path, 'same path returned');
+
+    // The slug is lossy here too — a colliding branch name must refuse.
+    throws(() => createTaskWorktree(root, { repo: '.', branch: 'feature-ws' }), 'same path on another branch throws');
+
+    const rm = removeTaskWorktree(root, { repo: '.', branch: 'feature/ws' });
+    assert(rm.removed === true, 'removed flag set');
+    assert(!existsSync(rm.path), 'worktree directory gone');
+    assert(gitOk(root, 'show-ref --verify --quiet refs/heads/feature/ws'), 'branch survives remove');
+  } finally { clean(root); clean(bare); }
+}
+
+console.log('# workspace repo: no .git/info/exclude write');
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    createTaskWorktree(root, { repo: '.', branch: 'feature/no-exclude' });
+    // git init ships an exclude file with template comments — what must not
+    // appear is our line: the workspace .gitignore covers the path instead.
+    const excludePath = join(root, '.git', 'info', 'exclude');
+    const content = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8') : '';
+    assert(!content.split(/\r?\n/).includes('.claude/worktrees/'), 'no exclude line written for "."');
+  } finally { clean(root); clean(bare); }
+}
+
+console.log('# workspace repo: default branch from origin HEAD, main fallback');
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    // Point origin's HEAD at trunk so the resolution is observable — a
+    // hardcoded "main" cannot land a worktree on the trunk-only commit.
+    git(root, 'checkout -q -b trunk');
+    writeFileSync(join(root, 'trunk.txt'), 'from trunk\n');
+    git(root, 'add -A');
+    git(root, 'commit -q -m trunk-advance');
+    git(root, 'push -q origin trunk');
+    git(root, 'checkout -q main');
+    git(root, 'remote set-head origin trunk');
+    assertEq(defaultBranchFor(root, '.'), 'trunk', 'origin HEAD resolves the default branch');
+
+    const res = createTaskWorktree(root, { repo: '.', branch: 'feature/on-trunk' });
+    assertEq(git(res.path, 'log -1 --format=%s').trim(), 'trunk-advance', 'worktree started from origin/trunk, not the stale local main');
+
+    // Without refs/remotes/origin/HEAD the fallback is main.
+    git(root, 'remote set-head origin -d');
+    assertEq(defaultBranchFor(root, '.'), 'main', 'unset origin HEAD falls back to main');
+  } finally { clean(root); clean(bare); }
+}
+
+console.log('# workspace repo: deleteBranch never deletes the launcher branch');
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    // main is checked out at the workspace root — the launcher's own
+    // branch. A remove for it must skip the deletion, not take it out.
+    const res = removeTaskWorktree(root, { repo: '.', branch: 'main', deleteBranch: true });
+    assertEq(res.removed, false, 'no worktree existed for main');
+    assertEq(res.branchDeleted, false, 'the root branch is never deleted');
+    assert(gitOk(root, 'show-ref --verify --quiet refs/heads/main'), 'main survives');
+
+    createTaskWorktree(root, { repo: '.', branch: 'feature/bye' });
+    const rm = removeTaskWorktree(root, { repo: '.', branch: 'feature/bye', deleteBranch: true });
+    assertEq(rm.branchDeleted, true, 'a task branch deletes after the worktree');
+    assert(!gitOk(root, 'show-ref --verify --quiet refs/heads/feature/bye'), 'local branch deleted');
+  } finally { clean(root); clean(bare); }
+}
+
+console.log('# workspace repo: detection from inside the worktree');
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    reconcile(root, { sessionId: 'sid-w', name: 'wsworker' });
+    addTask(root, 'wsworker', { workItem: 'gh:9', branch: 'feature/ws-det', repo: '.' });
+    const wt = createTaskWorktree(root, { repo: '.', branch: 'feature/ws-det' });
+
+    assertEq(
+      detectWorkModel(wt.path, root, { chat: 'wsworker' }),
+      {
+        model: 'task', source: 'worktree', repo: '.', branch: 'feature/ws-det',
+        path: join(real(root), '.claude', 'worktrees', 'feature-ws-det'),
+        tasks: [{ workItem: 'gh:9', branch: 'feature/ws-det', repo: '.' }],
+      },
+      'workspace task worktree detects with its matching record tasks',
+    );
+    assertEq(detectWorkModel(root, root, { chat: 'wsworker' }).source, 'chat-record', 'at the launcher the record drives detection');
+    assertEq(detectWorkModel(join(root, '.claude'), root).model, 'none', '.claude itself is none');
+    assertEq(detectWorkModel(join(root, '.claude', 'worktrees'), root).model, 'none', '.claude/worktrees itself is none');
+  } finally { clean(root); clean(bare); }
+}
+
+console.log('# workspace repo: CLI --repo "." round-trip');
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    const script = fileURLToPath(new URL('./task-worktree.mjs', import.meta.url));
+    const out = JSON.parse(execFileSync(
+      process.execPath, [script, '--root', root, '--create', '--repo', '.', '--branch', 'feature/cli-ws'],
+      { cwd: root, encoding: 'utf-8', env: ENV },
+    ));
+    assertEq(out.repo, '.', 'repo round-trips as "."');
+    assertEq(out.path, join(root, '.claude', 'worktrees', 'feature-cli-ws'), 'worktree created at the native location');
+
+    const det = JSON.parse(execFileSync(
+      process.execPath, [script, '--root', root, '--detect', '--cwd', out.path],
+      { cwd: root, encoding: 'utf-8', env: ENV },
+    ));
+    assertEq([det.model, det.source, det.repo, det.branch], ['task', 'worktree', '.', 'feature/cli-ws'], 'CLI --detect from inside the workspace worktree');
+
+    const rm = JSON.parse(execFileSync(
+      process.execPath, [script, '--root', root, '--remove', '--repo', '.', '--branch', 'feature/cli-ws'],
+      { cwd: root, encoding: 'utf-8', env: ENV },
+    ));
+    assertEq(rm.removed, true, 'CLI --remove works for "."');
+    assert(!existsSync(out.path), 'worktree gone');
+  } finally { clean(root); clean(bare); }
+}
+
 console.log('# session layout and task worktree coexist and detect independently');
 {
   const { root } = makeRoot();
@@ -420,7 +572,10 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's', '--create', '--repo', 'app', '--branch', '--force']), 'flag-looking value rejected');
   throws(() => parseArgs(['node', 's', '--create', '--repo', 'a/b', '--branch', 'b']), 'repo with a slash rejected');
   throws(() => parseArgs(['node', 's', '--create', '--repo', '..', '--branch', 'b']), 'repo ".." rejected');
+  throws(() => parseArgs(['node', 's', '--create', '--repo', './x', '--branch', 'b']), 'repo "./x" rejected');
   throws(() => parseArgs(['node', 's', '--create', '--repo', '/abs', '--branch', 'b']), 'absolute repo rejected');
+  const ws = parseArgs(['node', 's', '--root', '/w', '--create', '--repo', '.', '--branch', 'feature/x']);
+  assertEq([ws.mode, ws.repo, ws.branch], ['create', '.', 'feature/x'], '"." parses as the workspace repo');
   const ok = parseArgs(['node', 's', '--root', '/w', '--create', '--repo', 'app', '--branch', 'feature/x', '--base', 'main']);
   assertEq([ok.root, ok.mode, ok.repo, ok.branch, ok.base], ['/w', 'create', 'app', 'feature/x', 'main'], 'valid create args parse');
   const rm = parseArgs(['node', 's', '--remove', '--repo', 'app', '--branch', 'b', '--force', '--delete-branch']);

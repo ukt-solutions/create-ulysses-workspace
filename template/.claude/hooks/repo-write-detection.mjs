@@ -7,6 +7,7 @@
 //   Project worktree:   work-sessions/{name}/workspace/repos/{repo}/
 //   Bare clone:         repos/{repo}/  (at workspace root)
 //   Task worktree:      repos/{repo}/.claude/worktrees/{slug}/  (gh:132)
+//   Workspace task worktree: {root}/.claude/worktrees/{slug}/  (gh:146)
 import { join, basename, resolve, relative, sep, isAbsolute, dirname } from 'path';
 import { realpathSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -55,11 +56,20 @@ function realPathDeepest(p) {
   }
 }
 
+// relative() output is "inside" when it is a plain descent — not '', '..',
+// a '..'-prefixed climb, or a cross-volume absolute path (Windows drives).
+function isDescent(rel) {
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
 /**
  * True when filePath sits inside repos/{repo}/.claude/worktrees/{slug}/ —
- * the task model's work area (gh:132). Task chats run at the workspace
- * root and edit there by design, so these writes are legitimate and must
- * not trip the "you're on main" repo/template warnings.
+ * the task model's project work area (gh:132) — or inside
+ * {root}/.claude/worktrees/{slug}/, the workspace repo's own task
+ * worktrees (gh:146). Task chats run at the workspace root and edit there
+ * by design, so these writes are legitimate and must not trip the "you're
+ * on main" repo/template warnings. The worktrees directory itself and any
+ * other {root}/.claude/... path stay warnable.
  *
  * Pure path arithmetic (realpath + relative + segment split), so it is
  * sep-safe on Windows, symlink-safe on macOS, and never stats the file
@@ -67,9 +77,19 @@ function realPathDeepest(p) {
  */
 export function isTaskWorktreeWrite(root, filePath) {
   if (!root || !filePath) return false;
-  const reposDir = realPath(join(realPath(resolve(root)), 'repos'));
-  const rel = relative(reposDir, realPathDeepest(resolve(filePath)));
-  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return false;
+  const rootReal = realPath(resolve(root));
+  const fileReal = realPathDeepest(resolve(filePath));
+
+  // The workspace repo's own worktrees: {root}/.claude/worktrees/{slug}/…
+  const relRoot = relative(rootReal, fileReal);
+  if (isDescent(relRoot)) {
+    const rootParts = relRoot.split(sep);
+    if (rootParts.length >= 3 && rootParts[0] === '.claude' && rootParts[1] === 'worktrees') return true;
+  }
+
+  // Project worktrees: repos/{repo}/.claude/worktrees/{slug}/…
+  const rel = relative(realPath(join(rootReal, 'repos')), fileReal);
+  if (!isDescent(rel)) return false;
   const parts = rel.split(sep);
   return parts.length >= 4 && parts[1] === '.claude' && parts[2] === 'worktrees';
 }

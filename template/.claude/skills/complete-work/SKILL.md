@@ -545,9 +545,10 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 Reached from Step 1 when detection says `model: task`. The state is the branch, the chat record's task entries, and the linked issue — there is no session folder and no `session.md`. This chat normally runs at the workspace root (the launcher) but may be running inside one of the worktrees; either way, every input comes from the detect result, never from cwd. Run `cd "{launcher-root}"` first — steps 2–6 and every relative path in them are anchored there:
 
 - `{chat}` — the `Chat record:` line injected by the SessionStart hook (the same value Step 1 passed as `--chat`)
-- `{tasks}` — the detect result's task entries from the chat record, each carrying `{workItem}`, `{branch}`, `{repo}`. When detection came from cwd alone (`source: 'worktree'`, no chat record entry — e.g. a no-tracker task) there are no task entries: take `{repo}` and `{branch}` from the detect result itself and treat `{workItem}` as absent
-- `{worktree}` — `{launcher-root}/repos/{repo}/.claude/worktrees/{slug}`, where `{slug}` is the branch with `/` replaced by `-`
-- `{defaultBranch}` — `workspace.json` → `repos.{repo}.branch`, default `main`
+- `{tasks}` — the detect result's task entries from the chat record, each carrying `{workItem}`, `{branch}`, `{repo}`; `repo: "."` is the workspace repo itself. When detection came from cwd alone (`source: 'worktree'`, no chat record entry — e.g. a no-tracker task) there are no task entries: take `{repo}` and `{branch}` from the detect result itself and treat `{workItem}` as absent
+- `{worktree}` — `{launcher-root}/repos/{repo}/.claude/worktrees/{slug}` for a project repo, or `{launcher-root}/.claude/worktrees/{slug}` for the workspace repo (`.`), where `{slug}` is the branch with `/` replaced by `-`
+- `{workspace-worktree}` — `{launcher-root}/.claude/worktrees/{slug}`: the workspace repo's own task worktree, present when the task includes `.` (Claude Code's native worktree location — the two converge on it)
+- `{defaultBranch}` — `workspace.json` → `repos.{repo}.branch`, default `main`; for `.` it is the workspace origin's HEAD with `main` as the fallback — exactly what `task-worktree.mjs`'s `defaultBranchFor` resolves
 
 If several tasks are open, ask the user which one to complete — group by branch; a multi-repo task is several entries sharing a branch — and complete one branch at a time.
 
@@ -555,11 +556,35 @@ If several tasks are open, ask the user which one to complete — group by branc
 
 1. **Rebase each task worktree onto `origin/{defaultBranch}`** (`git -C "{worktree}" fetch origin`, then `git -C "{worktree}" rebase "origin/{defaultBranch}"`). Freshness first: the PR in step 4 must describe the branch as it will merge. If conflicts arise, STOP and present them — do not auto-resolve.
 
-2. **Route durable thinking.** List anything in the chat drawer `{launcher-root}/workspace-scratchpad/chats/{chat}/` and ask which items to `/promote` into `workspace-context/`. The drawer is per-chat, so it survives task teardown — but it is machine-local and backed up nowhere, and this review, with the work fresh in mind, is the moment to decide what graduates. Items left behind are not lost, only unreviewed.
+2. **Route durable thinking.** List anything in the chat drawer `{launcher-root}/workspace-scratchpad/chats/{chat}/` and ask which items to `/promote`. Promoted items are written into `workspace-context/` **inside the workspace worktree** — `{workspace-worktree}/workspace-context/` — never under `{launcher-root}/workspace-context/`, which is the launcher sitting on its default branch. If the task has no `.` entry, first create the workspace worktree on the task's branch and record it alongside the project entries:
 
-3. **Release notes: not supported on this path yet.** If `workspace.publishes` is `true` in `workspace.json`, STOP and tell the user: release-note synthesis writes into a workspace-repo branch, and the task model has no workspace-repo worktree — complete this work under the session model (`workspace.sessionModel: "session"`) instead, or write the notes manually in a workspace-repo branch. If `workspace.publishes` is not set, skip and say it was skipped.
+   ```bash
+   node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --create --repo "." --branch "{branch}"
+   node "{launcher-root}/.claude/scripts/chat-record.mjs" --root "{launcher-root}" --add-task --chat "{chat}" --work-item "{workItem}" --branch "{branch}" --repo "."
+   ```
 
-4. **Check each origin, push, then open one PR per repo through the forge adapter** — never `gh pr` directly. In that order: the origin decides whether this path can proceed at all (nothing is pushed to a repo this path cannot finish), and the forge is constructed per repo so it aims at the worktree's own remote, never the launcher's.
+   Skip the record line when there is no `{workItem}`. Then, with the promoted items in place, build the context and commit inside the workspace worktree:
+
+   ```bash
+   cd "{workspace-worktree}"
+   node .claude/scripts/build-workspace-context.mjs --write
+   git add workspace-context/
+   git commit -m "context: promote durable thinking for {branch}"
+   ```
+
+   The drawer is per-chat, so it survives task teardown — but it is machine-local and backed up nowhere, and this review, with the work fresh in mind, is the moment to decide what graduates. Items left behind are not lost, only unreviewed.
+
+3. **Release notes.** If `workspace.publishes` is `true` in `workspace.json`: ensure the workspace worktree exists (step 2 shows the create-and-record commands), then for each **project** repo of the task with commits beyond its base, write `{releaseNotesDir}/unreleased/{repo}/branch-release-notes-{COMMIT_ID}.md` inside the workspace worktree — `{COMMIT_ID}` is that project repo's short HEAD, and `{releaseNotesDir}` is `workspace.json` → `workspace.releaseNotesDir` (default `workspace-context/release-notes` when absent). Follow the note format and synthesis guidance of Step 6 of the session flow above: frontmatter `branch`, `repo`, `type`, `author`, `date`, then a coherent narrative drawn from the commits, the linked issue, and the PR bodies. Commit once, inside the workspace worktree:
+
+   ```bash
+   cd "{workspace-worktree}"
+   git add "{releaseNotesDir}/unreleased/"
+   git commit -m "docs: add release notes for {branch}"
+   ```
+
+   A project repo with no commits beyond its base gets no note. If `workspace.publishes` is not set, skip this step and say it was skipped.
+
+4. **Check each origin, push, then open one PR per repo through the forge adapter** — never `gh pr` directly. The workspace repo (`.`) is handled exactly like a project repo: same origin check and push in `{workspace-worktree}`, same PR, its forge constructed from the workspace worktree's own origin. In that order: the origin decides whether this path can proceed at all (nothing is pushed to a repo this path cannot finish), and the forge is constructed per repo so it aims at the worktree's own remote, never the launcher's.
 
    ```bash
    git -C "{worktree}" remote get-url origin   # → parse {owner}/{name} FIRST
@@ -600,7 +625,7 @@ If several tasks are open, ask the user which one to complete — group by branc
    const pr = await forge.prCreate({ title, body, head: '{branch}', base: '{defaultBranch}' });
    ```
 
-5. **Ask before merging, then merge, then close the linked issue.** Present a summary per repo and ask once:
+5. **Ask before merging, then merge, then close the linked issue.** Present a summary per repo — the workspace repo included — and ask once:
 
    ```
    Task complete:
@@ -610,15 +635,27 @@ If several tasks are open, ask the user which one to complete — group by branc
      Branch: {branch} → {defaultBranch}
      Commits: {n}   # git -C "{worktree}" rev-list --count "origin/{defaultBranch}..{branch}"
 
+   WORKSPACE: {owner}/{name}   # from the workspace worktree's origin
+     PR: {ws-pr.url}
+     Branch: {branch} → {defaultBranch}
+     Notes: {releaseNotesDir}/unreleased/{repo}/… for each project repo
+
    Merge all? [Y/n]
    ```
 
    On "n", stop: the PRs stay open and the worktrees, branches, and record entries stay in place — say so.
 
-   On "y", merge each PR through the same per-repo forge — merge must precede close, because an issue closed before its PR merges points at work that never landed:
+   On "y", merge each PR through the same per-repo forge, **the project PRs first and the workspace PR last** — the release notes on the workspace branch describe the project merges, so the branch carrying them merges after what it describes. Merge must also precede close, because an issue closed before its PR merges points at work that never landed:
 
    ```javascript
-   await forge.prMerge({ id: pr.id, strategy: 'squash', deleteBranch: true });
+   await forge.prMerge({ id: pr.id, strategy: 'squash', deleteBranch: true }); // project PRs
+   await wsForge.prMerge({ id: wsPr.id, strategy: 'squash', deleteBranch: true }); // workspace PR, last
+   ```
+
+   Then pull the launcher — it is still on its default branch, waiting on the merged workspace PR:
+
+   ```bash
+   git -C "{launcher-root}" pull --ff-only
    ```
 
    Then close the linked issue — only if a `{workItem}` exists — with a one-line comment naming the merged PR URL(s):
@@ -631,7 +668,7 @@ If several tasks are open, ask the user which one to complete — group by branc
 
    Without a `{workItem}` (no tracker, or the task was never recorded), skip the close and say so.
 
-6. **Tear down only what merged — worktree first, then the record entry**, and only for a repo whose PR merged in step 5. If a repo's push, PR, or merge failed, or the user declined the merge, leave that repo's worktree, branch, and record entry exactly in place and say so: `--delete-branch` would otherwise `branch -D` commits that exist nowhere but the local worktree.
+6. **Tear down only what merged — worktree first, then the record entry**, and only for a repo whose PR merged in step 5, the workspace repo included (`--repo "."`). If a repo's push, PR, or merge failed, or the user declined the merge, leave that repo's worktree, branch, and record entry exactly in place and say so: `--delete-branch` would otherwise `branch -D` commits that exist nowhere but the local worktree. For `.` the script never deletes the branch checked out at the launcher root.
 
    ```bash
    node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --remove --repo "{repo}" --branch "{branch}" --delete-branch

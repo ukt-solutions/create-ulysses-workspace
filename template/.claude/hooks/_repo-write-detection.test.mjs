@@ -53,6 +53,17 @@ check(isTaskWorktreeWrite('', join(root, 'repos', 'app', '.claude', 'worktrees',
 check(isTaskWorktreeWrite(root, '/w/repos/app/.claude/worktrees/x/../../../src/a.ts'), false, '.. climbs out of the worktree', 'traversal');
 check(isTaskWorktreeWrite(root, '/w/repos/../secret.txt'), false, '.. right after repos', 'traversal at repos');
 
+// The workspace repo's own task worktrees: {root}/.claude/worktrees/{slug}/
+// (gh:146) — same carve-out as project worktrees, one level up.
+check(isTaskWorktreeWrite(root, join(root, '.claude', 'worktrees', 'feature-x', 'src', 'a.ts')), true, 'file inside a workspace task worktree', 'deep file');
+check(isTaskWorktreeWrite(root, join(root, '.claude', 'worktrees', 'feature-x')), true, 'the workspace worktree directory itself', 'worktree root');
+check(isTaskWorktreeWrite(root, join(root, '.claude', 'worktrees')), false, 'the workspace worktrees dir itself', 'no slug segment');
+check(isTaskWorktreeWrite(root, join(root, '.claude')), false, '.claude itself', 'not inside a worktree');
+check(isTaskWorktreeWrite(root, join(root, '.claude', 'rules', 'x.md')), false, 'a .claude path outside worktrees', 'rules file');
+check(isTaskWorktreeWrite(root, join(root, '.claude', 'hooks', 'hook.mjs')), false, 'a hook file still warnable', 'hooks dir');
+check(isTaskWorktreeWrite(root, root), false, 'the root itself', 'root');
+check(isTaskWorktreeWrite(root, '/w/.claude/worktrees/x/../../../secret.txt'), false, '.. climbs out of the workspace worktree', 'traversal');
+
 // A relative string is resolved against cwd before judging — during this
 // test run cwd is not /w, so it must not blind-match.
 check(isTaskWorktreeWrite(root, 'repos/app/.claude/worktrees/x/f'), false, 'relative path is resolved, not blind-matched', 'relative');
@@ -138,6 +149,19 @@ try {
 
   const editInWt = runHook(hook, { tool_name: 'Edit', tool_input: { file_path: join(wt, 'src', 'a.ts') } }, fx);
   check(String(editInWt.stdout).includes(WARN), false, 'an Edit inside a worktree does not warn', 'single task path exempt');
+
+  // === Spawn-level: the workspace repo's own task worktrees (gh:146) ===
+  const wsWt = join(fx, '.claude', 'worktrees', 'ws-task');
+  mkdirSync(wsWt, { recursive: true });
+
+  const wsEdit = runHook(hook, { tool_name: 'Edit', tool_input: { file_path: join(wsWt, 'README.md') } }, fx);
+  check(String(wsEdit.stdout).includes(WARN), false, 'an Edit inside a workspace task worktree does not warn', 'single workspace task path exempt');
+
+  const rulesEdit = runHook(hook, { tool_name: 'Edit', tool_input: { file_path: join(fx, '.claude', 'rules', 'x.md') } }, fx);
+  check(String(rulesEdit.stdout).includes(WARN), true, 'an Edit to a .claude/rules file still warns', 'not under worktrees');
+
+  const wsMixed = runHook(hook, { tool_name: 'Bash', tool_input: { command: `rm -rf "${wsWt}/src" && rm -rf "${fx}/.claude/rules/x.md"` } }, fx);
+  check(String(wsMixed.stdout).includes(WARN), true, 'workspace worktree + .claude path in one command warns', 'judged on the .claude token');
 } finally {
   rmSync(fx, { recursive: true, force: true });
 }
