@@ -2,7 +2,7 @@
 
 A work session is the unit of tracked work in a workspace. It represents a coherent piece of effort — a feature, a bugfix, a refactor — that spans one or more Claude Code conversations and produces a branch, a set of changes, and a pull request. Sessions give structure to work without requiring ceremony to start.
 
-This chapter explains how sessions work, what they create, and how they enable parallel and multi-repo workflows.
+This chapter explains how sessions work, what they create, and how they enable parallel and multi-repo workflows. A second, lighter lifecycle — the task model — is described in [the last section](#the-task-model); the session model below remains the default.
 
 ---
 
@@ -177,6 +177,23 @@ When you resume a session in a new conversation, the system reconstructs context
 The history reconstruction mechanism goes further: it checks whether the previous conversation's work was captured in the tracker body. If there is a gap — work happened but was not captured — it scans the conversation history and generates a summary to fill the gap. This means you do not lose context between conversations even if you forget to `/handoff` or `/braindump` at the end.
 
 The practical result is that each new conversation starts with awareness of everything the session has done so far, even if it happened days ago in a different conversation or on a different machine.
+
+## The Task Model
+
+The session model above is the default and remains fully supported. A second, lighter lifecycle — the **task model** — covers the most common shape of work: one issue, one branch, done in a chat. Set `"sessionModel": "task"` under `workspace` in `workspace.json` to route new work to it. Existing `work-sessions/` sessions keep resuming under the session model regardless of the setting.
+
+A task is a tracker issue plus a branch plus one worktree per repo the work touches:
+
+- Project repos: `repos/{repo}/.claude/worktrees/{slug}/`, where `{slug}` is the branch with `/` replaced by `-`
+- The workspace repo itself, addressed as `.`: `.claude/worktrees/{slug}/` — the same location Claude Code's native worktree feature uses, so the two converge
+
+There is no session folder and no `session.md`. The chat stays at the workspace root (the launcher, which never leaves its default branch) and reaches the worktrees by path. Per-chat state is machine-local: the **chat record** at `workspace-scratchpad/chats/{chat}.json` lists the chat's open tasks, and the **chat drawer** at `workspace-scratchpad/chats/{chat}/` holds in-progress designs, plans, goal artifacts, braindumps and research until completion routes them. The SessionStart hook injects a `Chat record:` line naming the record and a `Workspace root:` line anchoring the launcher, so skills never guess either.
+
+`/start-work` under the task model: pick or create the tracker issue (or skip tracking entirely), pick the repo(s) — the workspace repo can be one of them — propose the branch, create one worktree per repo with `.claude/scripts/task-worktree.mjs`, and record the task on the chat record. The record, the issue, and the branch are the entire state.
+
+`/complete-work` under the task model: rebases each worktree onto its default branch, offers to promote drawer items into `workspace-context/` (through a workspace-repo worktree on the task's branch, so nothing lands on the launcher's default branch), writes release notes when `workspace.publishes` is set, then pushes and opens one PR per repo — the workspace repo included, merged last — tears the worktrees down, and clears the record entries.
+
+Several tasks can be open at once across chats; each is just a branch plus its worktrees. The session model remains the right choice for long multi-chat efforts that want a folder, a tracker file, and pause/resume semantics — and both lifecycles can coexist in one workspace while a team migrates.
 
 ---
 

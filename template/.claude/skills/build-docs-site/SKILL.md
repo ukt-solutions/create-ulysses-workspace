@@ -100,6 +100,7 @@ For shared context:
 
 For work-session history:
 - Walk `work-sessions/*/workspace/session.md` for any currently-active session trackers — their bodies may contain decisions not yet consumed into release notes
+- Walk the chat drawers `workspace-scratchpad/chats/*/` for in-progress task-model material — designs, plans, braindumps, research not yet promoted into `workspace-context/` — same rationale: it is thinking the site may need that release notes will never carry
 - Check git history for previously-completed session trackers that were synthesized into release notes by `/complete-work`
 
 For existing project documentation (from Phase 1 Q2):

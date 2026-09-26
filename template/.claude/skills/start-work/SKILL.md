@@ -46,7 +46,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
 
    Remember `workItem: {issue.id}`.
 
-2. **Pick repo(s)** — the same numbered multi-select as Blank step 7 (e.g. `1,3` or `all`), defaulting to the repo marked `"primary": true` under `repos` in `workspace.json`, falling back to the first entry when none is marked.
+2. **Pick repo(s)** — the same numbered multi-select as Blank step 7 (e.g. `1,3` or `all`), defaulting to the repo marked `"primary": true` under `repos` in `workspace.json`, falling back to the first entry when none is marked. The list also offers the **workspace repo itself**, shown as `workspace (this repo)` and addressed as `.`. Include it when the task changes anything tracked in the workspace repo — `workspace-context/`, the workspace's own `.claude/` (rules, hooks, scripts, skills), or, in a dogfood workspace, mirrors of template changes. Steps 4 and 5 take `.` like any other repo name (`--repo "."`).
 
 3. **Propose the branch** — `{prefix}/{slug}` with the prefix from type (`feature/`, `bugfix/`, `chore/`), per the branch-naming step in Flow: Blank.
 
@@ -54,7 +54,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
    ```bash
    node .claude/scripts/task-worktree.mjs --root . --create --repo "{repo}" --branch "{branch}"
    ```
-   The script fetches origin best-effort (offline is fine) before choosing the base. The worktree lands at `repos/{repo}/.claude/worktrees/{slug}/` — Claude Code's native worktree location — based on `origin/{defaultBranch}` when that ref exists, and never tracking it.
+   The script fetches origin best-effort (offline is fine) before choosing the base. A project repo's worktree lands at `repos/{repo}/.claude/worktrees/{slug}/` — Claude Code's native worktree location — based on `origin/{defaultBranch}` when that ref exists, and never tracking it. For `.` the worktree lands at `.claude/worktrees/{slug}/` — the same native location, one level up — based on the workspace origin's HEAD (falling back to `main`); the workspace's own `.gitignore` already covers the path.
 
 5. **Record the task on this chat's record** (only when a `workItem` exists — see the no-tracker note above):
    ```bash
@@ -62,7 +62,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
    ```
    `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, say so and skip recording rather than guessing a name.
 
-6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. Work continues from this chat by path; if the user prefers, they can start a Claude Code session directly in that worktree directory.
+6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. Work continues from this chat by path. A chat started inside a **project** worktree would not load the workspace's conventions or hooks (a worktree is a context boundary), so staying here is the default. A `.` worktree does load a copy of the workspace's `CLAUDE.md`/`.claude/` — but with the worktree as root, so its chat records land in the worktree's own scratchpad rather than the launcher's; the task still belongs to this chat.
 
 ## Flow: No Parameter
 

@@ -13,7 +13,7 @@ Capture discussion reasoning, exploration results, and design rationale into wor
 
 > **Note:** `/braindump side` has moved to `/aside`. If the user invokes `/braindump side`, redirect them: "The side braindump is now `/aside`. Running it for you." Then invoke the `/aside` skill with their text.
 
-## Session-Aware Behavior
+## Lifecycle-Aware Behavior
 
 When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
 
@@ -26,9 +26,16 @@ When called within an active work session (the active-session pointer at `.claud
   git commit -m "braindump: update {session-name} tracker"
   ```
 
-When called from the workspace root (no active session):
-- Use `--local-only` so the captured file is gitignored (the root only allows local-only writes)
-- Suggest starting a work session if the braindump is about actionable work
+Under the task model — `workspace.sessionModel` is `"task"` in `workspace.json` AND the SessionStart hook injected a `Chat record:` line (`{chat}` is its name):
+
+- Default behavior: write `braindump_{topic}.md` directly into that chat's drawer at `workspace-scratchpad/chats/{chat}/` — the drawer sits outside `workspace-context/`, so `capture-context.mjs` is not involved
+- No commit for drawer writes: the drawer is gitignored and machine-local; `/complete-work` lists it and asks what to promote into `workspace-context/`
+
+When called from the workspace root with no active session — every other case, including a `sessionModel: "session"` workspace (the `Chat record:` line is injected in every chat, so it alone does not select the drawer):
+
+- Use `--local-only` so the captured file is gitignored (the root only allows local-only writes), landing in `team-member/{user}/`
+- If the task model applies but the `Chat record:` line is absent, say the drawer destination is unavailable for that reason
+- Suggest starting work (`/start-work`) if the braindump is about actionable work
 
 The flows below apply when NOT in an active work session, or when the user explicitly asks for a standalone braindump file.
 

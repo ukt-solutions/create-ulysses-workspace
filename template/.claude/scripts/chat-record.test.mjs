@@ -179,6 +179,30 @@ console.log('# task lifecycle');
   } finally { clean(r); }
 }
 
+console.log('# a task may target the workspace repo (repo: ".")');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-w', name: 'wsworker' });
+    addTask(r, 'wsworker', { workItem: 'gh:6', branch: 'feature/ws', repo: '.' });
+    assertEq(
+      readRecord(r, 'wsworker').tasks,
+      [{ workItem: 'gh:6', branch: 'feature/ws', repo: '.' }],
+      'repo "." round-trips through the record',
+    );
+    // Identity is workItem + repo, so the same issue against "." and a
+    // project repo are two entries — a multi-repo task including the
+    // workspace itself.
+    addTask(r, 'wsworker', { workItem: 'gh:6', branch: 'feature/ws', repo: 'app' });
+    assertEq(readRecord(r, 'wsworker').tasks.length, 2, '"." and a project repo are distinct targets');
+    assertEq(removeTask(r, 'wsworker', { workItem: 'gh:6', repo: '.' }).removed, 1, 'remove targets the "." entry only');
+    assert(
+      readRecord(r, 'wsworker').tasks.some((t) => t.workItem === 'gh:6' && t.repo === 'app'),
+      'the project-repo entry survives',
+    );
+  } finally { clean(r); }
+}
+
 console.log('# scope declaration');
 {
   const r = root();

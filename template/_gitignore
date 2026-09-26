@@ -17,6 +17,10 @@ workspace-scratchpad/
 .claude/.active-session.json
 CLAUDE.local.md
 
+# Worktrees of the workspace repo itself — task worktrees (repo ".") and
+# Claude Code's native worktrees both live under .claude/worktrees/
+.claude/worktrees/
+
 # Local-only convention — machine-local state, any depth
 local-only-*
 

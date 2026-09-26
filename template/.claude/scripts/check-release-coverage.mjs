@@ -9,8 +9,9 @@
 // changelog, and the next release silently inherits the gap. This script
 // tells the two cases apart by cross-referencing the branches already
 // covered by a `branch-release-notes-*.md` file against the branches of
-// merged pull requests (via the forge adapter) and of local work sessions
-// whose branch already looks merged but were never torn down.
+// merged pull requests (via the forge adapter), of local work sessions
+// whose branch already looks merged, and of chat-record task entries
+// (task model, gh:146) in the same state.
 //
 // The trivial case — no uncovered PRs, no stale sessions — is NOT a
 // refusal, even when the notes directory is completely empty.
@@ -26,8 +27,8 @@
 // Exit codes:
 //   0 — release may proceed (including under --force, which still reports
 //       but does not refuse)
-//   1 — release should be refused: at least one uncovered merged PR or one
-//       stale (merged-but-not-completed) session was found
+//   1 — release should be refused: at least one uncovered merged PR, or a
+//       stale (merged-but-not-completed) session or chat-record task
 //   2 — unexpected error (stderr prefixed `check-release-coverage:`)
 
 import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs';
@@ -227,11 +228,34 @@ function collectCoveredBranches(root, releaseNotesDir, repo) {
 // its tip is reachable from `main`. Real git, real filesystem — tests
 // always inject their own `isBranchMerged` instead of exercising this.
 function defaultIsBranchMerged(root, branch) {
-  const list = nodeSpawnSync('git', ['-C', root, 'branch', '--list', branch], { encoding: 'utf-8' });
+  const list = nodeSpawnSync('git', ['-C', root, 'branch', '--list', branch], { encoding: 'utf8' });
   const existsLocally = list.status === 0 && list.stdout.trim() !== '';
   if (!existsLocally) return true;
-  const contains = nodeSpawnSync('git', ['-C', root, 'log', 'main', '--oneline', '--contains', branch], { encoding: 'utf-8' });
+  const contains = nodeSpawnSync('git', ['-C', root, 'log', 'main', '--oneline', '--contains', branch], { encoding: 'utf8' });
   return contains.status === 0 && contains.stdout.trim() !== '';
+}
+
+// Task-model task entries (gh:146), flattened from every chat record
+// under workspace-scratchpad/chats/. The record is machine-local JSON, so
+// a corrupt file is skipped rather than treated as a coverage problem.
+function chatRecordTasks(root) {
+  const out = [];
+  const chatsDir = join(root, 'workspace-scratchpad', 'chats');
+  if (!existsSync(chatsDir)) return out;
+  for (const name of readdirSync(chatsDir)) {
+    if (!name.endsWith('.json')) continue;
+    let rec;
+    try {
+      rec = JSON.parse(readFileSync(join(chatsDir, name), 'utf-8'));
+    } catch { continue; }
+    if (!rec || !Array.isArray(rec.tasks)) continue;
+    const chat = typeof rec.chat === 'string' && rec.chat ? rec.chat : name.slice(0, -5);
+    for (const t of rec.tasks) {
+      if (!t || typeof t.branch !== 'string' || !t.branch) continue;
+      out.push({ chat, workItem: t.workItem ?? null, branch: t.branch, repo: t.repo ?? null });
+    }
+  }
+  return out;
 }
 
 async function checkReleaseCoverage({ root = '.', repo, force = false, forge, isBranchMerged, gitFn } = {}) {
@@ -299,7 +323,28 @@ async function checkReleaseCoverage({ root = '.', repo, force = false, forge, is
     }
   }
 
-  const shouldRefuse = uncoveredPrs.length > 0 || staleSessions.length > 0;
+  // Task model (gh:146): a chat-record task entry for this repo whose
+  // branch already merged without /complete-work writing notes for it.
+  // Entries for other repos — including repo "." (the workspace repo
+  // itself, whose PRs never land in a project CHANGELOG) — are not this
+  // repo's coverage problem.
+  //
+  // Merged-ness comes from the forge's PR list, NOT mergedCheck: a task
+  // branch lives in repos/{repo}, while mergedCheck's default asks the
+  // LAUNCHER repo, where every project-repo branch is absent — which would
+  // report every open task as merged. The PR list also handles squash
+  // merges, which are never git ancestors.
+  const mergedHeads = new Set(prs.map((pr) => pr.headRefName));
+  const staleTasks = [];
+  for (const task of chatRecordTasks(resolvedRoot)) {
+    if (task.repo !== repo) continue;
+    if (coveredBranches.has(task.branch)) continue;
+    if (mergedHeads.has(task.branch)) {
+      staleTasks.push({ chat: task.chat, workItem: task.workItem, branch: task.branch });
+    }
+  }
+
+  const shouldRefuse = uncoveredPrs.length > 0 || staleSessions.length > 0 || staleTasks.length > 0;
 
   return {
     repo,
@@ -309,6 +354,7 @@ async function checkReleaseCoverage({ root = '.', repo, force = false, forge, is
     coveredBranches: Array.from(coveredBranches),
     uncoveredPrs,
     staleSessions,
+    staleTasks,
     shouldRefuse,
     forced: force,
   };
@@ -317,7 +363,7 @@ async function checkReleaseCoverage({ root = '.', repo, force = false, forge, is
 function formatHuman(result) {
   const lines = [`check-release-coverage: ${result.repo} (${result.slug})`];
   if (!result.shouldRefuse) {
-    lines.push('OK — no uncovered merged PRs, no stale sessions. Release may proceed.');
+    lines.push('OK — no uncovered merged PRs, no stale sessions or tasks. Release may proceed.');
     return lines.join('\n');
   }
 
@@ -336,6 +382,14 @@ function formatHuman(result) {
     lines.push('Sessions whose branch is merged but the session was never completed:');
     for (const s of result.staleSessions) {
       lines.push(`  ${s.worktreePath} (${s.branch})`);
+    }
+  }
+
+  if (result.staleTasks.length > 0) {
+    lines.push('');
+    lines.push('Chat-record tasks whose branch is merged but the task was never completed:');
+    for (const t of result.staleTasks) {
+      lines.push(`  chat "${t.chat}" ${t.workItem ?? '(no work item)'} (${t.branch})`);
     }
   }
 
@@ -385,4 +439,5 @@ export {
   dayBefore,
   repoSlugFromRemote,
   collectCoveredBranches,
+  chatRecordTasks,
 };

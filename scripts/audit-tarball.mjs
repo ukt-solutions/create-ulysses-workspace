@@ -52,12 +52,14 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // workspace-diagnostics.mjs added ~59 kB, of which ~26 kB is test code →
 // 190 kB after the task-model scripts (gh:132 stage 2) → 195 kB after the
 // stage-2 review fixes grew task-worktree.mjs and its suite and added the
-// repo-write-detection test.
+// repo-write-detection test → 200 kB after the workspace repo became a task
+// target (gh:146 / Q6) grew task-worktree.mjs, its suite, and the
+// repo-write-detection suite.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 195 * 1024;
+const SIZE_LIMIT_BYTES = 200 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {

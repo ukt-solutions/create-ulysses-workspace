@@ -45,8 +45,10 @@ node .claude/scripts/check-release-coverage.mjs --root . --repo {repo}
 ```
 
 It compares merged PRs since the last `CHANGELOG.md` entry against the `branch:` frontmatter
-of the notes on hand, and scans `work-sessions/*/workspace/` for sessions whose branch merged
-without `/complete-work` running. Release PRs (`release/*`) are excluded — those are the
+of the notes on hand, and scans `work-sessions/*/workspace/` for sessions and
+`workspace-scratchpad/chats/*.json` for chat-record task entries whose branch merged without
+`/complete-work` running (task entries for the workspace repo, `repo: "."`, are ignored — the
+guard runs per project repo). Release PRs (`release/*`) are excluded — those are the
 release, not content needing notes.
 
 - **Exit 0** — coverage is complete. Continue.
