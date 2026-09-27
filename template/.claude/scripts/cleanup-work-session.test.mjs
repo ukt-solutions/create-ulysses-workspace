@@ -12,7 +12,7 @@
 //   - success: true iff all of the above hold
 
 import { execFileSync, execSync, spawnSync } from 'child_process';
-import { mkdirSync, writeFileSync, existsSync, rmSync, cpSync, mkdtempSync, renameSync, symlinkSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, mkdtempSync, renameSync, symlinkSync } from 'fs';
 import { join, dirname, resolve, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
@@ -478,6 +478,23 @@ console.log('# wording: refused discovered entries do not claim to come from the
 
 function includesBoth(haystack, a, b) {
   return haystack.includes(a) && haystack.includes(b);
+}
+
+// === A tracker listing fewer repos than the session holds refuses (gh:147) ===
+// Removing the workspace worktree deletes every nested directory, so an
+// unlisted live worktree must stop the teardown before it starts.
+console.log('# safety: an unlisted live nested worktree refuses before anything is removed');
+{
+  const fx = makeFixture('partial', 'bugfix/partial', ['proj', 'lib']);
+  const md = join(fx.wsWt, 'session.md');
+  writeFileSync(md, readFileSync(md, 'utf8').replace(/  - lib\n/, ''));
+  writeFileSync(join(fx.wsWt, 'repos', 'lib', 'wip.txt'), 'work in progress\n');
+  const { status, json } = runCleanupRaw(fx.T, 'partial');
+  assertEq(status !== 0, true, 'cleanup exits non-zero');
+  assert(json?.errors?.some((e) => e.includes('[lib]')), 'the error names the unlisted entry');
+  assertEq(json?.removed?.length ?? 0, 0, 'nothing was removed');
+  assert(existsSync(join(fx.wsWt, 'repos', 'lib', 'wip.txt')), 'the unlisted work in progress survives');
+  assert(existsSync(join(fx.wsWt, 'repos', 'proj')), 'the listed worktree was not removed either');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

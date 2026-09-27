@@ -7,24 +7,25 @@
 // remotes so ls-remote, tag pushes, and the never-delete-a-remote
 // guarantees are exercised for real. Git config is isolated (no
 // global/system file) and the identity pinned IN PROCESS.ENV, because
-// unlike task-worktree's suite this module also spawns git internally
-// (and spawns cleanup-work-session.mjs as a child) — env inheritance is
-// the only isolation that reaches all of those processes.
+// unlike task-worktree's suite this module also spawns git internally —
+// env inheritance is the only isolation that reaches those processes.
 //
-// Round 2 adds the teardown-invariant fixtures (drift, detached HEADs,
-// unresolvable default branches, ignored files, rebases in progress,
-// symlinked and foreign entries) and the remote-state matrix.
+// The archive cases fill a session with every kind of state the earlier
+// teardown design was found to lose — unpushed commits, uncommitted,
+// untracked and ignored files, assume-unchanged edits, per-worktree refs,
+// embedded repositories, files beside workspace/ — and assert that all of
+// it survives, with git still resolving the moved worktrees.
 
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, cpSync,
-  symlinkSync, utimesSync, renameSync,
+  symlinkSync, utimesSync, renameSync, realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  inventory, backupSession, teardownSession, enableTaskModel, classify, parseArgs,
+  inventory, backupSession, archiveSession, enableTaskModel, classify, parseArgs,
 } from './migrate-sessions.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -82,9 +83,8 @@ function commitAll(cwd, message, dateIso = null) {
 
 // A workspace root shaped like a real one: a git repo at the root with
 // an origin bare remote, a project source clone at repos/app with its
-// own bare remote, and a copy of .claude/ so teardown can spawn the
-// real cleanup-work-session.mjs from inside the fixture (real
-// workspaces ship .claude/ as a copy, never a symlink).
+// own bare remote, and a copy of .claude/ (real workspaces ship .claude/
+// as a copy, never a symlink).
 function makeWorkspace({ appDefaultBranch = 'main', configAppBranch = 'main', includeApp = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'mig-ws-'));
   const wsOrigin = join(mkdtempSync(join(tmpdir(), 'mig-ws-origin-')), 'origin.git');
@@ -172,12 +172,12 @@ console.log('# boundary: root must be a workspace, session a single segment');
 
   throws(() => parseArgs(['node', 's', '--backup', '--session', '../x']), '--session ../x rejected');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'a/b']), '--session a/b rejected');
-  throws(() => parseArgs(['node', 's', '--teardown', '--session', '..']), '--session ".." rejected');
+  throws(() => parseArgs(['node', 's', '--archive', '--session', '..']), '--session ".." rejected');
 
   const fx = makeWorkspace();
   try {
     throws(() => backupSession(fx.root, { session: '../x' }), 'backupSession rejects an escaping session name');
-    throws(() => teardownSession(fx.root, { session: 'a/b' }), 'teardownSession rejects a path-like session name');
+    throws(() => archiveSession(fx.root, { session: 'a/b' }), 'archiveSession rejects a path-like session name');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -186,18 +186,18 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's']), 'a mode is required');
   throws(() => parseArgs(['node', 's', '--inventory', '--backup', '--session', 'x']), 'two modes rejected');
   throws(() => parseArgs(['node', 's', '--backup']), '--backup requires --session');
-  throws(() => parseArgs(['node', 's', '--inventory', '--session', 'x']), '--session only with --backup/--teardown');
+  throws(() => parseArgs(['node', 's', '--inventory', '--session', 'x']), '--session only with --backup/--archive');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--active-days', '7']), '--active-days only with --inventory');
   throws(() => parseArgs(['node', 's', '--inventory', '--active-days', '0']), '--active-days must be positive');
   throws(() => parseArgs(['node', 's', '--inventory', '--active-days']), 'dangling value flag rejected');
-  throws(() => parseArgs(['node', 's', '--inventory', '--discard-uncommitted']), '--discard-uncommitted only with --teardown');
-  throws(() => parseArgs(['node', 's', '--inventory', '--discard-ignored']), '--discard-ignored only with --teardown');
-  throws(() => parseArgs(['node', 's', '--teardown', '--session', 'x', '--remote', 'origin']), '--remote only with --backup');
+  throws(() => parseArgs(['node', 's', '--archive', '--session', 'x', '--discard-uncommitted']), 'there is no discard flag — archive keeps everything');
+  throws(() => parseArgs(['node', 's', '--teardown', '--session', 'x']), 'there is no teardown mode');
+  throws(() => parseArgs(['node', 's', '--archive', '--session', 'x', '--remote', 'origin']), '--remote only with --backup');
   throws(() => parseArgs(['node', 's', '--inventory', '--bogus']), 'unknown flag rejected');
   const inv = parseArgs(['node', 's', '--root', '/w', '--inventory']);
   assertEq([inv.mode, inv.root, inv.activeDays], ['inventory', '/w', null], 'inventory defaults parse');
-  const td = parseArgs(['node', 's', '--teardown', '--session', 'x', '--discard-uncommitted', '--discard-ignored']);
-  assertEq([td.mode, td.session, td.discardUncommitted, td.discardIgnored], ['teardown', 'x', true, true], 'teardown with both discards parses');
+  const ar = parseArgs(['node', 's', '--archive', '--session', 'x']);
+  assertEq([ar.mode, ar.session], ['archive', 'x'], '--archive --session parses');
   const bk = parseArgs(['node', 's', '--backup', '--session', 'x', '--remote', 'upstream']);
   assertEq([bk.mode, bk.remote], ['backup', 'upstream'], '--backup with --remote parses');
   const days = parseArgs(['node', 's', '--inventory', '--active-days', '7']);
@@ -520,22 +520,34 @@ console.log('# backup: creates, pushes, and verifies session-scoped drain tags (
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
-console.log('# backup: skips tips already proven on a remote');
+console.log('# backup: only an exact remote branch/tag counts as already held');
 {
   const fx = makeWorkspace();
   try {
     const { wsWt } = makeSession(fx, { name: 'merged', branch: 'bugfix/merged', repos: [], tracker: { status: 'active', branch: 'bugfix/merged', repos: [], updated: daysAgoIso(40) } });
     writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
     commitAll(wsWt, 'content', daysAgoIso(40));
-    // Merge the session branch into main and push: the tip now survives
-    // via the remote's main — provably, which is what the allowlist wants.
+    // Merged into the remote's main: the tip is an ancestor of a remote
+    // ref, but no remote branch or tag is AT it. Backup does no ancestry
+    // walk and no fetch — it tags. (Archive never depends on this.)
     git(fx.root, 'merge -q --no-ff -m merge bugfix/merged');
     git(fx.root, 'push -q origin main');
     const out = backupSession(fx.root, { session: 'merged' });
     assertEq(out.refused, undefined, 'backup is not refused');
-    assertEq(out.branches.length, 0, 'a remotely-contained tip needs no tag');
-    assertEq(out.skipped.length, 1, 'the contained tip is reported as skipped-safe');
-    assert(out.skipped[0].safeOn === 'origin' && out.skipped[0].safeRef.startsWith('refs/heads/main'), 'the containing remote ref is reported');
+    assertEq(out.branches.length, 1, 'an ancestor-only tip still gets a tag');
+    // Once the branch itself is on the remote, it is held exactly.
+    git(wsWt, 'push -q origin bugfix/merged');
+    const again = backupSession(fx.root, { session: 'merged' });
+    assertEq(again.skipped.length, 1, 'an exact remote branch counts as already held');
+    assert(again.skipped[0].safeOn === 'origin', 'attributed to origin');
+    // Ephemeral refs never count: advertise the tip only under refs/pull/.
+    const sha = git(wsWt, 'rev-parse HEAD').trim();
+    git(fx.wsOrigin, `update-ref refs/pull/1/head ${sha}`);
+    git(fx.wsOrigin, 'update-ref -d refs/heads/bugfix/merged');
+    git(fx.wsOrigin, 'tag -d drain/merged/bugfix-merged');
+    git(fx.root, 'tag -d drain/merged/bugfix-merged');
+    const third = backupSession(fx.root, { session: 'merged', dryRun: true });
+    assertEq(third.tips.length, 1, 'a refs/pull/* ref does not count as held');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -602,184 +614,119 @@ console.log('# S4: push-remote resolution — first remote without origin, and -
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, upstream); }
 }
 
-console.log('# teardown: refuses without a backup (unsafe tip)');
+console.log('# archive: moves the session and keeps every kind of state intact');
 {
   const fx = makeWorkspace();
   try {
-    const { projWts } = makeSession(fx, { name: 'risky', branch: 'bugfix/risky', tracker: { branch: 'bugfix/risky', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
-    commitAll(projWts.app, 'unbacked work', daysAgoIso(40));
-    const out = teardownSession(fx.root, { session: 'risky' });
-    assertEq(out.refused, true, 'teardown refuses');
-    assert(out.reasons.some((r) => r.includes('no copy on any qualifying remote') && r.includes('bugfix/risky')), 'the refusal names the unsafe tip');
-    assert(existsSync(join(fx.root, 'work-sessions', 'risky')), 'the session is untouched after the refusal');
+    const { wsWt, projWts } = makeSession(fx, { name: 'keep', branch: 'bugfix/keep', tracker: { branch: 'bugfix/keep', repos: ['app'], updated: daysAgoIso(40) } });
+    const app = projWts.app;
+    // Unpushed commits in both repos.
+    writeFileSync(join(wsWt, 'NOTES.md'), 'workspace content\n');
+    commitAll(wsWt, 'ws content', daysAgoIso(40));
+    writeFileSync(join(app, 'fix.txt'), 'project fix\n');
+    commitAll(app, 'app fix', daysAgoIso(40));
+    const wsTip = git(wsWt, 'rev-parse HEAD').trim();
+    const appTip = git(app, 'rev-parse HEAD').trim();
+    // Index-hidden, uncommitted, untracked, and ignored edits (the
+    // commit comes first: commitAll stages everything).
+    writeFileSync(join(app, 'hidden.txt'), 'v1\n');
+    commitAll(app, 'hidden v1', daysAgoIso(40));
+    writeFileSync(join(app, 'hidden.txt'), 'v2 hidden by assume-unchanged\n');
+    git(app, 'update-index --assume-unchanged hidden.txt');
+    writeFileSync(join(app, 'README.md'), '# app\nlocal edit\n');
+    writeFileSync(join(app, 'untracked.txt'), 'untracked\n');
+    writeFileSync(join(wsWt, '.gitignore'), 'local-only-*\nrepos\n');
+    writeFileSync(join(wsWt, 'local-only-draft.md'), 'ignored draft\n');
+    // A per-worktree ref and an embedded repository with its own history.
+    git(app, `update-ref refs/worktree/keep ${appTip}`);
+    const vendor = join(app, 'vendor-lib');
+    mkdirSync(vendor, { recursive: true });
+    git(vendor, 'init -q -b main');
+    writeFileSync(join(vendor, 'lib.txt'), 'embedded\n');
+    commitAll(vendor, 'embedded history');
+    const vendorTip = git(vendor, 'rev-parse HEAD').trim();
+    // Something beside workspace/ in the session folder.
+    writeFileSync(join(fx.root, 'work-sessions', 'keep', 'notes.md'), 'beside workspace\n');
+
+    const out = archiveSession(fx.root, { session: 'keep', cwd: fx.root, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
+    assertEq(out.refused, undefined, 'archive is not refused');
+    assertEq(out.to, join('work-sessions', '.archived', 'keep--20260927T120000'), 'archived under .archived/ with a stamp');
+    assert(!existsSync(join(fx.root, 'work-sessions', 'keep')), 'the session left the active lifecycle');
+    const dest = join(fx.root, out.to);
+    const dWs = join(dest, 'workspace');
+    const dApp = join(dWs, 'repos', 'app');
+    assertEq(readFileSync(join(dest, 'notes.md'), 'utf8'), 'beside workspace\n', 'a file beside workspace/ is kept');
+    assertEq(readFileSync(join(dWs, 'local-only-draft.md'), 'utf8'), 'ignored draft\n', 'an ignored draft is kept');
+    assertEq(readFileSync(join(dApp, 'untracked.txt'), 'utf8'), 'untracked\n', 'an untracked file is kept');
+    assertEq(readFileSync(join(dApp, 'README.md'), 'utf8'), '# app\nlocal edit\n', 'an uncommitted edit is kept');
+    assertEq(readFileSync(join(dApp, 'hidden.txt'), 'utf8'), 'v2 hidden by assume-unchanged\n', 'an assume-unchanged edit is kept');
+    assert(git(dApp, 'ls-files -v hidden.txt').startsWith('h '), 'the assume-unchanged flag is kept');
+    assertEq(git(join(dApp, 'vendor-lib'), 'rev-parse HEAD').trim(), vendorTip, 'the embedded repository and its history are kept');
+    // Git follows the move.
+    assertEq(realpathSync(git(dWs, 'rev-parse --show-toplevel').trim()), realpathSync(dWs), 'the workspace worktree resolves at its new path');
+    assertEq(realpathSync(git(dApp, 'rev-parse --show-toplevel').trim()), realpathSync(dApp), 'the project worktree resolves at its new path');
+    assertEq(git(dWs, 'rev-parse HEAD').trim(), wsTip, 'workspace branch tip unchanged');
+    assertEq(git(dApp, 'rev-parse HEAD').trim(), appTip.length ? git(dApp, 'rev-parse bugfix/keep').trim() : '', 'project branch still checked out');
+    assertEq(git(dApp, 'rev-parse refs/worktree/keep').trim(), appTip, 'the per-worktree ref is kept');
+    assert(git(fx.root, 'worktree list --porcelain').includes(realpathSync(dWs)), 'the workspace repo lists the moved worktree');
+    assert(git(fx.app, 'worktree list --porcelain').includes(realpathSync(dApp)), 'the project repo lists the moved worktree');
+    assertEq(git(fx.root, 'worktree prune --dry-run -v').trim(), '', 'nothing is prunable in the workspace repo');
+    assertEq(git(fx.app, 'worktree prune --dry-run -v').trim(), '', 'nothing is prunable in the project repo');
+    const st = git(dApp, 'status --porcelain');
+    assert(st.includes(' M README.md') && st.includes('?? untracked.txt'), 'the worktree still reports its uncommitted and untracked files');
+    assertEq(git(dApp, 'rev-list --count HEAD ^origin/main').trim(), '2', 'both unpushed project commits are still on the branch');
+    // The archive is out of the inventory, and a new session may reuse the name.
+    assertEq(byName(inventory(fx.root), 'keep'), undefined, 'the inventory no longer lists the archived session');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
-console.log('# teardown: refuses a dirty tree even after a backup');
+console.log('# archive: a failed repair moves the session back, nothing lost');
 {
   const fx = makeWorkspace();
   try {
-    const { wsWt, projWts } = makeSession(fx, { name: 'messy', branch: 'bugfix/messy', tracker: { branch: 'bugfix/messy', repos: ['app'], updated: daysAgoIso(40) } });
+    const { wsWt } = makeSession(fx, { name: 'rb', branch: 'bugfix/rb', tracker: { branch: 'bugfix/rb', repos: ['app'], updated: daysAgoIso(40) } });
     writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
     commitAll(wsWt, 'content', daysAgoIso(40));
-    const backup = backupSession(fx.root, { session: 'messy' });
-    assertEq(backup.refused, undefined, 'backup runs');
-    assertEq(backup.branches.filter((b) => b.repo === '.').length, 1, 'the workspace tip is backed up');
-    writeFileSync(join(projWts.app, 'loose.txt'), 'uncommitted\n');
-    const out = teardownSession(fx.root, { session: 'messy' });
-    assertEq(out.refused, true, 'teardown refuses the dirty worktree');
-    assert(out.reasons.some((r) => r.includes('loose.txt') && r.includes('--discard-uncommitted')), 'the refusal lists the exact path and the waiver');
-    assert(existsSync(join(fx.root, 'work-sessions', 'messy')), 'nothing was torn down');
+    let failOnce = true;
+    const flaky = (cmd, args, opts) => {
+      if (failOnce && args.includes('worktree') && args.includes('repair')) {
+        failOnce = false;
+        return { status: 1, stdout: '', stderr: 'simulated repair failure' };
+      }
+      return gitFn(cmd, args, opts);
+    };
+    const out = archiveSession(fx.root, { session: 'rb', cwd: fx.root, gitFn: flaky });
+    assertEq(out.refused, true, 'a failed repair refuses');
+    assert(out.reasons.some((r) => r.includes('moved back')), 'the refusal says the session was moved back');
+    assert(existsSync(join(fx.root, 'work-sessions', 'rb', 'workspace', 'NOTES.md')), 'the session is back where it was');
+    assertEq(realpathSync(git(wsWt, 'rev-parse --show-toplevel').trim()), realpathSync(wsWt), 'and its worktree resolves there');
+    assert(!existsSync(join(fx.root, 'work-sessions', '.archived', 'rb')), 'nothing was left in the archive');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
-console.log('# teardown: succeeds when every tip is provably on a remote');
+console.log('# archive: a destination that already exists refuses');
 {
   const fx = makeWorkspace();
   try {
-    const { wsWt, projWts } = makeSession(fx, { name: 'done', branch: 'bugfix/done', tracker: { branch: 'bugfix/done', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
-    commitAll(wsWt, 'content', daysAgoIso(40));
-    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
-    commitAll(projWts.app, 'project fix', daysAgoIso(40));
-    git(wsWt, 'push -q origin bugfix/done');
-    git(projWts.app, 'push -q origin bugfix/done');
-    // Both tips are already provably on their remotes: backup skips them
-    // (no tag needed, nothing pushed) and teardown proceeds.
-    const backup = backupSession(fx.root, { session: 'done' });
-    assertEq(backup.refused, undefined, 'backup is not refused');
-    assertEq(backup.branches.length, 0, 'remote-safe tips are not tagged');
-    assertEq(backup.skipped.length, 2, 'both tips report as already safe');
-
-    const out = teardownSession(fx.root, { session: 'done' });
-    assertEq(out.refused, undefined, 'teardown is not refused');
-    assertEq(out.removed, true, 'session folder removed');
-    assert(!existsSync(join(fx.root, 'work-sessions', 'done')), 'the session folder is gone');
-    assert(!git(fx.root, 'worktree list --porcelain').includes('done'), 'no workspace worktree record remains');
-    assert(!git(fx.app, 'worktree list --porcelain').includes('done'), 'no project worktree record remains');
-    assert(!gitOk(fx.root, 'show-ref --verify --quiet refs/heads/bugfix/done'), 'local workspace branch deleted');
-    assert(!gitOk(fx.app, 'show-ref --verify --quiet refs/heads/bugfix/done'), 'local project branch deleted');
-    // Never delete a remote branch — the whole point of the safety rule.
-    assert(gitOk(fx.wsOrigin, 'show-ref --verify --quiet refs/heads/bugfix/done'), 'remote workspace branch still exists');
-    assert(gitOk(fx.appOrigin, 'show-ref --verify --quiet refs/heads/bugfix/done'), 'remote project branch still exists');
+    makeSession(fx, { name: 'dup', branch: 'bugfix/dup', tracker: { branch: 'bugfix/dup', repos: ['app'], updated: daysAgoIso(40) } });
+    const now = Date.UTC(2026, 8, 27, 9, 0, 0);
+    mkdirSync(join(fx.root, 'work-sessions', '.archived', 'dup--20260927T090000'), { recursive: true });
+    const out = archiveSession(fx.root, { session: 'dup', cwd: fx.root, now });
+    assertEq(out.refused, true, 'an existing destination refuses');
+    assert(existsSync(join(fx.root, 'work-sessions', 'dup', 'workspace')), 'the session is untouched');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
-console.log('# teardown: --discard-uncommitted drops a dirty, zero-ahead session');
+console.log('# archive: a broken shell is archived, not deleted');
 {
   const fx = makeWorkspace();
   try {
-    const { wsWt } = makeSession(fx, { name: 'scratch', branch: 'bugfix/scratch', tracker: { branch: 'bugfix/scratch', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(wsWt, 'loose.txt'), 'never committed\n');
-    const refused = teardownSession(fx.root, { session: 'scratch' });
-    assertEq(refused.refused, true, 'without the flag the dirty worktree refuses');
-    const out = teardownSession(fx.root, { session: 'scratch', discardUncommitted: true });
-    assertEq(out.removed, true, '--discard-uncommitted tears the session down');
-    assert(!existsSync(join(fx.root, 'work-sessions', 'scratch')), 'the session folder is gone');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# B4: ignored files refuse teardown unless --discard-ignored');
-{
-  const fx = makeWorkspace();
-  try {
-    // Commit an ignore rule on app's main before the session so every
-    // worktree inherits it, then drop an ignored file in the worktree.
-    writeFileSync(join(fx.app, '.gitignore'), 'secrets.txt\n');
-    commitAll(fx.app, 'ignore rule');
-    git(fx.app, 'push -q origin main');
-    const { wsWt, projWts } = makeSession(fx, { name: 'ig', branch: 'bugfix/ig', tracker: { branch: 'bugfix/ig', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(wsWt, 'tracker', daysAgoIso(40)); // keep the tree check focused on the ignored file
-    git(wsWt, 'push -q origin bugfix/ig'); // and the tip safety out of the way
-    writeFileSync(join(projWts.app, 'secrets.txt'), 'would be silently lost\n');
-    const refused = teardownSession(fx.root, { session: 'ig' });
-    assertEq(refused.refused, true, 'an ignored file refuses teardown');
-    assert(refused.reasons.some((r) => r.includes('secrets.txt') && r.includes('ignored') && r.includes('--discard-ignored')), 'the refusal lists the ignored path and its waiver');
-    assert(existsSync(join(projWts.app, 'secrets.txt')), 'the ignored file survives the refusal');
-
-    const out = teardownSession(fx.root, { session: 'ig', discardIgnored: true });
-    assertEq(out.removed, true, '--discard-ignored tears the session down');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# B1: tracker drift refuses teardown');
-{
-  const fx = makeWorkspace();
-  try {
-    makeSession(fx, { name: 'drifted', branch: 'bugfix/drifted', tracker: { branch: 'bugfix/elsewhere', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(join(fx.root, 'work-sessions', 'drifted', 'workspace'), 'tracker', daysAgoIso(40));
-    const out = teardownSession(fx.root, { session: 'drifted' });
-    assertEq(out.refused, true, 'drift between tracker and worktree refuses');
-    assert(out.reasons.some((r) => r.includes('drift')), 'the refusal says drift and asks to reconcile');
-    assert(existsSync(join(fx.root, 'work-sessions', 'drifted')), 'nothing was torn down');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# B2: detached HEAD with commits refuses until tagged, then tears down');
-{
-  const fx = makeWorkspace();
-  try {
-    const { wsWt, projWts } = makeSession(fx, { name: 'det', branch: 'bugfix/det', tracker: { branch: 'bugfix/det', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(wsWt, 'tracker', daysAgoIso(40));
-    git(projWts.app, 'checkout -q --detach');
-    writeFileSync(join(projWts.app, 'detached.txt'), 'work on a detached head\n');
-    commitAll(projWts.app, 'detached work', daysAgoIso(40));
-
-    const refused = teardownSession(fx.root, { session: 'det' });
-    assertEq(refused.refused, true, 'a detached HEAD with unbacked commits refuses');
-    assert(refused.reasons.some((r) => r.includes('detached HEAD')), 'the refusal names the detached tip');
-
-    const backup = backupSession(fx.root, { session: 'det' });
-    assertEq(backup.refused, undefined, 'backup handles the detached session');
-    const detachedEntry = backup.branches.find((b) => b.detached === true);
-    const branchEntry = backup.branches.find((b) => b.detached === false);
-    assert(detachedEntry && detachedEntry.repo === 'app' && /^drain\/det\/app-detached-[0-9a-f]+$/.test(detachedEntry.tag), 'the detached tip gets a session-scoped detached tag');
-    assert(branchEntry && branchEntry.repo === '.', 'the workspace branch tip is also backed up');
-    assert(git(fx.appOrigin, 'tag -l').includes('detached'), 'the detached tag reached the remote');
-
-    const out = teardownSession(fx.root, { session: 'det' });
-    assertEq(out.refused, undefined, 'teardown proceeds once the detached tip is backed up');
-    assertEq(out.removed, true, 'the session is gone');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# B3: unresolvable default branch fails closed');
-{
-  const fx = makeWorkspace({ appDefaultBranch: 'master', includeApp: false });
-  try {
-    // app really lives on master, but workspace.json says nothing about
-    // it — the configured default ("main") does not exist in the repo.
-    makeSession(fx, { name: 'b3', branch: 'bugfix/b3', tracker: { branch: 'bugfix/b3', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(fx.root, 'work-sessions', 'b3', 'workspace', 'repos', 'app', 'fix.txt'), 'fix\n');
-    commitAll(join(fx.root, 'work-sessions', 'b3', 'workspace', 'repos', 'app'), 'work', daysAgoIso(40));
-
-    const s = byName(inventory(fx.root), 'b3');
-    assertEq(s.worktrees.find((w) => w.repo === 'app').ahead, null, 'ahead is unknown, not a silent 0');
-    assertEq(s.proposal, 'MERGEABLE', 'an unresolvable base is never ABANDONED');
-    assert(s.warnings.some((w) => w.kind === 'unknown-base'), 'a warning says the base is unknown');
-
-    const out = teardownSession(fx.root, { session: 'b3' });
-    assertEq(out.refused, true, 'teardown fails closed');
-    assert(out.reasons.some((r) => r.includes('no copy on any qualifying remote')), 'the refusal is the unsafe tip');
-    assert(existsSync(join(fx.root, 'work-sessions', 'b3')), 'nothing was torn down');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# invariant: a rebase in progress refuses');
-{
-  const fx = makeWorkspace();
-  try {
-    const { projWts } = makeSession(fx, { name: 'rebasey', branch: 'bugfix/rebasey', tracker: { branch: 'bugfix/rebasey', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
-    commitAll(projWts.app, 'work', daysAgoIso(40));
-    // Simulate the exact on-disk marker a rebase leaves behind.
-    const marker = git(projWts.app, 'rev-parse --git-path rebase-merge').trim();
-    mkdirSync(resolve(projWts.app, marker), { recursive: true });
-    writeFileSync(join(resolve(projWts.app, marker), 'onto'), 'abc123\n');
-    const out = teardownSession(fx.root, { session: 'rebasey' });
-    assertEq(out.refused, true, 'a rebase in progress refuses');
-    assert(out.reasons.some((r) => r.includes('rebase-merge') && r.includes('in progress')), 'the refusal names the operation');
+    mkdirSync(join(fx.root, 'work-sessions', 'shell', 'workspace', 'repos'), { recursive: true });
+    writeFileSync(join(fx.root, 'work-sessions', 'shell', 'workspace', 'stray.md'), 'a file\n');
+    const out = archiveSession(fx.root, { session: 'shell', cwd: fx.root });
+    assertEq(out.archived, true, 'a broken shell archives');
+    assertEq(out.worktrees.length, 0, 'it held no worktrees');
+    assertEq(readFileSync(join(fx.root, out.to, 'workspace', 'stray.md'), 'utf8'), 'a file\n', 'its file is kept');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -798,8 +745,8 @@ console.log('# N3: symlinked session entries are foreign and never acted on');
       const s = byName(inventory(fx.root), 'outsider');
       assertEq(s.kind, 'foreign', 'a symlinked entry reports foreign');
       assertEq(s.proposal, 'LEAVE', 'the proposal is LEAVE');
-      const td = teardownSession(fx.root, { session: 'outsider' });
-      assertEq(td.refused, true, 'teardown refuses a symlinked session');
+      const ar = archiveSession(fx.root, { session: 'outsider', cwd: fx.root });
+      assertEq(ar.refused, true, 'archive refuses a symlinked session');
       const bk = backupSession(fx.root, { session: 'outsider' });
       assertEq(bk.refused, true, 'backup refuses a symlinked session');
       assert(existsSync(join(fx.root, 'work-sessions', 'outsider')), 'the symlink is untouched');
@@ -807,60 +754,44 @@ console.log('# N3: symlinked session entries are foreign and never acted on');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, target); }
 }
 
-console.log('# N4: a nested worktree belonging to a foreign repo refuses');
+console.log('# N4: a worktree of a repository outside the workspace refuses archive, untouched');
 {
   const fx = makeWorkspace();
+  const outside = mkdtempSync(join(tmpdir(), 'mig-outside-repo-'));
   try {
     makeSession(fx, { name: 'host', branch: 'bugfix/host', tracker: { branch: 'bugfix/host', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(join(fx.root, 'work-sessions', 'host', 'workspace'), 'tracker', daysAgoIso(40));
-    // An intruder: a worktree of repos/app squatting where a workspace
-    // worktree of a repo named "intruder" would be — its git common dir
-    // is app's, not repos/intruder's.
-    git(fx.app, `worktree add -q -b bugfix/intruder "${join(fx.root, 'work-sessions', 'host', 'workspace', 'repos', 'intruder')}"`);
-    const out = teardownSession(fx.root, { session: 'host' });
-    assertEq(out.refused, true, 'a foreign common dir refuses');
-    assert(out.reasons.some((r) => r.includes('repos/intruder') && r.includes('foreign repository')), 'the refusal explains the foreign repo');
-    git(fx.app, `worktree remove --force "${join(fx.root, 'work-sessions', 'host', 'workspace', 'repos', 'intruder')}"`);
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+    git(outside, 'init -q -b main');
+    writeFileSync(join(outside, 'x.txt'), 'x\n');
+    commitAll(outside, 'outside');
+    const intruder = join(fx.root, 'work-sessions', 'host', 'workspace', 'scratch-wt');
+    git(outside, `worktree add -q -b feature/intruder "${intruder}"`);
+    const before = git(outside, 'worktree list --porcelain');
+    const out = archiveSession(fx.root, { session: 'host', cwd: fx.root });
+    assertEq(out.refused, true, 'a worktree of an outside repository refuses');
+    assert(out.reasons.some((r) => r.includes('outside this workspace')), 'the refusal names the outside repository');
+    assert(existsSync(join(fx.root, 'work-sessions', 'host', 'workspace')), 'nothing was moved');
+    assertEq(git(outside, 'worktree list --porcelain'), before, 'the outside repository was not touched');
+    git(outside, `worktree remove --force "${intruder}"`);
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, outside); }
 }
 
-console.log('# S5: the session hosting the current chat refuses backup and teardown');
+console.log('# S5: the session hosting the current chat refuses backup and archive');
 {
   const fx = makeWorkspace();
   try {
     const { wsWt } = makeSession(fx, { name: 'self', branch: 'bugfix/self', tracker: { branch: 'bugfix/self', repos: ['app'], updated: daysAgoIso(40) } });
     const inside = join(fx.root, 'work-sessions', 'self', 'workspace');
-    const td = teardownSession(fx.root, { session: 'self', cwd: inside });
-    assertEq(td.refused, true, 'teardown from inside the session refuses');
+    const td = archiveSession(fx.root, { session: 'self', cwd: inside });
+    assertEq(td.refused, true, 'archive from inside the session refuses');
     assert(td.reasons.some((r) => r.includes('hosts the current chat')), 'the refusal explains why');
     const bk = backupSession(fx.root, { session: 'self', cwd: join(inside, 'repos', 'app') });
     assertEq(bk.refused, true, 'backup from inside the session refuses');
 
-    // From the launcher the self-host refusal is gone: make the session
-    // fully drainable and confirm teardown actually completes.
+    // From the launcher the self-host refusal is gone.
     commitAll(wsWt, 'tracker', daysAgoIso(40));
-    git(wsWt, 'push -q origin bugfix/self');
-    const ok = teardownSession(fx.root, { session: 'self', cwd: fx.root });
+    const ok = archiveSession(fx.root, { session: 'self', cwd: fx.root });
     assertEq(ok.refused, undefined, 'from the launcher root there is no self-host refusal');
-    assertEq(ok.removed, true, 'and the teardown completes');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# teardown: broken shells — empty removes, a file refuses');
-{
-  const fx = makeWorkspace();
-  try {
-    mkdirSync(join(fx.root, 'work-sessions', 'shell', 'workspace', 'repos'), { recursive: true });
-    const out = teardownSession(fx.root, { session: 'shell' });
-    assertEq(out.removed, true, 'an empty shell directory is removed');
-    assert(!existsSync(join(fx.root, 'work-sessions', 'shell')), 'the shell folder is gone');
-
-    mkdirSync(join(fx.root, 'work-sessions', 'debris', 'workspace'), { recursive: true });
-    writeFileSync(join(fx.root, 'work-sessions', 'debris', 'workspace', 'stray.md'), 'a file\n');
-    const refused = teardownSession(fx.root, { session: 'debris' });
-    assertEq(refused.refused, true, 'a shell containing a file refuses');
-    assert(refused.reasons.some((r) => r.includes('stray.md')), 'the refusal names the file');
-    assert(existsSync(join(fx.root, 'work-sessions', 'debris')), 'the debris folder is untouched');
+    assertEq(ok.archived, true, 'and the archive completes');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -919,8 +850,8 @@ console.log('# CLI: inventory table on stderr, refusals exit 1, errors exit 2');
     assertEq(parsed.sessions.length, 1, 'inventory JSON on stdout');
     assert(inv.stderr.includes('cli') && inv.stderr.toLowerCase().includes('proposal'), 'human table on stderr');
 
-    const refuse = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--teardown', '--session', 'cli'], { encoding: 'utf8' });
-    assertEq(refuse.status, 1, 'a teardown refusal exits 1');
+    const refuse = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--archive', '--session', 'no-such-session'], { encoding: 'utf8' });
+    assertEq(refuse.status, 1, 'an archive refusal exits 1');
     assertEq(JSON.parse(refuse.stdout).refused, true, 'refusal JSON on stdout');
 
     const bad = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--bogus'], { encoding: 'utf8' });
@@ -928,226 +859,6 @@ console.log('# CLI: inventory table on stderr, refusals exit 1, errors exit 2');
 
     const notWs = spawnSync(process.execPath, [SCRIPT, '--root', GIT_CFG, '--inventory'], { encoding: 'utf8' });
     assertEq(notWs.status, 2, 'a --root without workspace.json exits 2');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/A1: a plain directory or loose file under workspace/repos/ refuses');
-{
-  const fx = makeWorkspace();
-  try {
-    const { wsWt } = makeSession(fx, { name: 'plain', branch: 'bugfix/plain', tracker: { branch: 'bugfix/plain', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(wsWt, 'tracker', daysAgoIso(40));
-    git(wsWt, 'push -q origin bugfix/plain');
-    git(join(fx.root, 'work-sessions', 'plain', 'workspace', 'repos', 'app'), 'push -q origin bugfix/plain');
-    const notesDir = join(wsWt, 'repos', 'notes');
-    mkdirSync(notesDir, { recursive: true });
-    writeFileSync(join(notesDir, 'design.txt'), 'irreplaceable');
-    writeFileSync(join(wsWt, 'repos', 'loose.txt'), 'loose file directly in repos/');
-    const out = teardownSession(fx.root, { session: 'plain' });
-    assertEq(out.refused, true, 'unexpected entries under repos/ refuse');
-    assert(out.reasons.some((r) => r.includes('repos/notes') && r.includes('plain directory')), 'the plain directory is named');
-    assert(out.reasons.some((r) => r.includes('repos/loose.txt') && r.includes('file')), 'the loose file is named');
-    assert(existsSync(join(notesDir, 'design.txt')), 'the directory content survives');
-    assert(existsSync(join(wsWt, 'repos', 'loose.txt')), 'the loose file survives');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/A1b+A1c: no tracker repos (or no tracker) + plain dir still refuses');
-{
-  const fx = makeWorkspace();
-  const lib = join(fx.root, 'repos', 'lib');
-  try {
-    // A second project repo with a local-only branch that must survive.
-    mkdirSync(lib, { recursive: true });
-    git(lib, 'init -q -b main');
-    writeFileSync(join(lib, 'README.md'), '# lib\n');
-    commitAll(lib, 'init');
-    git(lib, 'checkout -q -b feature/keeper');
-    writeFileSync(join(lib, 'u.txt'), 'unique\n');
-    commitAll(lib, 'lib unique');
-    git(lib, 'checkout -q main');
-
-    // No repos: field in the tracker — the nested dirs are authoritative.
-    const a = makeSession(fx, { name: 'norepos', branch: 'bugfix/nr', tracker: { branch: 'bugfix/nr', updated: daysAgoIso(40) } });
-    commitAll(a.wsWt, 'tracker', daysAgoIso(40));
-    mkdirSync(join(a.wsWt, 'repos', 'lib'), { recursive: true });
-    const outA = teardownSession(fx.root, { session: 'norepos' });
-    assertEq(outA.refused, true, 'plain dir with no tracker repos refuses');
-    assert(outA.reasons.some((r) => r.includes('repos/lib')), 'the refusal names repos/lib');
-
-    // Tracker stripped entirely (the /complete-work shape).
-    const b = makeSession(fx, { name: 'stripped', branch: 'bugfix/st', tracker: null });
-    mkdirSync(join(b.wsWt, 'repos', 'lib'), { recursive: true });
-    const outB = teardownSession(fx.root, { session: 'stripped' });
-    assertEq(outB.refused, true, 'plain dir with no tracker at all refuses');
-
-    assert(gitOk(lib, 'show-ref --verify --quiet refs/heads/feature/keeper'), 'the lib-only branch survives both refusals');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/A2: anything beside workspace/ refuses');
-{
-  const fx = makeWorkspace();
-  try {
-    const { wsWt } = makeSession(fx, { name: 'outside', branch: 'bugfix/outside', tracker: { branch: 'bugfix/outside', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(wsWt, 'tracker', daysAgoIso(40));
-    git(wsWt, 'push -q origin bugfix/outside');
-    git(join(fx.root, 'work-sessions', 'outside', 'workspace', 'repos', 'app'), 'push -q origin bugfix/outside');
-    const stray = join(fx.root, 'work-sessions', 'outside', 'notes.md');
-    writeFileSync(stray, 'operator notes');
-    const out = teardownSession(fx.root, { session: 'outside' });
-    assertEq(out.refused, true, 'a file beside workspace/ refuses');
-    assert(out.reasons.some((r) => r.includes('notes.md') && r.includes('only workspace/')), 'the unexpected entry is named');
-    assert(existsSync(stray), 'the stray file survives');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/A7: a plain clone under workspace/repos/ refuses');
-{
-  const fx = makeWorkspace();
-  try {
-    const { wsWt } = makeSession(fx, { name: 'cloned', branch: 'bugfix/cloned', tracker: { branch: 'bugfix/cloned', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(wsWt, 'tracker', daysAgoIso(40));
-    git(wsWt, 'push -q origin bugfix/cloned');
-    execSync(`git clone -q "${fx.app}" "${join(wsWt, 'repos', 'other')}"`, { stdio: 'pipe', env: process.env });
-    writeFileSync(join(wsWt, 'repos', 'other', 'clone-only.txt'), 'n');
-    const out = teardownSession(fx.root, { session: 'cloned' });
-    assertEq(out.refused, true, 'a plain clone under repos/ refuses');
-    assert(out.reasons.some((r) => r.includes('repos/other') && (r.includes('plain clone') || r.includes('foreign'))), 'the clone is named as unverified');
-    assert(existsSync(join(wsWt, 'repos', 'other', 'clone-only.txt')), 'the clone survives');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/A4: a stale remote-tracking ref proves nothing');
-{
-  const fx = makeWorkspace();
-  try {
-    const { wsWt, projWts } = makeSession(fx, { name: 'stale', branch: 'bugfix/stale', tracker: { branch: 'bugfix/stale', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(projWts.app, 'unique.txt'), 'u\n');
-    commitAll(projWts.app, 'unique', daysAgoIso(40));
-    commitAll(wsWt, 'tracker', daysAgoIso(40));
-    git(wsWt, 'push -q origin bugfix/stale');
-    git(projWts.app, 'push -q origin bugfix/stale');
-    // Delete the remote branch BY URL: the local tracking ref stays
-    // behind, stale, pointing at the commit that only it can reach.
-    git(fx.app, `push -q "${fx.appOrigin}" --delete bugfix/stale`);
-    assert(gitOk(fx.app, 'rev-parse --verify -q refs/remotes/origin/bugfix/stale'), 'pre: the stale tracking ref exists');
-    const out = teardownSession(fx.root, { session: 'stale' });
-    assertEq(out.refused, true, 'a stale tracking ref does not vouch for the tip');
-    assert(out.reasons.some((r) => r.includes('repo "app"') && r.includes('no copy on any qualifying remote')), 'the app tip is the unsafe one');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/A5: a remote pointing into the workspace proves nothing');
-{
-  const fx = makeWorkspace();
-  try {
-    const { projWts } = makeSession(fx, { name: 'selfish', branch: 'bugfix/selfish', tracker: { branch: 'bugfix/selfish', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(projWts.app, 'unique.txt'), 'u\n');
-    commitAll(projWts.app, 'unique', daysAgoIso(40));
-    // "Mirror" remotes pointing at repos INSIDE the workspace: their
-    // objects are the very objects teardown would delete.
-    git(fx.app, `remote add mirror "${fx.app}"`);
-    git(fx.root, `remote add mirror "${fx.root}"`);
-    const out = teardownSession(fx.root, { session: 'selfish' });
-    assertEq(out.refused, true, 'an in-workspace remote does not vouch for the tip');
-    assert(out.reasons.some((r) => r.includes('no copy on any qualifying remote')), 'the tip is unproven');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/A6: a force-rewound remote default branch proves nothing');
-{
-  const fx = makeWorkspace();
-  try {
-    const { wsWt, projWts } = makeSession(fx, { name: 'rewound', branch: 'bugfix/rewound', tracker: { branch: 'bugfix/rewound', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(projWts.app, 'unique.txt'), 'u\n');
-    commitAll(projWts.app, 'unique', daysAgoIso(40));
-    git(projWts.app, 'push -q origin HEAD:main'); // remote main now contains the tip
-    git(fx.app, 'fetch -q origin');
-    git(fx.app, `push -q -f "${fx.appOrigin}" main:main`); // …then main is rewound without it
-    git(wsWt, 'push -q origin bugfix/rewound');
-    assert(!git(fx.app, 'ls-remote origin').includes(git(projWts.app, 'rev-parse HEAD').trim()), 'pre: the remote really lost the commit');
-    const out = teardownSession(fx.root, { session: 'rewound' });
-    assertEq(out.refused, true, 'a rewound remote main does not vouch for the tip');
-    assert(out.reasons.some((r) => r.includes('repo "app"')), 'the app tip is the unsafe one');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/A3b: a failed backup push leaves no local tag, and teardown refuses');
-{
-  const fx = makeWorkspace();
-  try {
-    const { projWts } = makeSession(fx, { name: 'pf', branch: 'bugfix/pf', tracker: { branch: 'bugfix/pf', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(projWts.app, 'unique.txt'), '1\n');
-    commitAll(projWts.app, 'unique', daysAgoIso(40));
-    renameSync(fx.appOrigin, `${fx.appOrigin}.gone`);
-    const backup = backupSession(fx.root, { session: 'pf' });
-    assertEq(backup.refused, true, 'backup with an unreachable remote refuses');
-    assertEq(git(fx.app, 'tag -l "drain/pf/*"').trim(), '', 'no local drain tag masquerades as a backup');
-    const out = teardownSession(fx.root, { session: 'pf' });
-    assertEq(out.refused, true, 'teardown refuses while the tip is unprovable');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, `${fx.appOrigin}.gone`); }
-}
-
-console.log('# R3/A8: submodules refuse teardown');
-{
-  // Submodule fixture, done with explicit argv (no shell-string guessing).
-  const fx = makeWorkspace();
-  const subRemote = join(mkdtempSync(join(tmpdir(), 'mig-sub-remote-')), 'sub.git');
-  const subSrc = mkdtempSync(join(tmpdir(), 'mig-sub-src-'));
-  const g = (cwd, args, env = {}) => execFileSync('git', ['-C', cwd, ...args], {
-    stdio: 'pipe', encoding: 'utf-8', env: { ...process.env, ...env },
-  });
-  try {
-    g('', ['init', '-q', '--bare', subRemote]);
-    g('', ['clone', '-q', subRemote, subSrc]);
-    writeFileSync(join(subSrc, 's.txt'), 's\n');
-    g(subSrc, ['add', '-A']); g(subSrc, ['commit', '-q', '-m', 's0']);
-    g(subSrc, ['push', '-q', 'origin', 'HEAD:main']);
-    g(subRemote, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
-    g(fx.app, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subRemote, 'sub']);
-    commitAll(fx.app, 'add sub');
-    git(fx.app, 'push -q origin main');
-    const { wsWt, projWts } = makeSession(fx, { name: 'subm', branch: 'bugfix/sm', tracker: { branch: 'bugfix/sm', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(wsWt, 'tracker', daysAgoIso(40));
-    git(wsWt, 'push -q origin bugfix/sm');
-    g(projWts.app, ['-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init']);
-    const sp = join(projWts.app, 'sub');
-    g(sp, ['checkout', '-q', '-b', 'work']);
-    writeFileSync(join(sp, 's.txt'), 'unpushed sub work\n');
-    g(sp, ['add', '-A']); g(sp, ['commit', '-q', '-m', 'sub unique']);
-    g(projWts.app, ['add', 'sub']);
-    commitAll(projWts.app, 'bump sub', daysAgoIso(40));
-    git(projWts.app, 'push -q origin bugfix/sm');
-    const out = teardownSession(fx.root, { session: 'subm' });
-    assertEq(out.refused, true, 'a session with submodules refuses teardown');
-    assert(out.reasons.some((r) => r.includes('submodule')), 'the refusal tells the operator to handle submodules manually');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, subRemote, subSrc); }
-}
-
-console.log('# R3/A9: a branch checked out elsewhere fails teardown without collateral loss');
-{
-  const fx = makeWorkspace();
-  try {
-    const { wsWt, projWts } = makeSession(fx, { name: 'dup', branch: 'bugfix/dup', tracker: { branch: 'bugfix/dup', repos: ['app'], updated: daysAgoIso(40) } });
-    writeFileSync(join(projWts.app, 'unique.txt'), '1\n');
-    commitAll(projWts.app, 'unique', daysAgoIso(40));
-    commitAll(wsWt, 'tracker', daysAgoIso(40));
-    assertEq(backupSession(fx.root, { session: 'dup' }).branches.length >= 1, true, 'backup covers the unique tips');
-    const other = join(fx.app, '.claude', 'worktrees', 'bugfix-dup');
-    git(fx.app, `worktree add -q -f "${other}" bugfix/dup`);
-    writeFileSync(join(other, 'wip.txt'), 'wip');
-    let msg = null;
-    try {
-      teardownSession(fx.root, { session: 'dup' });
-      failed += 1; console.error('  FAIL: teardown should have thrown');
-    } catch (e) {
-      msg = e.message;
-    }
-    assert(msg && msg.includes('bugfix/dup'), 'the thrown error carries cleanup\'s own failure detail');
-    assert(existsSync(join(other, 'wip.txt')), 'the other worktree and its uncommitted work survive');
-    assert(gitOk(fx.app, 'show-ref --verify --quiet refs/heads/bugfix/dup'), 'the branch survives');
-    assert(existsSync(join(fx.root, 'work-sessions', 'dup')), 'the session folder is kept for a retry');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -1188,51 +899,6 @@ console.log('# R3/S2c: a fresh worktree on an old commit reads as recent');
     const s = byName(inventory(fx.root), 'fresh');
     assert(s.worktrees.every((w) => w.reflogAt != null), 'the creation reflog is read');
     assertEq(s.proposal, 'ACTIVE', 'a fresh worktree reads as recent activity');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# R3/should-fix 4: regenerable ignored paths do not block teardown');
-{
-  const fx = makeWorkspace();
-  try {
-    writeFileSync(join(fx.root, '.claude', 'settings.local.json'), '{ "user": "fixture" }\n');
-    const { wsWt } = makeSession(fx, { name: 'ign2', branch: 'bugfix/ign2', tracker: { branch: 'bugfix/ign2', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(wsWt, 'tracker', daysAgoIso(40));
-    git(wsWt, 'push -q origin bugfix/ign2');
-    git(join(fx.root, 'work-sessions', 'ign2', 'workspace', 'repos', 'app'), 'push -q origin bugfix/ign2');
-    const claudeDir = join(wsWt, '.claude');
-    mkdirSync(claudeDir, { recursive: true });
-    writeFileSync(join(claudeDir, '.active-session.json'), '{}\n');
-    writeFileSync(join(claudeDir, 'settings.local.json'), '{ "user": "fixture" }\n'); // byte-identical copy
-    writeFileSync(join(claudeDir, '.DS_Store'), 'junk');
-    const out = teardownSession(fx.root, { session: 'ign2' });
-    assertEq(out.refused, undefined, 'regenerable ignored paths alone do not refuse');
-    assertEq(out.removed, true, 'teardown completes without --discard-ignored');
-
-    // A real (non-regenerable) ignored file still refuses.
-    const { wsWt: ws2 } = makeSession(fx, { name: 'ign3', branch: 'bugfix/ign3', tracker: { branch: 'bugfix/ign3', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(ws2, 'tracker', daysAgoIso(40));
-    git(ws2, 'push -q origin bugfix/ign3');
-    git(join(fx.root, 'work-sessions', 'ign3', 'workspace', 'repos', 'app'), 'push -q origin bugfix/ign3');
-    const c2 = join(ws2, '.claude');
-    mkdirSync(c2, { recursive: true });
-    writeFileSync(join(c2, '.active-session.json'), '{}\n');
-    writeFileSync(join(c2, 'local-only-braindump.md'), 'real thinking\n');
-    const refused = teardownSession(fx.root, { session: 'ign3' });
-    assertEq(refused.refused, true, 'a local-only-* draft under .claude still refuses');
-    assert(refused.reasons.some((r) => r.includes('local-only-braindump.md')), 'the refusal names the exact non-regenerable file');
-
-    // A modified settings.local.json copy is content, not a copy.
-    const { wsWt: ws3 } = makeSession(fx, { name: 'ign4', branch: 'bugfix/ign4', tracker: { branch: 'bugfix/ign4', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(ws3, 'tracker', daysAgoIso(40));
-    git(ws3, 'push -q origin bugfix/ign4');
-    git(join(fx.root, 'work-sessions', 'ign4', 'workspace', 'repos', 'app'), 'push -q origin bugfix/ign4');
-    const c3 = join(ws3, '.claude');
-    mkdirSync(c3, { recursive: true });
-    writeFileSync(join(c3, 'settings.local.json'), '{ "user": "someone-else" }\n');
-    const refused2 = teardownSession(fx.root, { session: 'ign4' });
-    assertEq(refused2.refused, true, 'a settings.local.json that differs from the root copy refuses');
-    assert(refused2.reasons.some((r) => r.includes('settings.local.json')), 'the refusal names it');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 

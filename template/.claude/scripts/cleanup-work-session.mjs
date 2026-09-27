@@ -213,6 +213,22 @@ if (!branch && existsSync(wsWorktree)) {
   }
 }
 
+// A tracker that lists fewer repos than the session actually holds must
+// not decide the teardown: removing the workspace worktree takes every
+// nested directory with it, so an unlisted live worktree — with whatever
+// work is in it — would go too. Refuse, and name the unlisted entries.
+if (!discovered && repos.length > 0) {
+  const nestedReposDir = join(wsWorktree, 'repos');
+  if (existsSync(nestedReposDir)) {
+    let onDisk = [];
+    try { onDisk = readdirSync(nestedReposDir); } catch { /* unreadable: nothing to compare */ }
+    const unlisted = onDisk.filter((entry) => !repos.includes(entry));
+    if (unlisted.length > 0) {
+      errors.push(`The session tracker lists repos [${repos.join(', ')}] but ${nestedReposDir} also holds [${unlisted.join(', ')}] — removing the workspace worktree would delete them; add them to the tracker or move them out first`);
+    }
+  }
+}
+
 // Branch names become refs and git command arguments; git's own format
 // check is the authority and also rejects shell-metacharacter payloads
 // long before any later use.

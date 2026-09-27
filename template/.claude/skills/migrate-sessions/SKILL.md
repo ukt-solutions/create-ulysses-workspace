@@ -1,6 +1,6 @@
 ---
 name: migrate-sessions
-description: Migrate this workspace from the session lifecycle to the task lifecycle — inventory old work sessions, decide each one with the operator, drain them, and switch workspace.json to the task model. Runs only inside the current workspace.
+description: Migrate this workspace from the session lifecycle to the task lifecycle — inventory old work sessions, decide each one with the operator, finish or archive them, and switch workspace.json to the task model. Runs only inside the current workspace; never deletes anything.
 ---
 
 # Migrate Sessions
@@ -9,7 +9,7 @@ Drain a workspace's accumulated session entries and switch new work to the task 
 
 **Scope rule, before anything else: this skill acts only on the workspace it is run in.** Never read, inventory, or act on any other workspace or directory — even if asked to "do them all." Each workspace runs its own migration from its own root, by its own operator, on its own schedule.
 
-**Run from the launcher root only** — the workspace root itself, never a session folder or any other worktree. The script refuses a linked-worktree `--root` on its own (one exception, the Switch step below), and it refuses to back up or tear down the session that hosts the current chat, so there is no way to drain the session you are sitting in from inside it.
+**Run from the launcher root only** — the workspace root itself, never a session folder or any other worktree. The script refuses a linked-worktree `--root` on its own (one exception, the Switch step below), and it refuses to back up or archive the session that hosts the current chat, so there is no way to drain the session you are sitting in from inside it.
 
 ## 1. Inventory
 
@@ -17,20 +17,19 @@ Drain a workspace's accumulated session entries and switch new work to the task 
 node .claude/scripts/migrate-sessions.mjs --inventory
 ```
 
-Read-only. Present the stderr table plus each session's proposal with its reasons and warnings. Say plainly that the proposals are proposals — evidence and a starting point, not decisions. Pay particular attention to the per-remote state shown per worktree (`same`, `ahead +N`, `behind -N`, `diverged +N/-M`, `not-fetched`, `unknown`) and to `unbacked` warnings: they change what Finish and Abandon mean for that session. Entries shown as `foreign` (symlinked) are never acted on — surface them for manual reconciliation.
+Read-only. Present the stderr table plus each session's proposal with its reasons and warnings. Say plainly that the proposals are proposals — evidence and a starting point, not decisions. Pay particular attention to the per-remote state shown per worktree (`same`, `ahead +N`, `behind -N`, `diverged +N/-M`, `not-fetched`, `unknown`) and to `unbacked` warnings: they change what Finish and Archive mean for that session. Entries shown as `foreign` (symlinked) are never acted on — surface them for manual reconciliation.
 
 ## 2. Decide per session, with the operator — one at a time
 
 For each session, lay out its evidence and ask the operator which way to go. Never infer the decision from the proposal. The options:
 
 - **Finish** (typical for MERGEABLE) — resume the session with `/start-work`, then run `/complete-work`; its own merge confirmation applies there. But if the inventory shows a **diverged** remote for that session, say so *before* the operator chooses Finish: `/complete-work`'s plain push will be rejected, and pushing the rewritten history needs `--force-with-lease` — which you run only on the operator's explicit yes naming the branch. Never force silently.
-- **Abandon** (typical for ABANDONED, or a MERGEABLE the operator gives up on) — two separate decisions:
-  1. **Backup is itself a decision.** It creates `drain/{session}/…` tags and pushes them to the resolved remote(s) — tags may land in a public repository. Run the dry run first and show it before asking: `node .claude/scripts/migrate-sessions.mjs --backup --session {name} --dry-run` (add `--remote <name>` to aim somewhere other than the resolved default). It reports, per tip, the tag that would be created, the remote it would go to, and which tips are already provably safe so need no tag at all — with no side effects. On the operator's yes, run `--backup --session {name}` without `--dry-run`, and show the tags it created. If a repo has no remote at all, the backup refuses — the operator decides where that work goes. **Offer the backup first; if the operator declines it, the only remaining option for that session is Keep** — teardown will (correctly) refuse to delete commits it cannot prove are on a remote.
-  2. **Teardown after an explicit yes naming the session:** `--teardown --session {name}`. It refuses on its own unless every commit it would delete is provably on a remote, every file is committed or explicitly discarded, and the session folder has no unexpected contents. Before any `--discard-uncommitted` or `--discard-ignored`, show the operator the exact file list per worktree (the refusal names every path) and get an explicit yes for that session — uncommitted and ignored files are never discarded implicitly. (Regenerable template files — the active-session pointer, an unmodified `settings.local.json` copy, `.DS_Store` — are exempt automatically.)
+- **Archive** (typical for ABANDONED, a broken shell, or a MERGEABLE the operator gives up on) — take it out of the active lifecycle without destroying anything. Two steps, each its own decision:
+  1. **Offer a backup.** Archiving keeps everything on this machine; a backup adds an off-machine copy of the session's commits, and it is what makes a later deletion safe. It creates `drain/{session}/…` tags and pushes them to the resolved remote(s) — tags may land in a public repository, so show the plan first: `node .claude/scripts/migrate-sessions.mjs --backup --session {name} --dry-run` (add `--remote <name>` to aim somewhere other than the resolved default). It lists, per tip, the tag, the remote, and which tips a remote branch or tag already holds exactly, with no side effects. On the operator's yes, run it without `--dry-run` and show the tags it created. Declining is fine — the archive still keeps everything locally. A repo with no remote at all is refused by backup; say so.
+  2. **Archive after an explicit yes naming the session:** `node .claude/scripts/migrate-sessions.mjs --archive --session {name}`. The whole session folder moves to `{sessions}/.archived/{name}--{timestamp}/` and git's worktree links are repaired to follow it — every commit, uncommitted edit, untracked or ignored file, and embedded repository comes along. The session's branches stay checked out in the archived worktrees. If the move or the repair fails, the session is put back where it was; nothing is lost either way. The archive refuses, touching nothing, when the folder holds a worktree of a repository outside this workspace — surface that for the operator to move by hand.
 - **Keep** (typical for ACTIVE, and the only sane answer for UNKNOWN) — leave it; it completes later under the session lifecycle.
-- **Remove shell** (broken) — confirm, then run exactly: `node .claude/scripts/migrate-sessions.mjs --teardown --session {name}` — the same teardown command; on a broken session it removes the empty directory shell and refuses on its own if anything but empty directories is inside.
 
-Unbacked commits (present on no remote) cannot be drained: offer the backup first; if the operator declines it, the only remaining option for that session is Keep.
+Unbacked commits (present on no remote) are safe in an archive — they are only ever at risk when someone deletes one. Say so when you archive such a session, and offer the backup.
 
 ## 3. Switch — never write the launcher's tracked `workspace.json` directly
 
@@ -53,3 +52,7 @@ Re-run `--inventory` at the launcher root and report what remains and why — ke
 ## 5. Afterwards
 
 The first new piece of work starts with `/start-work` under the task lifecycle.
+
+## Deleting an archive — the operator's call, never this skill's
+
+Archives are meant to be kept until the operator has looked at them. When the operator asks to delete one, show them first, per worktree in it, what would go: `git -C {worktree} status --porcelain --ignored`, `git -C {worktree} log --oneline {default}..HEAD`, and whether a `drain/*` tag or a remote branch holds each tip. Only on their explicit yes naming the archive: `git -C {repo} worktree remove --force {archived worktree}` for each worktree (project worktrees before the workspace worktree), `git -C {repo} branch -D {branch}` for each branch they confirm, then delete the archive folder. Nothing in this workspace does this automatically.
