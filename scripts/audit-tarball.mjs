@@ -56,12 +56,14 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // target (gh:146 / Q6) grew task-worktree.mjs, its suite, and the
 // repo-write-detection suite → 215 kB after the session→task migration
 // added migrate-sessions.mjs + its suite + the /migrate-sessions skill
-// (gh:147).
+// (gh:147) → 225 kB after the gh:147 fix round: the teardown invariant,
+// per-remote states, and the cleanup-work-session.mjs security rewrite
+// grew migrate-sessions.mjs and both suites.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 215 * 1024;
+const SIZE_LIMIT_BYTES = 225 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {

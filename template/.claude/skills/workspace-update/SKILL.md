@@ -121,7 +121,7 @@ Report: "Workspace updated to v{toVersion}. Restart Claude Code if rules or hook
 
 ### Step 8: Session-model migration nudge
 
-After the update is applied, if `work-sessions/` has entries and `workspace.sessionModel` is not `"task"`, append one line to the report: "This workspace still has {N} session(s) under the session model — `/migrate-sessions` can inventory and drain them and switch to the task model whenever you're ready." Suggest only; the operator decides whether and when.
+After the update is applied, if the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) has entries and `workspace.sessionModel` is not `"task"`, append one line to the report: "This workspace still has {N} session(s) under the session model — `/migrate-sessions` can inventory and drain them and switch to the task model whenever you're ready." Suggest only; the operator decides whether and when.
 
 ## Notes
 

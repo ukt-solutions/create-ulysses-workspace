@@ -7,14 +7,15 @@
 // some still live. This script is the mechanical half of draining them:
 //
 //   --inventory   read-only evidence + a proposal (ACTIVE / ABANDONED /
-//                 MERGEABLE / REMOVE_SHELL) per session
-//   --backup      tag every ahead branch `drain/*` and push the tag, so
-//                 nothing unique is lost before teardown
-//   --teardown    re-check the safety preconditions, then delegate the
-//                 actual teardown to cleanup-work-session.mjs (the ordered
+//                 MERGEABLE / UNKNOWN / REMOVE_SHELL / LEAVE) per session
+//   --backup      tag every ref teardown would destroy that is not
+//                 already contained in a surviving ref, and push the tag
+//   --teardown    check the teardown invariant, then delegate the actual
+//                 teardown to cleanup-work-session.mjs (the ordered
 //                 teardown lives there — this script never reimplements it)
 //   --enable-task-model
-//                 flip workspace.sessionModel to "task"
+//                 flip workspace.sessionModel to "task" (accepts a task
+//                 worktree root — the one mode allowed off the launcher)
 //
 // HARD BOUNDARY: the process only ever touches the workspace it is run
 // in. --root must resolve (real path) to a directory containing
@@ -26,15 +27,23 @@
 // others). Remote contact (ls-remote, push) verifies and creates backups
 // — it never deletes a remote branch or tag.
 //
+// THE TEARDOWN INVARIANT: before teardown spawns cleanup (or removes
+// anything), compute the complete set of refs and trees that would be
+// destroyed, and require every item to be safe. A tip is safe only if
+// some remote holds it at exactly that sha (verified live) or some ref
+// that survives teardown contains it. A tree is safe only if nothing —
+// not even ignored files — would be lost. Anything unprovable is unsafe
+// (fail closed); every git failure during evaluation counts as unsafe.
+//
 // Output contract: JSON on stdout. Inventory also prints a human-readable
 // table to stderr. A precondition refusal prints {refused: true,
 // reasons: [...]} and exits 1; any other error goes to stderr and exits 2.
 
 import {
-  readFileSync, writeFileSync, existsSync, readdirSync, rmSync,
+  readFileSync, writeFileSync, existsSync, readdirSync, rmSync, lstatSync, statSync,
 } from 'node:fs';
 import { realpathSync } from 'node:fs';
-import { join, resolve, relative, sep, isAbsolute } from 'node:path';
+import { join, resolve, relative, dirname, sep, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readSessionFields } from '../lib/session-frontmatter.mjs';
@@ -48,14 +57,21 @@ function isMainModule(metaUrl) {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-// ls-remote contacts real remotes; a hung one must degrade the answer to
-// "unknown" rather than hanging the whole inventory.
+// Remote contact must never hang or prompt an operator who is not there:
+// prompts are disabled and both commands get hard timeouts. A timed-out
+// ls-remote degrades the inventory answer to "unknown" and fails backup
+// and teardown closed.
 const LS_REMOTE_TIMEOUT_MS = 15000;
+const PUSH_TIMEOUT_MS = 60000;
+
+function netOpts(timeoutMs) {
+  return { encoding: 'utf8', timeout: timeoutMs, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } };
+}
 
 // Session artifacts live at the top of the workspace worktree on the
 // session branch (workspace-structure.md). They are process output, not
 // content — a branch whose only diff is these files carries nothing
-// worth merging.
+// worth merging, and a dirty artifact is not dirty content.
 const SESSION_ARTIFACT_PATTERNS = [
   /^session\.md$/,
   /^design-.*\.md$/,
@@ -103,6 +119,17 @@ function isSessionSegment(name) {
   return !/^\.+$/.test(segs[0]);
 }
 
+// A project repo name as cleanup-work-session.mjs will use it: one path
+// segment under repos/. This is the guard that keeps a crafted tracker
+// (repos: ['../../elsewhere']) from pointing teardown at a repo outside
+// the workspace.
+function isRepoSegment(name) {
+  if (typeof name !== 'string' || name === '' || isAbsolute(name)) return false;
+  const segs = name.split(/[\\/]/);
+  if (segs.length !== 1) return false;
+  return !/^\.+$/.test(segs[0]);
+}
+
 // The root must be a workspace root — otherwise the script would be
 // operating on (and writing into) an arbitrary directory, which is the
 // one thing the hard boundary forbids.
@@ -117,6 +144,11 @@ function resolveRoot(root) {
 function insideRoot(rootDir, p) {
   const rp = realPath(p);
   return rp === rootDir || rp.startsWith(rootDir + sep);
+}
+
+function insideDir(dir, p) {
+  const rp = realPath(p);
+  return rp === realPath(dir) || rp.startsWith(realPath(dir) + sep);
 }
 
 function readConfig(rootDir) {
@@ -139,17 +171,23 @@ function sessionsDirOf(rootDir) {
   return path;
 }
 
-function listSessionNames(rootDir) {
+// Session entries with their nature: a symlinked entry is foreign — it
+// may point anywhere, so it is reported and never followed (N3).
+function listSessionEntries(rootDir) {
   const dir = sessionsDirOf(rootDir);
   if (!existsSync(dir)) return [];
   try {
     return readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && !e.isSymbolicLink())
-      .map((e) => e.name)
-      .sort();
+      .map((e) => ({ name: e.name, foreign: e.isSymbolicLink() }))
+      .filter((e) => e.foreign || lstatSync(join(dir, e.name)).isDirectory())
+      .sort((a, b) => a.name.localeCompare(b.name));
   } catch {
     return [];
   }
+}
+
+function listSessionNames(rootDir) {
+  return listSessionEntries(rootDir).filter((e) => !e.foreign).map((e) => e.name);
 }
 
 function currentBranch(gitFn, path) {
@@ -172,10 +210,24 @@ function headSha(gitFn, path) {
   }
 }
 
-function countDirty(gitFn, path) {
-  const res = run(gitFn, path, ['status', '--porcelain']);
-  if (res.status !== 0) return 0;
-  return okLines(res).length;
+// Porcelain v1 -z records: "XY <path>", NUL-separated, with the rename
+// source in a second NUL field. Ignored entries only appear when
+// --ignored=matching is requested. Null return = git failed, which every
+// caller treats as fail-closed.
+function statusRecords(gitFn, path, extraArgs = []) {
+  const res = run(gitFn, path, ['status', '--porcelain=v1', '-z', '--untracked-files=all', ...extraArgs]);
+  if (res.status !== 0) return null;
+  const parts = String(res.stdout || '').split('\0');
+  const records = [];
+  for (let i = 0; i < parts.length; i += 1) {
+    const p = parts[i];
+    if (p === '') continue;
+    const xy = p.slice(0, 2);
+    const entryPath = p.slice(3);
+    if (xy[0] === 'R' || xy[0] === 'C') i += 1; // the next NUL field is the rename source
+    records.push({ xy, path: entryPath });
+  }
+  return records;
 }
 
 // The base the session branched from, as a ref: origin/{default} when
@@ -186,20 +238,20 @@ function baseRef(gitFn, path, defaultBranch) {
   return hasOrigin ? `origin/${defaultBranch}` : defaultBranch;
 }
 
-// Commits not on the repo's default branch. origin/{default} is the
-// truth when the remote ref exists; without one (a repo with no remote
-// configured, or nothing fetched yet) {default}..HEAD is the only
-// question git can still answer — a stale answer beats none, and the
-// unbacked warning is the safety net for the difference.
 function ownRange(gitFn, path, defaultBranch) {
   return `${baseRef(gitFn, path, defaultBranch)}..HEAD`;
 }
 
+// Commits not on the repo's default branch, or null when the question
+// cannot be answered (e.g. the configured default branch does not exist
+// in this repo — B3). null is "unknown", never "zero": the unbacked and
+// classification logic treats it with suspicion and the invariant
+// fail-closes independently of it.
 function aheadCount(gitFn, path, range) {
   const res = run(gitFn, path, ['rev-list', '--count', range]);
-  if (res.status !== 0) return 0;
+  if (res.status !== 0) return null;
   const n = parseInt(String(res.stdout).trim(), 10);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? n : null;
 }
 
 // When this worktree last got session work of its own: the committer
@@ -233,11 +285,9 @@ function remotesOf(gitFn, path) {
 // Does {branch} exist on {remote}, and at what commit? Local tracking
 // refs prove nothing (they are stale the moment anything fetches), so
 // the remote is asked directly. Timeouts and failures degrade to
-// 'unknown' — an inventory must report, not crash.
+// 'unknown' — an inventory must report, not crash, and never hang.
 function lsRemoteBranch(gitFn, cwd, remote, branch) {
-  const res = gitFn('git', ['-C', cwd, 'ls-remote', '--heads', remote, branch], {
-    encoding: 'utf8', timeout: LS_REMOTE_TIMEOUT_MS,
-  });
+  const res = gitFn('git', ['-C', cwd, 'ls-remote', '--heads', remote, branch], netOpts(LS_REMOTE_TIMEOUT_MS));
   if (res.error || res.status !== 0) return { exists: 'unknown', sha: null };
   const line = okLines(res)[0];
   if (!line) return { exists: false, sha: null };
@@ -245,49 +295,146 @@ function lsRemoteBranch(gitFn, cwd, remote, branch) {
   return { exists: true, sha };
 }
 
-// Does {tag} exist on {remote} at exactly {commit}? Deliberately no
-// refspec pattern: a pattern filters out the peeled `^{}` line (the
-// tag object's sha is not the commit's), and the peeled line is exactly
-// what "at this commit" needs. An annotated tag answers via the peel; a
-// lightweight tag's only line already is the commit.
-function tagOnRemoteAt(gitFn, cwd, remote, tag, commit) {
-  const res = gitFn('git', ['-C', cwd, 'ls-remote', '--tags', remote], {
-    encoding: 'utf8', timeout: LS_REMOTE_TIMEOUT_MS,
-  });
-  if (res.error || res.status !== 0) return false;
-  const peeledRef = `refs/tags/${tag}^{}`;
-  const plainRef = `refs/tags/${tag}`;
-  let plainSha = false;
-  for (const line of okLines(res)) {
-    const [sha, ref] = line.trim().split(/\s+/);
-    if (ref === peeledRef) return sha === commit;
-    if (ref === plainRef) plainSha = sha;
+// === S1: remote state per remote ===
+//
+// For each remote holding the branch, record how the local tip relates:
+// same / local-ahead / local-behind / diverged (with counts) when the
+// remote commit is known locally, not-fetched when it is not. This is
+// what tells the operator "finishing needs a force-push decision" BEFORE
+// they choose Finish, rather than after /complete-work's push bounces.
+function remoteStatesFor(gitFn, wtPath, branch, head) {
+  const out = {};
+  if (!branch) return out;
+  for (const remote of remotesOf(gitFn, wtPath)) {
+    const probe = lsRemoteBranch(gitFn, wtPath, remote, branch);
+    if (probe.exists === 'unknown') {
+      out[remote] = { exists: false, sha: null, state: 'unknown' };
+      continue;
+    }
+    if (!probe.exists) {
+      out[remote] = { exists: false, sha: null, state: 'none' };
+      continue;
+    }
+    const { sha } = probe;
+    if (sha === head) {
+      out[remote] = { exists: true, sha, state: 'same' };
+      continue;
+    }
+    const known = run(gitFn, wtPath, ['cat-file', '-e', `${sha}^{commit}`]).status === 0;
+    if (!known) {
+      out[remote] = { exists: true, sha, state: 'not-fetched' };
+      continue;
+    }
+    const lr = run(gitFn, wtPath, ['rev-list', '--left-right', '--count', `${sha}...HEAD`]);
+    if (lr.status !== 0) {
+      out[remote] = { exists: true, sha, state: 'unknown' };
+      continue;
+    }
+    const counts = String(lr.stdout).trim().split(/\s+/).map(Number);
+    const remoteOnly = counts[0]; // left side: commits only the remote has
+    const localOnly = counts[1]; // right side: commits only HEAD has
+    if (remoteOnly === 0 && localOnly === 0) out[remote] = { exists: true, sha, state: 'same' };
+    else if (localOnly > 0 && remoteOnly === 0) out[remote] = { exists: true, sha, state: 'local-ahead', ahead: localOnly };
+    else if (localOnly === 0 && remoteOnly > 0) out[remote] = { exists: true, sha, state: 'local-behind', behind: remoteOnly };
+    else out[remote] = { exists: true, sha, state: 'diverged', ahead: localOnly, behind: remoteOnly };
   }
-  return plainSha === commit;
+  return out;
 }
 
-// The local peeled SHA of an existing tag, or null when the tag is
-// absent. Refnames cannot contain ^{ (check-ref-format forbids ^), so
-// appending ^{} to interpolate the peel is safe.
-function peeledTagSha(gitFn, cwd, tag) {
-  const res = run(gitFn, cwd, ['rev-parse', '-q', '--verify', `refs/tags/${tag}^{}`]);
-  return res.status === 0 ? String(res.stdout).trim() : null;
+function describeRemote(name, r) {
+  switch (r.state) {
+    case 'same': return `${name}:same`;
+    case 'local-ahead': return `${name}:ahead +${r.ahead}`;
+    case 'local-behind': return `${name}:behind -${r.behind}`;
+    case 'diverged': return `${name}:diverged +${r.ahead}/-${r.behind}`;
+    default: return `${name}:${r.state}`;
+  }
 }
 
-function repoLabel(wt) {
-  return wt.kind === 'workspace' ? 'the workspace repo' : `repo "${wt.repo}"`;
+// The tip is machine-safe on a remote when the remote's copy leaves
+// nothing local-only (same, or local purely behind). Any other state —
+// or no remote holding the branch at all — leaves local-only commits.
+function backedByRemote(remotes) {
+  for (const [name, r] of Object.entries(remotes)) {
+    if (r.exists && (r.state === 'same' || r.state === 'local-behind')) return name;
+  }
+  return null;
 }
+
+// The true local-only count against the closest remote that holds the
+// branch; with no holding remote, the ahead count is the honest floor.
+function localOnlyCount(wt) {
+  const holders = Object.values(wt.remotes).filter((r) => r.exists);
+  const counts = holders
+    .map((r) => (r.state === 'local-ahead' || r.state === 'diverged' ? r.ahead : 0));
+  if (counts.length > 0) return Math.min(...counts);
+  return typeof wt.ahead === 'number' ? wt.ahead : 0;
+}
+
+function unbackedMessage(wt) {
+  const parts = Object.entries(wt.remotes).map(([name, r]) => describeRemote(name, r));
+  const diverged = Object.values(wt.remotes).some((r) => r.state === 'diverged');
+  const head = `${localOnlyCount(wt)} commit(s) on ${wt.branch} exist on no remote (${parts.join(', ')})`;
+  // A diverged remote means a rebase rewrote history that was already
+  // pushed: a plain push will be rejected, and deciding to force is the
+  // operator's, never the script's.
+  return diverged ? `${head} — diverged from a remote; finishing needs a force-push decision` : head;
+}
+
+// === S2(c): activity signals beyond commits ===
+
+// Newest HEAD-reflog timestamp for a worktree (unix seconds). A fresh
+// worktree has none — creation writes no HEAD reflog entry — so absence
+// is normal and tolerated; entries appear when real work (commit,
+// checkout, reset) happens in that worktree.
+function reflogTs(gitFn, wtPath) {
+  try {
+    const res = gitFn('git', ['-C', wtPath, 'log', '-g', '-1', '--format=%ct'], { encoding: 'utf8' });
+    if (!res || res.status !== 0) return null;
+    const s = String(res.stdout).trim();
+    return s === '' ? null : Number(s);
+  } catch {
+    return null;
+  }
+}
+
+// Newest mtime among content (non-artifact) dirty paths — a session with
+// no commits and no reflog can still show fresh uncommitted work.
+// Artifact paths are excluded: an uncommitted session.md edit is bookkeeping,
+// not work, and would otherwise make UNKNOWN unreachable.
+function dirtyContentMtimeMs(gitFn, wtPath, kind) {
+  const records = statusRecords(gitFn, wtPath);
+  if (!records) return null;
+  let newest = null;
+  for (const r of records) {
+    if (r.xy === '!!') continue; // statusRecords without --ignored never yields these; guard anyway
+    if (kind === 'workspace' && isSessionArtifact(r.path)) continue;
+    try {
+      const m = statSync(join(wtPath, r.path)).mtimeMs;
+      if (newest === null || m > newest) newest = m;
+    } catch { /* deleted/renamed away between status and stat — skip */ }
+  }
+  return newest;
+}
+
+// === Session shape ===
 
 function readTracker(wsDir) {
   const trackerPath = join(wsDir, 'session.md');
   if (!existsSync(trackerPath)) return null;
   try {
     const fields = readSessionFields(trackerPath);
+    // normalizeRepos parity with cleanup-work-session.mjs: a scalar or
+    // null repos field must never iterate as characters.
+    const rawRepos = fields.repos;
+    const repos = Array.isArray(rawRepos) ? rawRepos.map(String)
+      : rawRepos == null || rawRepos === '' ? [] : [String(rawRepos)];
     return {
       status: typeof fields.status === 'string' ? fields.status : null,
       workItem: typeof fields.workItem === 'string' ? fields.workItem : null,
       branch: typeof fields.branch === 'string' ? fields.branch : null,
       updated: fields.updated != null ? String(fields.updated) : null,
+      repos,
     };
   } catch {
     // An unparseable tracker is evidence about the tracker, not the
@@ -300,58 +447,56 @@ function readTracker(wsDir) {
 // nested project worktree (repo = its directory name under repos/).
 // A session's workspace branch and its code are different things, so
 // each is reported on its own line.
-function inspectWorktree(gitFn, rootDir, kind, repo, wtPath, trackerBranch) {
+function inspectWorktree(gitFn, rootDir, kind, repo, wtPath) {
   const branch = currentBranch(gitFn, wtPath);
   const defaultBranch = defaultBranchFor(rootDir, repo, gitFn);
   const range = ownRange(gitFn, wtPath, defaultBranch);
+  const head = headSha(gitFn, wtPath);
+  const dirtyRecords = statusRecords(gitFn, wtPath) || [];
   const info = {
     kind,
     repo,
     path: relative(rootDir, realPath(wtPath)),
     branch,
-    dirty: countDirty(gitFn, wtPath),
-    ahead: branch ? aheadCount(gitFn, wtPath, range) : 0,
-    lastCommit: lastOwnCommitIso(gitFn, wtPath, range),
+    dirty: dirtyRecords.length,
+    ahead: aheadCount(gitFn, wtPath, range),
+    lastOwnCommit: lastOwnCommitIso(gitFn, wtPath, range),
+    reflogAt: reflogTs(gitFn, wtPath),
     remotes: {},
     backedBy: null,
   };
   if (kind === 'workspace') {
-    info.trackerBranch = trackerBranch;
-    info.branchDrift = Boolean(trackerBranch && branch && trackerBranch !== branch);
+    info.trackerBranch = null; // filled by the caller when the tracker is read
     info.contentFiles = countContentFiles(gitFn, wtPath, defaultBranch);
+    info.dirtyContent = dirtyRecords.filter((r) => !isSessionArtifact(r.path)).length;
   }
-  const head = headSha(gitFn, wtPath);
-  if (branch) {
-    for (const remote of remotesOf(gitFn, wtPath)) {
-      const probe = lsRemoteBranch(gitFn, wtPath, remote, branch);
-      info.remotes[remote] = probe.exists;
-      // The branch tip matching on ANY remote means the ahead commits
-      // are not machine-local-only — that is what "backed" means here.
-      if (probe.exists === true && probe.sha && probe.sha === head) {
-        info.backedBy = info.backedBy || remote;
-      }
-    }
-  }
+  info.remotes = remoteStatesFor(gitFn, wtPath, branch, head);
+  info.backedBy = backedByRemote(info.remotes);
   return info;
 }
 
-// The worktrees of a session as they exist right now — nested project
-// worktrees are discovered from the directory listing (the tracker's
-// repos list can drift or be missing), each entry recognized as a
-// worktree by its .git link so plain directories are skipped.
-function collectWorktrees(gitFn, rootDir, folder) {
+// The session's worktrees as they exist right now — nested project
+// worktrees discovered from the directory listing (the tracker's repos
+// list can drift or be missing), each entry recognized as a worktree by
+// its .git link so plain directories are skipped, symlinked entries
+// surfaced as foreign rather than followed.
+function collectSessionWorktrees(gitFn, rootDir, folder) {
   const out = [];
   const wsDir = join(folder, 'workspace');
   if (existsSync(join(wsDir, '.git'))) {
-    out.push(inspectWorktree(gitFn, rootDir, 'workspace', WORKSPACE_REPO, wsDir, readTracker(wsDir)?.branch ?? null));
+    out.push({ kind: 'workspace', repo: WORKSPACE_REPO, path: wsDir });
   }
   const nested = join(wsDir, 'repos');
   if (existsSync(nested)) {
     for (const entry of readdirSync(nested, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const p = join(nested, entry.name);
+      if (entry.isSymbolicLink()) {
+        out.push({ kind: 'foreign', repo: entry.name, path: p });
+        continue;
+      }
       if (!existsSync(join(p, '.git'))) continue;
-      out.push(inspectWorktree(gitFn, rootDir, 'project', entry.name, p, null));
+      out.push({ kind: 'project', repo: entry.name, path: p });
     }
   }
   return out;
@@ -359,15 +504,16 @@ function collectWorktrees(gitFn, rootDir, folder) {
 
 /**
  * Pure classifier: given a session's computed metrics, return its
- * proposal and the human-readable reasons for it. Active-ness is
- * lastActivity within N days, or any dirty worktree with lastActivity
- * within 2N days (a paused-but-touched session deserves a human look,
- * not an abandonment proposal). Everything else splits on whether real
- * content survives: content files or project commits mean MERGEABLE;
- * artifact-only and clean project worktrees mean ABANDONED. A session
- * that fits neither (e.g. uncommitted project changes on a stale
- * session) falls to MERGEABLE — real uncommitted work is content, and
- * the dirty warning carries the caution.
+ * proposal and the human-readable reasons for it. No activity signal at
+ * all → UNKNOWN (never ABANDONED — absence of evidence is not
+ * abandonment). Active-ness is lastActivity within N days, or any dirty
+ * worktree with lastActivity within 2N days. Everything else splits on
+ * whether real content survives — committed content files, uncommitted
+ * content paths, or project commits mean MERGEABLE; artifact-only,
+ * clean, and quiet means ABANDONED. A session that fits neither (e.g.
+ * uncommitted project changes on a stale session) falls to MERGEABLE —
+ * real uncommitted work is content, and the dirty warning carries the
+ * caution.
  */
 function classify(session, activeDays, now = Date.now()) {
   const ws = session.worktrees.find((w) => w.kind === 'workspace') || null;
@@ -376,6 +522,12 @@ function classify(session, activeDays, now = Date.now()) {
   const within = (days) => Number.isFinite(lastMs) && now - lastMs <= days * DAY_MS;
   const anyDirty = session.worktrees.some((w) => w.dirty > 0);
 
+  if (session.lastActivity == null) {
+    return {
+      proposal: 'UNKNOWN',
+      reasons: ['no activity signal — no session commits, no reflog entries, no content-dirty files, no tracker updated date'],
+    };
+  }
   if (within(activeDays)) {
     return { proposal: 'ACTIVE', reasons: [`last activity ${session.lastActivity} is within ${activeDays} days`] };
   }
@@ -387,26 +539,28 @@ function classify(session, activeDays, now = Date.now()) {
   }
 
   const content = ws ? ws.contentFiles : 0;
+  const dirtyContent = ws ? ws.dirtyContent : 0;
   const aheadProjects = projects.filter((p) => p.ahead > 0);
   const dirtyProjects = projects.filter((p) => p.dirty > 0);
-  if (content === 0 && aheadProjects.length === 0 && dirtyProjects.length === 0) {
+  if (content === 0 && dirtyContent === 0 && aheadProjects.length === 0 && dirtyProjects.length === 0) {
     return {
       proposal: 'ABANDONED',
       reasons: [
-        `last activity ${session.lastActivity ?? 'unknown'} is older than ${activeDays} days`,
-        ...(ws ? [`workspace branch carries only session artifacts (${ws.ahead} commit(s), no content files)`] : []),
+        `last activity ${session.lastActivity} is older than ${activeDays} days`,
+        ...(ws ? [`workspace branch carries only session artifacts (${ws.ahead ?? '?'} commit(s), no content files, no uncommitted content)`] : []),
         'no project worktree has commits ahead or uncommitted changes',
       ],
     };
   }
   const reasons = [];
   if (content > 0) reasons.push(`${content} content file(s) beyond session artifacts on the workspace branch`);
+  if (dirtyContent > 0) reasons.push(`${dirtyContent} uncommitted content path(s) in the workspace worktree`);
   for (const p of aheadProjects) reasons.push(`repo "${p.repo}" is ${p.ahead} commit(s) ahead of its default branch`);
   for (const p of dirtyProjects) reasons.push(`repo "${p.repo}" has ${p.dirty} uncommitted change(s)`);
   return { proposal: 'MERGEABLE', reasons };
 }
 
-function collectWarnings(worktrees, active) {
+function collectWarnings(worktrees, active, trackerBranch) {
   const warnings = [];
   for (const wt of worktrees) {
     if (wt.kind === 'workspace' && wt.branchDrift) {
@@ -420,7 +574,7 @@ function collectWarnings(worktrees, active) {
     if (!active && wt.dirty > 0) {
       warnings.push({
         kind: 'dirty',
-        message: `${repoLabel(wt)} has ${wt.dirty} uncommitted change(s) on a session that is not active`,
+        message: `${repoLabel({ kind: wt.kind, repo: wt.repo })} has ${wt.dirty} uncommitted change(s) on a session that is not active`,
         repo: wt.repo,
         files: wt.dirty,
       });
@@ -429,10 +583,17 @@ function collectWarnings(worktrees, active) {
       warnings.push({
         kind: 'unbacked',
         unbacked: true,
-        message: `${repoLabel(wt)}: ${wt.ahead} commit(s) on ${wt.branch} exist on no remote`,
+        message: unbackedMessage(wt),
         repo: wt.repo,
         branch: wt.branch,
         ahead: wt.ahead,
+      });
+    }
+    if (wt.ahead == null) {
+      warnings.push({
+        kind: 'unknown-ahead',
+        message: `${repoLabel({ kind: wt.kind, repo: wt.repo })}: commits-ahead could not be counted (default branch "${wt.defaultBranch}" does not resolve here) — treat every count as unknown`,
+        repo: wt.repo,
       });
     }
   }
@@ -450,25 +611,42 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
   }
 
   const tracker = readTracker(wsDir);
-  const worktrees = collectWorktrees(gitFn, rootDir, folder);
+  const rawWorktrees = collectSessionWorktrees(gitFn, rootDir, folder);
+  const worktrees = rawWorktrees
+    .filter((w) => w.kind !== 'foreign')
+    .map((w) => inspectWorktree(gitFn, rootDir, w.kind, w.repo, w.path));
+  const wsWt = worktrees.find((w) => w.kind === 'workspace');
+  if (wsWt && tracker) {
+    wsWt.trackerBranch = tracker.branch;
+    wsWt.branchDrift = Boolean(tracker.branch && wsWt.branch && tracker.branch !== wsWt.branch);
+    wsWt.defaultBranch = defaultBranchFor(rootDir, WORKSPACE_REPO, gitFn);
+  }
+  for (const wt of worktrees) {
+    if (wt.defaultBranch === undefined) wt.defaultBranch = defaultBranchFor(rootDir, wt.repo, gitFn);
+  }
 
-  // lastActivity: the newest fact we have — any worktree's HEAD date or
-  // the tracker's updated field, whichever is later.
+  // lastActivity: the newest fact we have — own commits, reflog entries,
+  // content-dirty file mtimes, or the tracker's updated field.
   let lastMs = NaN;
   let lastActivity = null;
   const consider = (value) => {
     if (value == null) return;
-    const t = Date.parse(value);
+    const t = typeof value === 'number' ? value : Date.parse(value);
     if (!Number.isFinite(t)) return;
     if (!Number.isFinite(lastMs) || t > lastMs) {
       lastMs = t;
       lastActivity = new Date(t).toISOString();
     }
   };
-  for (const wt of worktrees) consider(wt.lastCommit);
+  for (const wt of worktrees) {
+    consider(wt.lastOwnCommit);
+    consider(wt.reflogAt != null ? wt.reflogAt * 1000 : null);
+    consider(dirtyContentMtimeMs(gitFn, join(rootDir, wt.path), wt.kind));
+  }
   consider(tracker?.updated ?? null);
 
   const { proposal, reasons } = classify({ name, worktrees, lastActivity }, activeDays, now);
+  const warnings = collectWarnings(worktrees, proposal === 'ACTIVE', tracker?.branch ?? null);
   return {
     name,
     kind: 'session',
@@ -477,7 +655,7 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
     lastActivity,
     proposal,
     reasons,
-    warnings: collectWarnings(worktrees, proposal === 'ACTIVE'),
+    warnings,
     worktrees,
   };
 }
@@ -486,12 +664,21 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
  * Read-only inventory of every session under the workspace's sessions
  * directory. The proposal each session gets is a proposal — the note in
  * the result says so, and the skill says so again to the operator.
+ * Symlinked entries are reported as foreign (LEAVE) and never followed.
  */
 function inventory(root, { activeDays = 14, gitFn = spawnSync, now = Date.now() } = {}) {
   const rootDir = resolveRoot(root);
   const sessionsDir = sessionsDirOf(rootDir);
-  const sessions = listSessionNames(rootDir)
-    .map((name) => inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now));
+  const sessions = listSessionEntries(rootDir).map((entry) => (
+    entry.foreign
+      ? {
+        name: entry.name,
+        kind: 'foreign',
+        proposal: 'LEAVE',
+        reasons: ['entry is a symlink, not a session directory — never followed; reconcile manually'],
+      }
+      : inspectSession(gitFn, rootDir, sessionsDir, entry.name, activeDays, now)
+  ));
   return {
     root: rootDir,
     activeDays,
@@ -500,69 +687,441 @@ function inventory(root, { activeDays = 14, gitFn = spawnSync, now = Date.now() 
   };
 }
 
+// === The teardown invariant ===
+
+function repoLabel(wt) {
+  return wt.kind === 'workspace' ? 'the workspace repo' : `repo "${wt.repo}"`;
+}
+
+// All refs a repo holds, peeled to commits where they are tags — the
+// candidate survivors for rule (2b).
+function repoRefs(gitFn, repoDir) {
+  const res = run(gitFn, repoDir, ['for-each-ref', '--format=%(refname) %(objectname) %(*objectname)', 'refs/heads', 'refs/remotes', 'refs/tags']);
+  if (res.status !== 0) return null;
+  return okLines(res).map((line) => {
+    const [ref, obj, peeled] = line.trim().split(/\s+/);
+    return { ref, sha: peeled || obj }; // %(*objectname) is empty for non-tags
+  });
+}
+
+// Every ref (branch or tag) a remote holds, mapped by commit sha. No
+// refspec pattern anywhere: patterns silently filter the peeled ^{} tag
+// lines, and those are the lines comparable with commit tips. A failed
+// or timed-out query returns null (unknown) — it proves nothing.
+function remoteRefs(safety, repoDir, remote) {
+  const key = `${repoDir}\0${remote}`;
+  if (safety.lsCache.has(key)) return safety.lsCache.get(key);
+  let map = null;
+  const res = safety.gitFn('git', ['-C', repoDir, 'ls-remote', remote], netOpts(LS_REMOTE_TIMEOUT_MS));
+  if (!res.error && res.status === 0) {
+    map = new Map();
+    for (const line of okLines(res)) {
+      const [sha, ref] = line.trim().split(/\s+/);
+      if (!map.has(sha)) map.set(sha, ref);
+    }
+  }
+  safety.lsCache.set(key, map);
+  return map;
+}
+
+// Rule (2): a tip is safe iff some remote holds it at exactly that sha
+// (verified now — local tracking refs prove nothing), or some ref that
+// survives teardown contains it. Deletion-set refs are excluded from the
+// candidates; every git failure simply fails to prove safety.
+function tipSafety(safety, repoDir, sha, excludeRefs) {
+  for (const remote of safety.remotes(repoDir)) {
+    const refs = remoteRefs(safety, repoDir, remote);
+    if (!refs) continue; // unknown — cannot prove
+    const ref = refs.get(sha);
+    if (ref) return { safe: true, by: 'remote', remote, ref };
+  }
+  const candidates = safety.refs(repoDir);
+  if (!candidates) return { safe: false };
+  for (const cand of candidates) {
+    if (excludeRefs.has(cand.ref)) continue;
+    let res = null;
+    try {
+      res = safety.gitFn('git', ['-C', repoDir, 'merge-base', '--is-ancestor', sha, cand.sha], { encoding: 'utf8' });
+    } catch { break; }
+    if (res && !res.error && res.status === 0) return { safe: true, by: 'ref', ref: cand.ref };
+  }
+  return { safe: false };
+}
+
+function makeSafety(gitFn) {
+  const safety = {
+    gitFn,
+    lsCache: new Map(),
+    remotesCache: new Map(),
+    refsCache: new Map(),
+    remotes(repoDir) {
+      if (!safety.remotesCache.has(repoDir)) {
+        const res = run(gitFn, repoDir, ['remote']);
+        safety.remotesCache.set(repoDir, res.status === 0 ? okLines(res) : []);
+      }
+      return safety.remotesCache.get(repoDir);
+    },
+    refs(repoDir) {
+      if (!safety.refsCache.has(repoDir)) safety.refsCache.set(repoDir, repoRefs(gitFn, repoDir));
+      return safety.refsCache.get(repoDir);
+    },
+  };
+  return safety;
+}
+
+// Rule (3): a tree is safe iff nothing would be lost — not even ignored
+// files, which `git worktree remove --force` discards silently. The
+// nested repos/ directory of the workspace worktree is excluded: its
+// contents are separate worktrees, checked on their own. Waivers must be
+// named explicitly per flag; the refusal lists the exact paths.
+function unsafeTreePaths(gitFn, wt, { discardUncommitted, discardIgnored }) {
+  const records = statusRecords(gitFn, wt.path, ['--ignored=matching']);
+  if (records === null) {
+    return [{ path: relative(wt.rootDir, wt.path) || '.', category: 'unknown', message: 'git status failed — tree cannot be verified' }];
+  }
+  const bad = [];
+  for (const r of records) {
+    if (wt.kind === 'workspace' && (r.path === 'repos' || r.path.startsWith('repos/'))) continue;
+    if (r.xy === '!!') {
+      if (!discardIgnored) bad.push({ path: r.path, category: 'ignored' });
+    } else if (!discardUncommitted) {
+      bad.push({ path: r.path, category: r.xy.includes('?') ? 'untracked' : 'modified' });
+    }
+  }
+  return bad;
+}
+
+// Rule (4): an in-progress rebase/merge/cherry-pick has worktree state a
+// teardown would destroy. `rev-parse --git-path` resolves per-worktree
+// (linked worktrees keep this state under .git/worktrees/{name}/).
+function opsInProgress(gitFn, wtPath) {
+  const found = [];
+  for (const name of ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD']) {
+    const res = run(gitFn, wtPath, ['rev-parse', '--git-path', name]);
+    if (res.status !== 0) continue;
+    if (existsSync(resolve(wtPath, String(res.stdout).trim()))) found.push(name);
+  }
+  return found;
+}
+
+function commonDirOf(gitFn, wtPath) {
+  const res = run(gitFn, wtPath, ['rev-parse', '--git-common-dir']);
+  if (res.status !== 0) return null;
+  return realPath(resolve(wtPath, String(res.stdout).trim()));
+}
+
+// The complete set of refs and trees teardown would destroy, computed
+// exactly as cleanup-work-session.mjs will: branch = the tracker's
+// branch: (falling back to the workspace worktree's HEAD branch), repos
+// = the tracker's repos: (falling back to the nested repos/* dirs). On
+// top of cleanup's own deletions, every worktree's current HEAD (branch
+// or detached) is included — removing a worktree destroys that checkout.
+function computeDeletionSet(gitFn, rootDir, folder) {
+  const wsDir = join(folder, 'workspace');
+  const tracker = readTracker(wsDir);
+  const rawWorktrees = collectSessionWorktrees(gitFn, rootDir, folder);
+  const worktrees = rawWorktrees.map((w) => ({
+    ...w,
+    rootDir,
+    branch: w.kind === 'foreign' ? null : currentBranch(gitFn, w.path),
+    head: w.kind === 'foreign' ? null : headSha(gitFn, w.path),
+    commonDir: w.kind === 'foreign' ? null : commonDirOf(gitFn, w.path),
+  }));
+
+  let branch = tracker?.branch || null;
+  let repos = tracker ? [...tracker.repos] : [];
+  const discovered = repos.length === 0;
+  if (discovered) repos = rawWorktrees.filter((w) => w.kind === 'project').map((w) => w.repo);
+  if (!branch) {
+    const wsWt = worktrees.find((w) => w.kind === 'workspace');
+    branch = wsWt ? wsWt.branch : null;
+  }
+
+  // Tips: the branch ref in every repo cleanup will delete it from, plus
+  // every worktree HEAD. Deduped per repo+sha, branch names preferred.
+  const tips = [];
+  const seen = new Map();
+  const addTip = (repoDir, repo, kind, ref, sha) => {
+    if (!sha || !existsSync(repoDir)) return;
+    const key = `${repoDir}\0${sha}`;
+    const prev = seen.get(key);
+    if (prev) {
+      if (!prev.ref && ref) prev.ref = ref;
+      return;
+    }
+    const tip = { repoDir, repo, kind, ref: ref ?? null, sha };
+    seen.set(key, tip);
+    tips.push(tip);
+  };
+  if (branch) {
+    addTip(rootDir, WORKSPACE_REPO, 'workspace', branch, branchTip(gitFn, rootDir, branch));
+    for (const repo of repos) {
+      const repoDir = join(rootDir, 'repos', repo);
+      addTip(repoDir, repo, 'project', branch, branchTip(gitFn, repoDir, branch));
+    }
+  }
+  for (const wt of worktrees) {
+    if (wt.kind === 'foreign') continue;
+    addTip(realPath(wt.commonDir ? dirname(wt.commonDir) : wt.path), wt.repo, wt.kind, wt.branch, wt.head);
+  }
+
+  return { branch, repos, discovered, tracker, worktrees, tips };
+}
+
+function branchTip(gitFn, repoDir, branch) {
+  const res = run(gitFn, repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  return res.status === 0 ? String(res.stdout).trim() : null;
+}
+
+// Pre-validate exactly what cleanup-work-session.mjs now refuses on, so
+// teardown refuses BEFORE spawning it (B5): repo names must be single
+// in-root segments, branch names must satisfy git's own ref format.
+function validateTrackerShape(gitFn, rootDir, del) {
+  const reasons = [];
+  if (del.branch) {
+    const res = gitFn('git', ['check-ref-format', '--branch', del.branch], { encoding: 'utf8' });
+    if (res.error || res.status !== 0) {
+      reasons.push(`tracker branch "${del.branch}" is not a valid branch name — reconcile the tracker first`);
+    }
+  }
+  const reposRoot = realPath(join(rootDir, 'repos'));
+  for (const repo of del.repos) {
+    if (!isRepoSegment(repo)) {
+      reasons.push(`tracker repos entry "${repo}" is not a single path segment — reconcile the tracker first`);
+      continue;
+    }
+    if (!insideDir(reposRoot, join(rootDir, 'repos', repo))) {
+      reasons.push(`tracker repos entry "${repo}" escapes ${relative(rootDir, join(rootDir, 'repos'))}/ — reconcile the tracker first`);
+    }
+  }
+  return reasons;
+}
+
+// Rule (5): refuse on inconsistency rather than guess.
+function consistencyReasons(rootDir, del) {
+  const reasons = [];
+  const nestedNames = del.worktrees.filter((w) => w.kind === 'project').map((w) => w.repo).sort();
+  for (const w of del.worktrees) {
+    if (w.kind === 'foreign') {
+      reasons.push(`nested entry repos/${w.repo} is a symlink — reconcile it before draining this session`);
+    }
+  }
+  if (del.tracker?.branch) {
+    for (const w of del.worktrees) {
+      if (w.kind !== 'foreign' && w.branch && w.branch !== del.tracker.branch) {
+        reasons.push(`tracker says branch ${del.tracker.branch} but the ${w.kind} worktree is on ${w.branch} (drift) — reconcile the tracker first`);
+        break;
+      }
+    }
+  }
+  if (del.tracker && del.tracker.repos.length > 0) {
+    const tracked = [...del.tracker.repos].map(String).sort();
+    if (JSON.stringify(tracked) !== JSON.stringify(nestedNames)) {
+      reasons.push(`tracker repos [${tracked.join(', ')}] do not match the nested worktrees [${nestedNames.join(', ')}] — reconcile the tracker first`);
+    }
+  }
+  for (const w of del.worktrees) {
+    if (w.kind === 'foreign') continue;
+    const expected = w.kind === 'workspace'
+      ? join(rootDir, '.git')
+      : join(rootDir, 'repos', w.repo, '.git');
+    if (!w.commonDir || realPath(expected) !== w.commonDir) {
+      reasons.push(`${w.kind} worktree repos/${w.repo} belongs to a foreign git repository (${w.commonDir ?? 'unknown common dir'}) — refuse to guess; reconcile first`);
+    }
+  }
+  return reasons;
+}
+
+// Evaluate the full invariant; every unmet item becomes a refusal reason.
+function invariantReasons(gitFn, rootDir, del, session, { discardUncommitted, discardIgnored }) {
+  const reasons = [...validateTrackerShape(gitFn, rootDir, del), ...consistencyReasons(rootDir, del)];
+  for (const w of del.worktrees) {
+    if (w.kind === 'foreign') continue;
+    for (const op of opsInProgress(gitFn, w.path)) {
+      reasons.push(`${repoLabel(w)}: ${op} in progress in ${relative(rootDir, w.path)} — finish or abort it first`);
+    }
+    for (const bad of unsafeTreePaths(gitFn, w, { discardUncommitted, discardIgnored })) {
+      if (bad.category === 'unknown') {
+        reasons.push(`${repoLabel(w)}: ${bad.message}`);
+      } else {
+        const waiver = bad.category === 'ignored' ? '--discard-ignored' : '--discard-uncommitted';
+        reasons.push(`${repoLabel(w)}: ${bad.category} path "${bad.path}" would be lost — pass ${waiver} to waive it explicitly`);
+      }
+    }
+  }
+  const safety = makeSafety(gitFn);
+  for (const tip of del.tips) {
+    const exclude = new Set(del.branch ? [`refs/heads/${del.branch}`] : []);
+    const verdict = tipSafety(safety, tip.repoDir, tip.sha, exclude);
+    if (!verdict.safe) {
+      const what = tip.ref ? `branch ${tip.ref}` : 'a detached HEAD';
+      const where = tip.repo === WORKSPACE_REPO ? 'the workspace repo' : `repo "${tip.repo}"`;
+      reasons.push(`${where}: ${what} @ ${tip.sha.slice(0, 10)} would be deleted with no copy on any remote and no surviving ref containing it — back it up first (--backup --session ${session})`);
+    }
+  }
+  return reasons;
+}
+
+// Guards shared by every acting mode: the session folder must be a real
+// directory inside the root (N3 — a symlinked entry may point anywhere),
+// and the session hosting the current chat is never acted on from inside
+// itself (S5).
+function sessionFolderGuards(rootDir, sessionsDir, session, cwd) {
+  const folder = join(sessionsDir, session);
+  if (!existsSync(folder)) {
+    return { folder, refusal: { refused: true, reasons: [`no session named "${session}" under ${relative(rootDir, sessionsDir)}`] } };
+  }
+  let st = null;
+  try { st = lstatSync(folder); } catch { /* handled below */ }
+  if (!st || !st.isDirectory() || st.isSymbolicLink()) {
+    return { folder, refusal: { refused: true, reasons: [`session entry "${session}" is not a real directory (symlink or missing) — never followed; reconcile manually`] } };
+  }
+  if (!insideRoot(rootDir, folder)) {
+    return { folder, refusal: { refused: true, reasons: [`session folder "${session}" resolves outside the workspace root — refusing`] } };
+  }
+  const cwdReal = realPath(resolve(cwd || '.'));
+  if (cwdReal.startsWith(realPath(folder) + sep) || cwdReal === realPath(folder)) {
+    return { folder, refusal: { refused: true, reasons: [`session "${session}" hosts the current chat — run its backup/teardown from the workspace root, not from inside the session`] } };
+  }
+  return { folder, refusal: null };
+}
+
+// The local peeled SHA of an existing tag, or null when the tag is
+// absent. Refnames cannot contain ^{ (check-ref-format forbids ^), so
+// appending ^{} to interpolate the peel is safe.
+function peeledTagSha(gitFn, cwd, tag) {
+  const res = run(gitFn, cwd, ['rev-parse', '-q', '--verify', `refs/tags/${tag}^{}`]);
+  return res.status === 0 ? String(res.stdout).trim() : null;
+}
+
+// Does {tag} exist on {remote} at exactly {commit}? Deliberately no
+// refspec pattern: a pattern filters out the peeled `^{}` line (the
+// tag object's sha is not the commit's), and the peeled line is exactly
+// what "at this commit" needs. An annotated tag answers via the peel; a
+// lightweight tag's only line already is the commit.
+function tagOnRemoteAt(gitFn, cwd, remote, tag, commit) {
+  const res = gitFn('git', ['-C', cwd, 'ls-remote', '--tags', remote], netOpts(LS_REMOTE_TIMEOUT_MS));
+  if (res.error || res.status !== 0) return false;
+  const peeledRef = `refs/tags/${tag}^{}`;
+  const plainRef = `refs/tags/${tag}`;
+  let plainSha = false;
+  for (const line of okLines(res)) {
+    const [sha, ref] = line.trim().split(/\s+/);
+    if (ref === peeledRef) return sha === commit;
+    if (ref === plainRef) plainSha = sha;
+  }
+  return plainSha === commit;
+}
+
+// S4: where a backup tag is pushed — branch.<b>.pushRemote, then
+// remote.pushDefault, then branch.<b>.remote, then origin, then the
+// first configured remote. An explicit --remote overrides everything.
+function resolvePushRemote(gitFn, repoDir, branch, override, remotes) {
+  if (override) {
+    return remotes.includes(override)
+      ? { remote: override }
+      : { remote: null, reason: `--remote ${override} is not configured for this repo (has: ${remotes.join(', ') || 'none'})` };
+  }
+  const cfg = (key) => {
+    const res = run(gitFn, repoDir, ['config', '--get', key]);
+    return res.status === 0 ? String(res.stdout).trim() : null;
+  };
+  const chain = branch
+    ? [`branch.${branch}.pushRemote`, 'remote.pushDefault', `branch.${branch}.remote`]
+    : ['remote.pushDefault'];
+  for (const key of chain) {
+    const value = cfg(key);
+    if (value && remotes.includes(value)) return { remote: value };
+  }
+  if (remotes.includes('origin')) return { remote: 'origin' };
+  if (remotes.length > 0) return { remote: remotes[0] };
+  return { remote: null };
+}
+
 /**
- * Back up every ahead branch of a session: an annotated `drain/*` tag at
- * the branch tip, pushed to a remote and verified there, so teardown can
- * never be the last copy of unique commits. Idempotent — an existing tag
- * at the same commit is fine; at a different commit (the branch moved)
- * the operator must decide, so it refuses.
+ * Back up every ref teardown would destroy that is not already contained
+ * in a surviving ref: an annotated, session-scoped `drain/{session}/…`
+ * tag at the tip, pushed to the resolved remote and verified there, so
+ * teardown can never be the last copy of unique commits. Idempotent —
+ * an existing tag at the same commit is fine; at a different commit (the
+ * branch moved) the operator must decide, so it refuses.
  */
-function backupSession(root, { session, gitFn = spawnSync } = {}) {
+function backupSession(root, { session, remote: remoteOverride = null, gitFn = spawnSync, cwd = process.cwd() } = {}) {
   const rootDir = resolveRoot(root);
   if (!isSessionSegment(session)) {
     throw new Error(`session name must be a single path segment, got: ${session}`);
   }
-  const folder = join(sessionsDirOf(rootDir), session);
-  if (!existsSync(folder)) {
-    return { refused: true, reasons: [`no session named "${session}" under ${relative(rootDir, sessionsDirOf(rootDir))}`] };
-  }
+  const sessionsDir = sessionsDirOf(rootDir);
+  const { folder, refusal } = sessionFolderGuards(rootDir, sessionsDir, session, cwd);
+  if (refusal) return refusal;
 
-  const reasons = [];
+  const del = computeDeletionSet(gitFn, rootDir, folder);
+  const reasons = validateTrackerShape(gitFn, rootDir, del);
   const branches = [];
-  for (const wt of collectWorktrees(gitFn, rootDir, folder)) {
-    if (!wt.branch || wt.ahead <= 0) continue; // nothing unique to lose
-    const tag = `drain/${slugForBranch(wt.branch)}`;
-    const tip = headSha(gitFn, join(rootDir, wt.path));
-    if (!tip) {
-      reasons.push(`${repoLabel(wt)}: cannot resolve the tip of ${wt.branch} — decide manually`);
-      continue;
-    }
-    const existing = peeledTagSha(gitFn, join(rootDir, wt.path), tag);
-    if (existing && existing !== tip) {
-      reasons.push(
-        `${repoLabel(wt)}: tag ${tag} already points at ${existing.slice(0, 10)}…, not the current tip of ${wt.branch} (${tip.slice(0, 10)}…); the branch moved — decide manually`,
-      );
-      continue;
-    }
-    const remotes = remotesOf(gitFn, join(rootDir, wt.path));
-    if (remotes.length === 0) {
-      reasons.push(`${repoLabel(wt)} has no remote to push the backup tag ${tag} to — decide manually where to back up ${wt.branch}`);
-      continue;
-    }
-    const target = remotes.includes('origin') ? 'origin' : remotes[0];
-    if (!existing) {
-      const created = run(gitFn, join(rootDir, wt.path), [
-        'tag', '-a', tag, '-m', `backup before draining session ${session}`, tip,
-      ]);
-      if (created.status !== 0) {
-        reasons.push(`${repoLabel(wt)}: git tag ${tag} failed: ${String(created.stderr || '').trim()}`);
+  const skipped = [];
+  if (reasons.length === 0 && existsSync(join(folder, 'workspace', '.git'))) {
+    const safety = makeSafety(gitFn);
+    for (const tip of del.tips) {
+      const exclude = new Set(del.branch ? [`refs/heads/${del.branch}`] : []);
+      const verdict = tipSafety(safety, tip.repoDir, tip.sha, exclude);
+      if (verdict.safe && verdict.by === 'ref') {
+        // Already contained in a ref that survives teardown (e.g. merged
+        // to the default branch) — no unique data, no tag needed.
+        skipped.push({ repo: tip.repo, ref: tip.ref ?? 'HEAD', commit: tip.sha, containedIn: verdict.ref });
         continue;
       }
+      const shortSha = tip.sha.slice(0, 10);
+      const tagName = tip.ref
+        ? `drain/${session}/${slugForBranch(tip.ref)}`
+        : `drain/${session}/${tip.kind === 'workspace' ? 'workspace' : tip.repo}-detached-${shortSha}`;
+      const tagDir = tip.repoDir;
+      const existing = peeledTagSha(gitFn, tagDir, tagName);
+      if (existing && existing !== tip.sha) {
+        reasons.push(`${repoLabel(tip)}: tag ${tagName} already points at ${existing.slice(0, 10)}…, not the current tip (${shortSha}…); the branch moved — decide manually`);
+        continue;
+      }
+      const remotes = safety.remotes(tagDir);
+      if (remotes.length === 0) {
+        reasons.push(`${repoLabel(tip)} has no remote to push the backup tag ${tagName} to — decide manually where to back up ${tip.ref ?? shortSha}`);
+        continue;
+      }
+      const { remote, reason } = resolvePushRemote(gitFn, tagDir, tip.ref, remoteOverride, remotes);
+      if (!remote) {
+        reasons.push(reason || `${repoLabel(tip)}: no push remote resolves — decide manually`);
+        continue;
+      }
+      if (!existing) {
+        const created = run(gitFn, tagDir, ['tag', '-a', tagName, '-m', `backup before draining session ${session}`, tip.sha]);
+        if (created.status !== 0) {
+          reasons.push(`${repoLabel(tip)}: git tag ${tagName} failed: ${String(created.stderr || '').trim()}`);
+          continue;
+        }
+      }
+      const pushed = gitFn('git', ['-C', tagDir, 'push', remote, `refs/tags/${tagName}`], netOpts(PUSH_TIMEOUT_MS));
+      if (pushed.error || pushed.status !== 0) {
+        const detail = pushed.error ? `timed out after ${PUSH_TIMEOUT_MS / 1000}s` : String(pushed.stderr || '').trim();
+        reasons.push(`${repoLabel(tip)}: pushing ${tagName} to ${remote} failed (${detail}) — treat ${tip.ref ?? shortSha} as unbacked`);
+        continue;
+      }
+      const verified = tagOnRemoteAt(gitFn, tagDir, remote, tagName, tip.sha);
+      if (!verified) {
+        reasons.push(`${repoLabel(tip)}: tag ${tagName} not found on ${remote} after pushing — treat ${tip.ref ?? shortSha} as unbacked`);
+        continue;
+      }
+      branches.push({
+        repo: tip.repo,
+        branch: tip.ref,
+        detached: !tip.ref,
+        tag: tagName,
+        commit: tip.sha,
+        remote,
+        pushed: true,
+        verified: true,
+      });
     }
-    const pushed = run(gitFn, join(rootDir, wt.path), ['push', target, `refs/tags/${tag}`]);
-    if (pushed.status !== 0) {
-      reasons.push(`${repoLabel(wt)}: pushing ${tag} to ${target} failed: ${String(pushed.stderr || '').trim()}`);
-      continue;
-    }
-    const verified = tagOnRemoteAt(gitFn, join(rootDir, wt.path), target, tag, tip);
-    if (!verified) {
-      reasons.push(`${repoLabel(wt)}: tag ${tag} not found on ${target} after pushing — treat ${wt.branch} as unbacked`);
-      continue;
-    }
-    branches.push({ repo: wt.repo, branch: wt.branch, tag, commit: tip, pushed: true, verified: true });
   }
   if (reasons.length > 0) return { refused: true, reasons };
-  return { session, branches };
+  return { session, branches, skipped };
 }
 
 // Only empty directory shells are removed automatically. A file anywhere
@@ -581,23 +1140,22 @@ function firstFileUnder(dir) {
 }
 
 /**
- * Tear a session down. Preconditions are re-checked now — never trusted
- * from an earlier inventory, which is already stale. The actual teardown
- * is delegated to cleanup-work-session.mjs (the ordered teardown with
- * its own post-verification lives there); a broken shell has no
- * worktrees, so it is just an empty-directory removal. Remote branches
- * and tags are never deleted.
+ * Tear a session down. The invariant above is evaluated NOW — never
+ * trusted from an earlier inventory, which is already stale — and every
+ * unmet item refuses before anything is removed. The actual teardown is
+ * delegated to cleanup-work-session.mjs (the ordered teardown with its
+ * own post-verification lives there); a broken shell has no worktrees,
+ * so it is just an empty-directory removal. Remote branches and tags are
+ * never deleted.
  */
-function teardownSession(root, { session, discardUncommitted = false, gitFn = spawnSync } = {}) {
+function teardownSession(root, { session, discardUncommitted = false, discardIgnored = false, gitFn = spawnSync, cwd = process.cwd() } = {}) {
   const rootDir = resolveRoot(root);
   if (!isSessionSegment(session)) {
     throw new Error(`session name must be a single path segment, got: ${session}`);
   }
   const sessionsDir = sessionsDirOf(rootDir);
-  const folder = join(sessionsDir, session);
-  if (!existsSync(folder)) {
-    return { refused: true, reasons: [`no session named "${session}" under ${relative(rootDir, sessionsDir)}`] };
-  }
+  const { folder, refusal } = sessionFolderGuards(rootDir, sessionsDir, session, cwd);
+  if (refusal) return refusal;
 
   const wsDir = join(folder, 'workspace');
   if (!existsSync(join(wsDir, '.git'))) {
@@ -612,22 +1170,8 @@ function teardownSession(root, { session, discardUncommitted = false, gitFn = sp
     return { session, kind: 'broken', removed: true };
   }
 
-  const reasons = [];
-  for (const wt of collectWorktrees(gitFn, rootDir, folder)) {
-    if (wt.branch && wt.ahead > 0) {
-      const tag = `drain/${slugForBranch(wt.branch)}`;
-      const tip = headSha(gitFn, join(rootDir, wt.path));
-      const verified = tip && remotesOf(gitFn, join(rootDir, wt.path))
-        .some((remote) => tagOnRemoteAt(gitFn, join(rootDir, wt.path), remote, tag, tip));
-      if (!verified) {
-        reasons.push(`${repoLabel(wt)}: branch ${wt.branch} is ${wt.ahead} commit(s) ahead with no verified ${tag} backup tag on any remote — run --backup --session ${session} first`);
-      }
-    }
-    if (wt.dirty > 0 && !discardUncommitted) {
-      reasons.push(`${repoLabel(wt)}: ${wt.dirty} uncommitted change(s) in ${wt.path} — commit them, or pass --discard-uncommitted to drop them`);
-    }
-  }
-  if (reasons.length > 0) return { refused: true, reasons };
+  const del = computeDeletionSet(gitFn, rootDir, folder);
+  const reasons = invariantReasons(gitFn, rootDir, del, session, { discardUncommitted, discardIgnored });  if (reasons.length > 0) return { refused: true, reasons };
 
   const script = join(rootDir, '.claude', 'scripts', 'cleanup-work-session.mjs');
   if (!existsSync(script)) {
@@ -647,12 +1191,25 @@ function teardownSession(root, { session, discardUncommitted = false, gitFn = sp
   return { session, kind: 'session', removed: !existsSync(folder), cleanup };
 }
 
+// The launcher root is the main worktree of the workspace repo; every
+// other checkout is a linked worktree. Acting modes require the
+// launcher; --enable-task-model is the exception (it edits workspace.json
+// inside a task worktree by design — S6).
+function isLinkedWorktree(gitFn, rootDir) {
+  const gitDir = run(gitFn, rootDir, ['rev-parse', '--git-dir']);
+  const commonDir = run(gitFn, rootDir, ['rev-parse', '--git-common-dir']);
+  if (gitDir.status !== 0 || commonDir.status !== 0) return false; // not a git repo at all; other checks will fail loudly
+  return realPath(resolve(rootDir, String(gitDir.stdout).trim()))
+    !== realPath(resolve(rootDir, String(commonDir.stdout).trim()));
+}
+
 /**
- * Switch the workspace to the task model. Remaining sessions are fine —
- * they keep resuming and completing under the session lifecycle; they
- * are reported so the operator knows what is still around.
+ * Switch the workspace to the task model. From the launcher this also
+ * reports the remaining sessions; from a task worktree (the S6 flow)
+ * there is no sessions directory to read — remainingSessions is null
+ * and the note says where the real list comes from.
  */
-function enableTaskModel(root) {
+function enableTaskModel(root, { gitFn = spawnSync } = {}) {
   const rootDir = resolveRoot(root);
   const cfgPath = join(rootDir, 'workspace.json');
   let cfg;
@@ -666,7 +1223,14 @@ function enableTaskModel(root) {
   // file's house format.
   cfg.workspace = { ...(cfg.workspace || {}), sessionModel: 'task' };
   writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`);
-  return { sessionModel: 'task', remainingSessions: listSessionNames(rootDir) };
+  const linked = isLinkedWorktree(gitFn, rootDir);
+  return linked
+    ? {
+      sessionModel: 'task',
+      remainingSessions: null,
+      note: 'run from a task worktree — remaining sessions come from --inventory at the launcher root',
+    }
+    : { sessionModel: 'task', remainingSessions: listSessionNames(rootDir) };
 }
 
 // Human-readable inventory rendering for stderr — the operator's table;
@@ -675,14 +1239,14 @@ function renderTable(result) {
   const lines = [`${result.sessions.length} session(s); proposals are proposals — the operator decides each one.`];
   for (const s of result.sessions) {
     lines.push('');
-    lines.push(`${s.name}  ${s.kind === 'broken' ? 'broken shell' : s.proposal}` +
-      (s.kind === 'broken' ? '' : `  (status ${s.status ?? '—'}, last activity ${s.lastActivity ?? '—'}, work item ${s.workItem ?? '—'})`));
+    lines.push(`${s.name}  ${s.kind === 'broken' ? 'broken shell' : s.kind === 'foreign' ? 'foreign entry' : s.proposal}` +
+      (s.kind === 'broken' || s.kind === 'foreign' ? '' : `  (status ${s.status ?? '—'}, last activity ${s.lastActivity ?? '—'}, work item ${s.workItem ?? '—'})`));
     for (const w of s.worktrees || []) {
       const remotes = Object.entries(w.remotes)
-        .map(([r, v]) => `${r}:${v === true ? 'yes' : v === false ? 'no' : '?'}`)
+        .map(([r, v]) => describeRemote(r, v))
         .join(' ') || 'no remotes';
       const extra = w.kind === 'workspace' ? `  content:${w.contentFiles}` : '';
-      lines.push(`    ${w.kind === 'workspace' ? '(workspace)' : w.repo}  ${w.branch ?? 'detached'}  ahead:${w.ahead} dirty:${w.dirty}${extra}  [${remotes}]`);
+      lines.push(`    ${w.kind === 'workspace' ? '(workspace)' : w.repo}  ${w.branch ?? 'detached'}  ahead:${w.ahead ?? '?'} dirty:${w.dirty}${extra}  [${remotes}]`);
     }
     for (const r of s.reasons || []) lines.push(`    · ${r}`);
     for (const w of s.warnings || []) lines.push(`    ! ${w.message}`);
@@ -695,10 +1259,11 @@ const VALUE_FLAGS = new Map([
   ['--root', 'root'],
   ['--session', 'session'],
   ['--active-days', 'activeDays'],
+  ['--remote', 'remote'],
 ]);
 
 function parseArgs(argv) {
-  const args = { root: '.', mode: null, session: null, activeDays: null, discardUncommitted: false };
+  const args = { root: '.', mode: null, session: null, activeDays: null, remote: null, discardUncommitted: false, discardIgnored: false };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
@@ -708,6 +1273,7 @@ function parseArgs(argv) {
       continue;
     }
     if (a === '--discard-uncommitted') { args.discardUncommitted = true; continue; }
+    if (a === '--discard-ignored') { args.discardIgnored = true; continue; }
     const key = VALUE_FLAGS.get(a);
     if (key) {
       const v = rest[i + 1];
@@ -734,8 +1300,14 @@ function parseArgs(argv) {
     if (!Number.isInteger(n) || n <= 0) throw new Error('--active-days must be a positive integer');
     args.activeDays = n;
   }
+  if (args.remote != null && args.mode !== 'backup') {
+    throw new Error('--remote is only valid with --backup');
+  }
   if (args.discardUncommitted && args.mode !== 'teardown') {
     throw new Error('--discard-uncommitted is only valid with --teardown');
+  }
+  if (args.discardIgnored && args.mode !== 'teardown') {
+    throw new Error('--discard-ignored is only valid with --teardown');
   }
   return args;
 }
@@ -743,15 +1315,24 @@ function parseArgs(argv) {
 function main() {
   const args = parseArgs(process.argv);
   const rootDir = resolveRoot(args.root);
+  // S5: every acting mode runs from the launcher; only the task-model
+  // switch is allowed to aim at a (task) worktree root.
+  if (args.mode !== 'enable-task-model' && isLinkedWorktree(spawnSync, rootDir)) {
+    throw new Error(`--root ${rootDir} is a linked worktree — run from the workspace root (the launcher)`);
+  }
   let out;
   let code = 0;
   if (args.mode === 'inventory') {
     out = inventory(rootDir, { activeDays: args.activeDays ?? 14 });
     process.stderr.write(renderTable(out));
   } else if (args.mode === 'backup') {
-    out = backupSession(rootDir, { session: args.session });
+    out = backupSession(rootDir, { session: args.session, remote: args.remote });
   } else if (args.mode === 'teardown') {
-    out = teardownSession(rootDir, { session: args.session, discardUncommitted: args.discardUncommitted });
+    out = teardownSession(rootDir, {
+      session: args.session,
+      discardUncommitted: args.discardUncommitted,
+      discardIgnored: args.discardIgnored,
+    });
   } else {
     out = enableTaskModel(rootDir);
   }

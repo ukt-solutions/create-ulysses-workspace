@@ -312,15 +312,29 @@ function runCleanupRaw(T, sessionName) {
 // The tracker is session-controlled input. The old script interpolated it
 // into execSync shell strings, so a crafted branch name executed. The
 // rewrite passes argv arrays and validates the branch with git itself.
+// The crafted name goes into the TRACKER only — this suite's own fixture
+// helpers build git commands as shell strings, so routing the payload
+// through them would execute it here (exactly the bug under test).
 console.log('# security: shell metacharacters in branch are refused, nothing executes');
 {
-  const fx = makeFixture('inject-test', 'x"; touch "INJECT-MARKER"; echo "');
+  const fx = makeFixture('inject-test', 'bugfix/inject', []);
+  writeFileSync(join(fx.wsWt, 'session.md'), `---
+type: session-tracker
+name: inject-test
+status: active
+branch: x"; touch "INJECT-MARKER"; echo "
+repos: []
+---
+
+# Session
+`);
   const marker = join(fx.T, 'INJECT-MARKER');
   try {
     const { status, json } = runCleanupRaw(fx.T, 'inject-test');
     assertEq(status !== 0, true, 'cleanup exits non-zero on an invalid branch');
     assertEq(json?.success, false, 'success is false');
-    assert(!existsSync(marker), 'the injected command did NOT run — no marker file');
+    assert(!existsSync(marker), 'the injected command did NOT run — no marker file in the fixture');
+    assert(!existsSync(join(HERE, '..', '..', '..', 'INJECT-MARKER')), 'and none in the repo root either');
     assert(existsSync(fx.wsWt), 'nothing was torn down');
     assert(existsSync(join(fx.T, 'work-sessions', 'inject-test')), 'the session folder is kept');
   } finally { teardownFixture(fx.T); }
