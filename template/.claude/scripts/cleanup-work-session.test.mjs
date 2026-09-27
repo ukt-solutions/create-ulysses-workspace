@@ -11,9 +11,9 @@
 //   - the work-sessions/{name}/ folder is gone
 //   - success: true iff all of the above hold
 
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import { mkdirSync, writeFileSync, existsSync, rmSync, cpSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { join, dirname, resolve, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 
@@ -293,6 +293,119 @@ await (async () => {
 // post-verification code path is a 2-line `if (branchStill) errors.push`
 // and is hard to regress without Test 4's discovery+verification flow
 // noticing.)
+
+// Run the cleanup script and capture its exit status and JSON without
+// throwing — the security cases below EXPECT a non-zero refusal.
+function runCleanupRaw(T, sessionName) {
+  const scriptPath = join(T, SCRIPT_REL);
+  const res = spawnSync('node', [scriptPath, '--session-name', sessionName], {
+    cwd: T, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let json = null;
+  try {
+    json = JSON.parse(String(res.stdout).trim().split('\n').filter(Boolean).pop());
+  } catch { /* not JSON — callers assert on status/stdout instead */ }
+  return { status: res.status, json };
+}
+
+// === Test 5: shell metacharacters in the tracker branch never execute (gh:147/B5) ===
+// The tracker is session-controlled input. The old script interpolated it
+// into execSync shell strings, so a crafted branch name executed. The
+// rewrite passes argv arrays and validates the branch with git itself.
+console.log('# security: shell metacharacters in branch are refused, nothing executes');
+{
+  const fx = makeFixture('inject-test', 'x"; touch "INJECT-MARKER"; echo "');
+  const marker = join(fx.T, 'INJECT-MARKER');
+  try {
+    const { status, json } = runCleanupRaw(fx.T, 'inject-test');
+    assertEq(status !== 0, true, 'cleanup exits non-zero on an invalid branch');
+    assertEq(json?.success, false, 'success is false');
+    assert(!existsSync(marker), 'the injected command did NOT run — no marker file');
+    assert(existsSync(fx.wsWt), 'nothing was torn down');
+    assert(existsSync(join(fx.T, 'work-sessions', 'inject-test')), 'the session folder is kept');
+  } finally { teardownFixture(fx.T); }
+  assert(!existsSync(marker), 'no marker even after teardown of the fixture');
+}
+
+// === Test 6: a repos entry escaping root/repos/ is refused (gh:147/B5) ===
+// `repos: ['../../outside']` used to make the script run git in a repo
+// OUTSIDE the workspace — up to and including deleting its branch.
+console.log('# security: "../" repos entries are refused, the outside repo untouched');
+{
+  const outside = join(tmpdir(), `cleanup-outside-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  mkdirSync(outside, { recursive: true });
+  execSync(`git init -q -b main "${outside}"`, { stdio: 'pipe' });
+  writeFileSync(join(outside, 'README.md'), '# outside\n');
+  git(outside, '-c user.email=t@t -c user.name=t add -A');
+  git(outside, '-c user.email=t@t -c user.name=t commit -q -m init');
+  git(outside, 'branch bugfix/escape');
+
+  const escape = `../../${basename(outside)}`;
+  // A workspace fixture with no project repos of its own, whose tracker
+  // claims a repo OUTSIDE the workspace — the crafted input under test.
+  const fx = makeFixture('escape-test', 'bugfix/escape', []);
+  writeFileSync(join(fx.wsWt, 'session.md'), `---
+type: session-tracker
+name: escape-test
+status: active
+branch: bugfix/escape
+repos:
+  - ${escape}
+---
+
+# Session
+`);
+  try {
+    const { status, json } = runCleanupRaw(fx.T, 'escape-test');
+    assertEq(status !== 0, true, 'cleanup exits non-zero on an escaping repos entry');
+    assert(json?.errors?.some((e) => includesBoth(e, escape, 'single path segment')), 'the error names the entry');
+    assertEq(git(outside, 'branch --list bugfix/escape').trim() !== '', true, 'the outside repo branch survives');
+    assert(existsSync(join(fx.T, 'work-sessions', 'escape-test')), 'the session folder is kept');
+  } finally {
+    teardownFixture(fx.T);
+    try { rmSync(outside, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// === Test 7: an outright invalid branch name is refused ===
+console.log('# security: invalid branch names are refused');
+{
+  // Fixture on a valid branch; the INVALID name arrives via the tracker —
+  // the crafted input under test (git refuses `worktree add -b bad..name`
+  // outright, so the fixture cannot be built with it in the first place).
+  const fx = makeFixture('badname-test', 'bugfix/badname', []);
+  writeFileSync(join(fx.wsWt, 'session.md'), `---
+type: session-tracker
+name: badname-test
+status: active
+branch: bad..name
+repos: []
+---
+
+# Session
+`);
+  try {
+    const { status, json } = runCleanupRaw(fx.T, 'badname-test');
+    assertEq(status !== 0, true, 'cleanup exits non-zero on an invalid branch name');
+    assert(json?.errors?.some((e) => e.includes('check-ref-format')), 'the error cites check-ref-format');
+    assert(existsSync(join(fx.T, 'work-sessions', 'badname-test')), 'nothing was torn down');
+  } finally { teardownFixture(fx.T); }
+}
+
+// === Test 8: a traversal session name is refused before any path use ===
+console.log('# security: traversal session names are refused');
+{
+  const fx = makeFixture();
+  try {
+    const { status, json } = runCleanupRaw(fx.T, '../' + basename(fx.T));
+    assertEq(status !== 0, true, 'cleanup exits non-zero on a traversal session name');
+    assert(json?.errors?.[0]?.includes('single path segment'), 'the error explains the segment rule');
+  } finally { teardownFixture(fx.T); }
+}
+
+function includesBoth(haystack, a, b) {
+  return haystack.includes(a) && haystack.includes(b);
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
