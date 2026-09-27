@@ -361,20 +361,30 @@ function backedByRemote(remotes) {
   return null;
 }
 
-// The true local-only count against the closest remote that holds the
-// branch; with no holding remote, the ahead count is the honest floor.
-function localOnlyCount(wt) {
-  const holders = Object.values(wt.remotes).filter((r) => r.exists);
-  const counts = holders
-    .map((r) => (r.state === 'local-ahead' || r.state === 'diverged' ? r.ahead : 0));
-  if (counts.length > 0) return Math.min(...counts);
-  return typeof wt.ahead === 'number' ? wt.ahead : 0;
-}
-
-function unbackedMessage(wt) {
-  const parts = Object.entries(wt.remotes).map(([name, r]) => describeRemote(name, r));
+// The unbacked message names the repo (two worktrees on the same branch
+// would otherwise print identical lines) and counts the commits that are
+// neither on the primary holding remote nor on the default branch —
+// `rev-list --count HEAD ^<remoteSha> ^<base>` when the base resolves.
+function unbackedMessage(gitFn, rootDir, wt) {
+  const parts = Object.entries(wt.remotes).map(([name, r]) => describeRemote(name, r)).join(', ');
   const diverged = Object.values(wt.remotes).some((r) => r.state === 'diverged');
-  const head = `${localOnlyCount(wt)} commit(s) on ${wt.branch} exist on no remote (${parts.join(', ')})`;
+  const holderEntry = Object.entries(wt.remotes).find(([, r]) => r.exists) ?? Object.entries(wt.remotes)[0];
+  let count = null;
+  if (wt.base) {
+    const abs = join(rootDir, wt.path);
+    if (holderEntry && holderEntry[1].sha) {
+      const res = run(gitFn, abs, ['rev-list', '--count', 'HEAD', `^${holderEntry[1].sha}`, `^${wt.base}`]);
+      if (res.status === 0) count = Number(String(res.stdout).trim());
+    }
+    if (count == null || !Number.isFinite(count)) {
+      const res = run(gitFn, abs, ['rev-list', '--count', `${wt.base}..HEAD`]);
+      count = res.status === 0 ? Number(String(res.stdout).trim()) : null;
+    }
+  }
+  const label = repoLabel(wt);
+  const head = count != null && Number.isFinite(count)
+    ? `${label}: ${count} commit(s) on ${wt.branch} are on no remote and not on ${wt.base} (${parts})`
+    : `${label}: commit(s) on ${wt.branch} are on no remote (${parts})`;
   // A diverged remote means a rebase rewrote history that was already
   // pushed: a plain push will be rejected, and deciding to force is the
   // operator's, never the script's.
@@ -383,16 +393,17 @@ function unbackedMessage(wt) {
 
 // === S2(c): activity signals beyond commits ===
 
-// Newest HEAD-reflog timestamp for a worktree (unix seconds). A fresh
-// worktree has none — creation writes no HEAD reflog entry — so absence
-// is normal and tolerated; entries appear when real work (commit,
-// checkout, reset) happens in that worktree.
+// Newest HEAD-reflog timestamp for a worktree (unix seconds), read from
+// the reflog ENTRY's own time. `--date=unix --format=%gd` renders the
+// selector as HEAD@{<unix-ts>} — the entry timestamp, not %ct (which is
+// the referenced commit's date and reads "old" for a fresh worktree
+// checked out on an old branch). Absence is normal and tolerated.
 function reflogTs(gitFn, wtPath) {
   try {
-    const res = gitFn('git', ['-C', wtPath, 'log', '-g', '-1', '--format=%ct'], { encoding: 'utf8' });
+    const res = gitFn('git', ['-C', wtPath, 'log', '-g', '-1', '--date=unix', '--format=%gd'], { encoding: 'utf8' });
     if (!res || res.status !== 0) return null;
-    const s = String(res.stdout).trim();
-    return s === '' ? null : Number(s);
+    const m = String(res.stdout).trim().match(/@\{(\d+)\}$/);
+    return m ? Number(m[1]) : null;
   } catch {
     return null;
   }
@@ -451,6 +462,7 @@ function inspectWorktree(gitFn, rootDir, kind, repo, wtPath) {
   const branch = currentBranch(gitFn, wtPath);
   const defaultBranch = defaultBranchFor(rootDir, repo, gitFn);
   const range = ownRange(gitFn, wtPath, defaultBranch);
+  const base = range.slice(0, -('..HEAD'.length)); // the surviving-ref side of the range
   const head = headSha(gitFn, wtPath);
   const dirtyRecords = statusRecords(gitFn, wtPath) || [];
   const info = {
@@ -461,6 +473,8 @@ function inspectWorktree(gitFn, rootDir, kind, repo, wtPath) {
     dirty: dirtyRecords.length,
     ahead: aheadCount(gitFn, wtPath, range),
     lastOwnCommit: lastOwnCommitIso(gitFn, wtPath, range),
+    base,
+    defaultBranch,
     reflogAt: reflogTs(gitFn, wtPath),
     remotes: {},
     backedBy: null,
@@ -542,6 +556,18 @@ function classify(session, activeDays, now = Date.now()) {
   const dirtyContent = ws ? ws.dirtyContent : 0;
   const aheadProjects = projects.filter((p) => p.ahead > 0);
   const dirtyProjects = projects.filter((p) => p.dirty > 0);
+  // An unresolvable default branch means "no content" is UNPROVEN, not
+  // established — never ABANDONED on the back of an unknown count.
+  const unknownBase = session.worktrees.some((w) => w.ahead == null);
+  if (unknownBase) {
+    return {
+      proposal: 'MERGEABLE',
+      reasons: [
+        `last activity ${session.lastActivity} is older than ${activeDays} days`,
+        'commits-ahead could not be verified (a default branch does not resolve) — content is unknown, so abandonment is not provable',
+      ],
+    };
+  }
   if (content === 0 && dirtyContent === 0 && aheadProjects.length === 0 && dirtyProjects.length === 0) {
     return {
       proposal: 'ABANDONED',
@@ -560,7 +586,7 @@ function classify(session, activeDays, now = Date.now()) {
   return { proposal: 'MERGEABLE', reasons };
 }
 
-function collectWarnings(worktrees, active, trackerBranch) {
+function collectWarnings(gitFn, rootDir, worktrees, active, trackerBranch) {
   const warnings = [];
   for (const wt of worktrees) {
     if (wt.kind === 'workspace' && wt.branchDrift) {
@@ -583,7 +609,7 @@ function collectWarnings(worktrees, active, trackerBranch) {
       warnings.push({
         kind: 'unbacked',
         unbacked: true,
-        message: unbackedMessage(wt),
+        message: unbackedMessage(gitFn, rootDir, wt),
         repo: wt.repo,
         branch: wt.branch,
         ahead: wt.ahead,
@@ -591,8 +617,8 @@ function collectWarnings(worktrees, active, trackerBranch) {
     }
     if (wt.ahead == null) {
       warnings.push({
-        kind: 'unknown-ahead',
-        message: `${repoLabel({ kind: wt.kind, repo: wt.repo })}: commits-ahead could not be counted (default branch "${wt.defaultBranch}" does not resolve here) — treat every count as unknown`,
+        kind: 'unknown-base',
+        message: `${repoLabel({ kind: wt.kind, repo: wt.repo })}: commits-ahead could not be counted (default branch "${wt.defaultBranch}" does not resolve here) — treat every count as unknown and the content as unverifiable`,
         repo: wt.repo,
       });
     }
@@ -619,10 +645,6 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
   if (wsWt && tracker) {
     wsWt.trackerBranch = tracker.branch;
     wsWt.branchDrift = Boolean(tracker.branch && wsWt.branch && tracker.branch !== wsWt.branch);
-    wsWt.defaultBranch = defaultBranchFor(rootDir, WORKSPACE_REPO, gitFn);
-  }
-  for (const wt of worktrees) {
-    if (wt.defaultBranch === undefined) wt.defaultBranch = defaultBranchFor(rootDir, wt.repo, gitFn);
   }
 
   // lastActivity: the newest fact we have — own commits, reflog entries,
@@ -646,7 +668,7 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
   consider(tracker?.updated ?? null);
 
   const { proposal, reasons } = classify({ name, worktrees, lastActivity }, activeDays, now);
-  const warnings = collectWarnings(worktrees, proposal === 'ACTIVE', tracker?.branch ?? null);
+  const warnings = collectWarnings(gitFn, rootDir, worktrees, proposal === 'ACTIVE', tracker?.branch ?? null);
   return {
     name,
     kind: 'session',
@@ -687,21 +709,47 @@ function inventory(root, { activeDays = 14, gitFn = spawnSync, now = Date.now() 
   };
 }
 
-// === The teardown invariant ===
+// === The teardown invariant (allowlist) ===
+//
+// The lesson of the review probes: a denylist of dangerous things lets
+// every unlisted thing through. These checks are therefore allowlists —
+// teardown proceeds only when the session folder is EXACTLY the known
+// shape and everything destroyed is POSITIVELY proven recoverable on a
+// remote. Local refs never prove anything: a stale refs/remotes/* entry,
+// a local drain/* tag whose push failed, or a local branch that happens
+// to contain the tip all vanish or rot with the very teardown they were
+// asked to vouch for.
 
 function repoLabel(wt) {
   return wt.kind === 'workspace' ? 'the workspace repo' : `repo "${wt.repo}"`;
 }
 
-// All refs a repo holds, peeled to commits where they are tags — the
-// candidate survivors for rule (2b).
-function repoRefs(gitFn, repoDir) {
-  const res = run(gitFn, repoDir, ['for-each-ref', '--format=%(refname) %(objectname) %(*objectname)', 'refs/heads', 'refs/remotes', 'refs/tags']);
-  if (res.status !== 0) return null;
-  return okLines(res).map((line) => {
-    const [ref, obj, peeled] = line.trim().split(/\s+/);
-    return { ref, sha: peeled || obj }; // %(*objectname) is empty for non-tags
-  });
+// Does a remote's URL point somewhere OTHER than the workspace itself? A
+// remote whose URL resolves to a local path inside root shares its fate
+// with the thing being deleted (a remote pointing at the repo, or at a
+// sibling repo under root, holds the same objects in the same store), so
+// "the remote has it" proves nothing. file:// URLs and plain paths are
+// local; scheme URLs and scp-style git@host:path are real remotes.
+function parseRemoteUrl(url) {
+  if (url.startsWith('file://')) return { local: true, path: fileURLToPath(url) };
+  if (/:\/\//.test(url)) return { local: false };
+  if (/^[^:@/\s]+@[^:\s]+:/.test(url)) return { local: false };
+  return { local: true, path: url };
+}
+
+function remoteQualifies(safety, repoDir, remote) {
+  const key = `${repoDir}\0${remote}`;
+  if (safety.qualCache.has(key)) return safety.qualCache.get(key);
+  let qualifies = false;
+  const res = run(safety.gitFn, repoDir, ['remote', 'get-url', remote]);
+  if (res.status === 0) {
+    const parsed = parseRemoteUrl(String(res.stdout).trim());
+    // Relative local paths resolve against the repo, the way git does.
+    qualifies = !parsed.local || !insideRoot(safety.rootDir, realPath(resolve(repoDir, parsed.path)));
+  }
+  // An unreadable URL proves nothing (fail closed).
+  safety.qualCache.set(key, qualifies);
+  return qualifies;
 }
 
 // Every ref (branch or tag) a remote holds, mapped by commit sha. No
@@ -724,36 +772,54 @@ function remoteRefs(safety, repoDir, remote) {
   return map;
 }
 
-// Rule (2): a tip is safe iff some remote holds it at exactly that sha
-// (verified now — local tracking refs prove nothing), or some ref that
-// survives teardown contains it. Deletion-set refs are excluded from the
-// candidates; every git failure simply fails to prove safety.
-function tipSafety(safety, repoDir, sha, excludeRefs) {
+// Is <tip> an ancestor of the commit a remote holds at <rsha> through
+// <ref>? The object may not exist locally (nobody fetched it); a one-shot
+// `git fetch <remote> <ref>` may bring it in — it writes FETCH_HEAD only,
+// updating no local refs, so it cannot fabricate local "proof". Any git
+// failure fails closed.
+function remoteRefContains(safety, repoDir, remote, ref, rsha, tip) {
+  const fetchRef = ref.replace(/\^\{\}$/, ''); // a peeled selector is not a fetchable refspec
+  const known = run(safety.gitFn, repoDir, ['cat-file', '-e', `${rsha}^{commit}`]).status === 0;
+  if (!known) {
+    const res = safety.gitFn('git', ['-C', repoDir, 'fetch', remote, fetchRef], netOpts(PUSH_TIMEOUT_MS));
+    if (res.error || res.status !== 0) return false;
+  }
+  try {
+    const res = safety.gitFn('git', ['-C', repoDir, 'merge-base', '--is-ancestor', tip, rsha], { encoding: 'utf8' });
+    return Boolean(res && !res.error && res.status === 0);
+  } catch {
+    return false;
+  }
+}
+
+// THE tip allowlist: a tip is safe iff some QUALIFYING remote demonstrably
+// holds it — at exactly that sha, or at a commit that contains it — as
+// reported by ls-remote just now. Nothing local counts (see the block
+// comment above).
+function tipSafety(safety, repoDir, sha) {
   for (const remote of safety.remotes(repoDir)) {
+    if (!remoteQualifies(safety, repoDir, remote)) continue;
     const refs = remoteRefs(safety, repoDir, remote);
     if (!refs) continue; // unknown — cannot prove
-    const ref = refs.get(sha);
-    if (ref) return { safe: true, by: 'remote', remote, ref };
-  }
-  const candidates = safety.refs(repoDir);
-  if (!candidates) return { safe: false };
-  for (const cand of candidates) {
-    if (excludeRefs.has(cand.ref)) continue;
-    let res = null;
-    try {
-      res = safety.gitFn('git', ['-C', repoDir, 'merge-base', '--is-ancestor', sha, cand.sha], { encoding: 'utf8' });
-    } catch { break; }
-    if (res && !res.error && res.status === 0) return { safe: true, by: 'ref', ref: cand.ref };
+    const exact = refs.get(sha);
+    if (exact) return { safe: true, by: 'remote', remote, ref: exact };
+    for (const [rsha, ref] of refs) {
+      if (rsha === sha) continue;
+      if (remoteRefContains(safety, repoDir, remote, ref, rsha, sha)) {
+        return { safe: true, by: 'remote', remote, ref };
+      }
+    }
   }
   return { safe: false };
 }
 
-function makeSafety(gitFn) {
+function makeSafety(gitFn, rootDir) {
   const safety = {
     gitFn,
+    rootDir,
     lsCache: new Map(),
+    qualCache: new Map(),
     remotesCache: new Map(),
-    refsCache: new Map(),
     remotes(repoDir) {
       if (!safety.remotesCache.has(repoDir)) {
         const res = run(gitFn, repoDir, ['remote']);
@@ -761,19 +827,70 @@ function makeSafety(gitFn) {
       }
       return safety.remotesCache.get(repoDir);
     },
-    refs(repoDir) {
-      if (!safety.refsCache.has(repoDir)) safety.refsCache.set(repoDir, repoRefs(gitFn, repoDir));
-      return safety.refsCache.get(repoDir);
-    },
   };
   return safety;
+}
+
+// Ignored paths the template itself regenerates on every session start.
+// Without this exemption every real teardown would need --discard-ignored
+// just for the active-session pointer — and that flag would also waive
+// local-only-* drafts and .env files. The list is deliberately tiny;
+// .claude/settings.local.json is special: create-work-session.mjs copies
+// the root's file into the worktree, so it is exempt only while the copy
+// is still byte-identical.
+const REGENERABLE_IGNORED_EXACT = new Set(['.claude/.active-session.json']);
+const REGENERABLE_IGNORED_BASENAMES = new Set(['.DS_Store', 'Thumbs.db']);
+
+function singleIgnoredPathIsExempt(wtAbsPath, relPath, rootDir) {
+  if (REGENERABLE_IGNORED_EXACT.has(relPath)) return true;
+  if (REGENERABLE_IGNORED_BASENAMES.has(relPath.split('/').pop())) return true;
+  if (relPath === '.claude/settings.local.json') {
+    try {
+      const rootCopy = readFileSync(join(rootDir, '.claude', 'settings.local.json'));
+      const wtCopy = readFileSync(join(wtAbsPath, '.claude', 'settings.local.json'));
+      return rootCopy.equals(wtCopy);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+// Files under {dir}, as worktree-relative forward-slash paths. git
+// collapses fully-ignored directories to a single `!! dir/` entry, so an
+// ignored DIRECTORY is exempt only when every file inside it is exempt.
+function filesUnder(base, dir, acc = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isFile() || entry.isSymbolicLink()) acc.push(relative(base, p).split(sep).join('/'));
+    else if (entry.isDirectory()) filesUnder(base, p, acc);
+  }
+  return acc;
+}
+
+function ignoredEntryIsExempt(wt, relPath, rootDir) {
+  const norm = relPath.replace(/\/$/, ''); // collapsed dir entries carry a trailing slash
+  const abs = join(wt.path, norm);
+  let st = null;
+  try { st = statSync(abs); } catch { return { exempt: false, offender: norm }; }
+  if (!st.isDirectory()) {
+    return singleIgnoredPathIsExempt(wt.path, norm, rootDir)
+      ? { exempt: true }
+      : { exempt: false, offender: norm };
+  }
+  const files = filesUnder(wt.path, abs);
+  for (const f of files) {
+    if (!singleIgnoredPathIsExempt(wt.path, f, rootDir)) return { exempt: false, offender: f };
+  }
+  return { exempt: true };
 }
 
 // Rule (3): a tree is safe iff nothing would be lost — not even ignored
 // files, which `git worktree remove --force` discards silently. The
 // nested repos/ directory of the workspace worktree is excluded: its
-// contents are separate worktrees, checked on their own. Waivers must be
-// named explicitly per flag; the refusal lists the exact paths.
+// contents are separate worktrees, checked on their own; the regenerable
+// template-owned ignores above are exempt. Waivers must be named
+// explicitly per flag; the refusal lists the exact paths.
 function unsafeTreePaths(gitFn, wt, { discardUncommitted, discardIgnored }) {
   const records = statusRecords(gitFn, wt.path, ['--ignored=matching']);
   if (records === null) {
@@ -783,7 +900,9 @@ function unsafeTreePaths(gitFn, wt, { discardUncommitted, discardIgnored }) {
   for (const r of records) {
     if (wt.kind === 'workspace' && (r.path === 'repos' || r.path.startsWith('repos/'))) continue;
     if (r.xy === '!!') {
-      if (!discardIgnored) bad.push({ path: r.path, category: 'ignored' });
+      if (discardIgnored) continue;
+      const verdict = ignoredEntryIsExempt(wt, r.path, wt.rootDir);
+      if (!verdict.exempt) bad.push({ path: verdict.offender, category: 'ignored' });
     } else if (!discardUncommitted) {
       bad.push({ path: r.path, category: r.xy.includes('?') ? 'untracked' : 'modified' });
     }
@@ -813,9 +932,11 @@ function commonDirOf(gitFn, wtPath) {
 // The complete set of refs and trees teardown would destroy, computed
 // exactly as cleanup-work-session.mjs will: branch = the tracker's
 // branch: (falling back to the workspace worktree's HEAD branch), repos
-// = the tracker's repos: (falling back to the nested repos/* dirs). On
-// top of cleanup's own deletions, every worktree's current HEAD (branch
-// or detached) is included — removing a worktree destroys that checkout.
+// = the tracker's repos: (falling back to EVERY directory under
+// workspace/repos/ — the same statSync-based enumeration cleanup uses,
+// never the tracker alone). On top of cleanup's own deletions, every
+// worktree's current HEAD (branch or detached) is included — removing a
+// worktree destroys that checkout.
 function computeDeletionSet(gitFn, rootDir, folder) {
   const wsDir = join(folder, 'workspace');
   const tracker = readTracker(wsDir);
@@ -831,7 +952,22 @@ function computeDeletionSet(gitFn, rootDir, folder) {
   let branch = tracker?.branch || null;
   let repos = tracker ? [...tracker.repos] : [];
   const discovered = repos.length === 0;
-  if (discovered) repos = rawWorktrees.filter((w) => w.kind === 'project').map((w) => w.repo);
+  if (discovered) {
+    const nested = join(wsDir, 'repos');
+    if (existsSync(nested)) {
+      // Mirror cleanup's discovery: every entry that statSync reports as
+      // a directory (symlinks to directories included). Entries that are
+      // not really worktrees are caught by the structure allowlist, but
+      // the deletion set stays a superset either way.
+      repos = readdirSync(nested).filter((n) => {
+        try {
+          return statSync(join(nested, n)).isDirectory();
+        } catch {
+          return false;
+        }
+      });
+    }
+  }
   if (!branch) {
     const wsWt = worktrees.find((w) => w.kind === 'workspace');
     branch = wsWt ? wsWt.branch : null;
@@ -865,7 +1001,7 @@ function computeDeletionSet(gitFn, rootDir, folder) {
     addTip(realPath(wt.commonDir ? dirname(wt.commonDir) : wt.path), wt.repo, wt.kind, wt.branch, wt.head);
   }
 
-  return { branch, repos, discovered, tracker, worktrees, tips };
+  return { folder, branch, repos, discovered, tracker, worktrees, tips };
 }
 
 function branchTip(gitFn, repoDir, branch) {
@@ -897,15 +1033,63 @@ function validateTrackerShape(gitFn, rootDir, del) {
   return reasons;
 }
 
-// Rule (5): refuse on inconsistency rather than guess.
-function consistencyReasons(rootDir, del) {
+// THE structure allowlist: the session folder must be EXACTLY the known
+// shape. Anything unexpected — a stray file beside workspace/, a plain
+// directory, plain clone, file, or symlink under workspace/repos/ — is
+// refused by name, because cleanup enumerates that directory and must
+// never act on an entry whose nature is unverified.
+function structureReasons(gitFn, rootDir, folder, del) {
   const reasons = [];
-  const nestedNames = del.worktrees.filter((w) => w.kind === 'project').map((w) => w.repo).sort();
-  for (const w of del.worktrees) {
-    if (w.kind === 'foreign') {
-      reasons.push(`nested entry repos/${w.repo} is a symlink — reconcile it before draining this session`);
+  const wsDir = join(folder, 'workspace');
+
+  for (const entry of readdirSync(folder)) {
+    if (entry !== 'workspace') {
+      reasons.push(`unexpected entry "${entry}" beside workspace/ — a session folder holds only workspace/; reconcile first`);
     }
   }
+
+  const wsWt = del.worktrees.find((w) => w.kind === 'workspace');
+  if (!wsWt) {
+    reasons.push('workspace/ is not a git worktree — reconcile first');
+  } else if (!wsWt.commonDir || wsWt.commonDir !== realPath(join(rootDir, '.git'))) {
+    reasons.push(`workspace/ is not a worktree of the workspace repo (common dir ${wsWt.commonDir ?? 'unknown'}) — reconcile first`);
+  }
+
+  const nestedDir = join(wsDir, 'repos');
+  const nestedNames = [];
+  if (existsSync(nestedDir)) {
+    for (const entry of readdirSync(nestedDir, { withFileTypes: true })) {
+      const p = join(nestedDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        reasons.push(`repos/${entry.name} is a symlink, not a worktree — reconcile first`);
+        continue;
+      }
+      if (entry.isFile()) {
+        reasons.push(`repos/${entry.name} is a file, not a worktree — reconcile first`);
+        continue;
+      }
+      if (!entry.isDirectory()) continue; // sockets/fifos and the like: unreadable, refuse via the file branch if git ever lists them
+      if (!existsSync(join(p, '.git'))) {
+        reasons.push(`repos/${entry.name} is a plain directory, not a worktree — reconcile first`);
+        continue;
+      }
+      const expected = realPath(join(rootDir, 'repos', entry.name, '.git'));
+      const common = commonDirOf(gitFn, p);
+      if (!common || common !== expected) {
+        reasons.push(`repos/${entry.name} is not a worktree of repos/${entry.name} (plain clone or foreign repository; common dir ${common ?? 'unknown'}) — reconcile first`);
+        continue;
+      }
+      nestedNames.push(entry.name);
+    }
+  }
+
+  if (del.tracker && del.tracker.repos.length > 0) {
+    const tracked = [...del.tracker.repos].map(String).sort();
+    if (JSON.stringify(tracked) !== JSON.stringify([...nestedNames].sort())) {
+      reasons.push(`tracker repos [${tracked.join(', ')}] do not match the nested worktrees [${[...nestedNames].sort().join(', ')}] — reconcile the tracker first`);
+    }
+  }
+
   if (del.tracker?.branch) {
     for (const w of del.worktrees) {
       if (w.kind !== 'foreign' && w.branch && w.branch !== del.tracker.branch) {
@@ -914,31 +1098,31 @@ function consistencyReasons(rootDir, del) {
       }
     }
   }
-  if (del.tracker && del.tracker.repos.length > 0) {
-    const tracked = [...del.tracker.repos].map(String).sort();
-    if (JSON.stringify(tracked) !== JSON.stringify(nestedNames)) {
-      reasons.push(`tracker repos [${tracked.join(', ')}] do not match the nested worktrees [${nestedNames.join(', ')}] — reconcile the tracker first`);
-    }
-  }
-  for (const w of del.worktrees) {
-    if (w.kind === 'foreign') continue;
-    const expected = w.kind === 'workspace'
-      ? join(rootDir, '.git')
-      : join(rootDir, 'repos', w.repo, '.git');
-    if (!w.commonDir || realPath(expected) !== w.commonDir) {
-      reasons.push(`${w.kind} worktree repos/${w.repo} belongs to a foreign git repository (${w.commonDir ?? 'unknown common dir'}) — refuse to guess; reconcile first`);
-    }
-  }
   return reasons;
+}
+
+// A submodule's commits live in their own git dir with their own remotes,
+// invisible to every check above — refuse rather than guess. The
+// operator pushes/verifies submodules manually.
+function submodulesIn(gitFn, wtPath) {
+  const res = run(gitFn, wtPath, ['submodule', 'status', '--recursive']);
+  if (res.status !== 0) return null; // fail closed: cannot even ask
+  return okLines(res);
 }
 
 // Evaluate the full invariant; every unmet item becomes a refusal reason.
 function invariantReasons(gitFn, rootDir, del, session, { discardUncommitted, discardIgnored }) {
-  const reasons = [...validateTrackerShape(gitFn, rootDir, del), ...consistencyReasons(rootDir, del)];
+  const reasons = [...validateTrackerShape(gitFn, rootDir, del), ...structureReasons(gitFn, rootDir, del.folder, del)];
   for (const w of del.worktrees) {
     if (w.kind === 'foreign') continue;
     for (const op of opsInProgress(gitFn, w.path)) {
       reasons.push(`${repoLabel(w)}: ${op} in progress in ${relative(rootDir, w.path)} — finish or abort it first`);
+    }
+    const subs = submodulesIn(gitFn, w.path);
+    if (subs === null) {
+      reasons.push(`${repoLabel(w)}: could not verify submodules (git failed) — reconcile first`);
+    } else if (subs.length > 0) {
+      reasons.push(`${repoLabel(w)}: ${subs.length} submodule(s) present — push and verify them manually before draining (submodule commits have their own repos)`);
     }
     for (const bad of unsafeTreePaths(gitFn, w, { discardUncommitted, discardIgnored })) {
       if (bad.category === 'unknown') {
@@ -949,14 +1133,13 @@ function invariantReasons(gitFn, rootDir, del, session, { discardUncommitted, di
       }
     }
   }
-  const safety = makeSafety(gitFn);
+  const safety = makeSafety(gitFn, rootDir);
   for (const tip of del.tips) {
-    const exclude = new Set(del.branch ? [`refs/heads/${del.branch}`] : []);
-    const verdict = tipSafety(safety, tip.repoDir, tip.sha, exclude);
+    const verdict = tipSafety(safety, tip.repoDir, tip.sha);
     if (!verdict.safe) {
       const what = tip.ref ? `branch ${tip.ref}` : 'a detached HEAD';
       const where = tip.repo === WORKSPACE_REPO ? 'the workspace repo' : `repo "${tip.repo}"`;
-      reasons.push(`${where}: ${what} @ ${tip.sha.slice(0, 10)} would be deleted with no copy on any remote and no surviving ref containing it — back it up first (--backup --session ${session})`);
+      reasons.push(`${where}: ${what} @ ${tip.sha.slice(0, 10)} would be deleted with no copy on any qualifying remote proven to contain it — back it up first (--backup --session ${session})`);
     }
   }
   return reasons;
@@ -1039,14 +1222,17 @@ function resolvePushRemote(gitFn, repoDir, branch, override, remotes) {
 }
 
 /**
- * Back up every ref teardown would destroy that is not already contained
- * in a surviving ref: an annotated, session-scoped `drain/{session}/…`
+ * Back up every ref teardown would destroy that is not already provably
+ * on a qualifying remote: an annotated, session-scoped `drain/{session}/…`
  * tag at the tip, pushed to the resolved remote and verified there, so
- * teardown can never be the last copy of unique commits. Idempotent —
- * an existing tag at the same commit is fine; at a different commit (the
- * branch moved) the operator must decide, so it refuses.
+ * teardown can never be the last copy of unique commits. With dryRun the
+ * plan is reported per tip (remote, tag, already-safe) with no side
+ * effects — backup is a decision, and the operator sees exactly what
+ * would be pushed where before saying yes. Idempotent — an existing tag
+ * at the same commit is fine; at a different commit (the branch moved)
+ * the operator must decide, so it refuses.
  */
-function backupSession(root, { session, remote: remoteOverride = null, gitFn = spawnSync, cwd = process.cwd() } = {}) {
+function backupSession(root, { session, remote: remoteOverride = null, dryRun = false, gitFn = spawnSync, cwd = process.cwd() } = {}) {
   const rootDir = resolveRoot(root);
   if (!isSessionSegment(session)) {
     throw new Error(`session name must be a single path segment, got: ${session}`);
@@ -1056,18 +1242,21 @@ function backupSession(root, { session, remote: remoteOverride = null, gitFn = s
   if (refusal) return refusal;
 
   const del = computeDeletionSet(gitFn, rootDir, folder);
-  const reasons = validateTrackerShape(gitFn, rootDir, del);
+  const reasons = [...validateTrackerShape(gitFn, rootDir, del)];
+  if (existsSync(join(folder, 'workspace', '.git'))) {
+    reasons.push(...structureReasons(gitFn, rootDir, folder, del));
+  }
   const branches = [];
   const skipped = [];
+  const planned = [];
   if (reasons.length === 0 && existsSync(join(folder, 'workspace', '.git'))) {
-    const safety = makeSafety(gitFn);
+    const safety = makeSafety(gitFn, rootDir);
     for (const tip of del.tips) {
-      const exclude = new Set(del.branch ? [`refs/heads/${del.branch}`] : []);
-      const verdict = tipSafety(safety, tip.repoDir, tip.sha, exclude);
-      if (verdict.safe && verdict.by === 'ref') {
-        // Already contained in a ref that survives teardown (e.g. merged
-        // to the default branch) — no unique data, no tag needed.
-        skipped.push({ repo: tip.repo, ref: tip.ref ?? 'HEAD', commit: tip.sha, containedIn: verdict.ref });
+      const verdict = tipSafety(safety, tip.repoDir, tip.sha);
+      if (verdict.safe) {
+        // Already provably on a qualifying remote — pushing a tag for it
+        // would only add noise (and possibly land in a public repo).
+        skipped.push({ repo: tip.repo, ref: tip.ref ?? 'HEAD', commit: tip.sha, safeOn: verdict.remote, safeRef: verdict.ref });
         continue;
       }
       const shortSha = tip.sha.slice(0, 10);
@@ -1075,11 +1264,6 @@ function backupSession(root, { session, remote: remoteOverride = null, gitFn = s
         ? `drain/${session}/${slugForBranch(tip.ref)}`
         : `drain/${session}/${tip.kind === 'workspace' ? 'workspace' : tip.repo}-detached-${shortSha}`;
       const tagDir = tip.repoDir;
-      const existing = peeledTagSha(gitFn, tagDir, tagName);
-      if (existing && existing !== tip.sha) {
-        reasons.push(`${repoLabel(tip)}: tag ${tagName} already points at ${existing.slice(0, 10)}…, not the current tip (${shortSha}…); the branch moved — decide manually`);
-        continue;
-      }
       const remotes = safety.remotes(tagDir);
       if (remotes.length === 0) {
         reasons.push(`${repoLabel(tip)} has no remote to push the backup tag ${tagName} to — decide manually where to back up ${tip.ref ?? shortSha}`);
@@ -1090,21 +1274,45 @@ function backupSession(root, { session, remote: remoteOverride = null, gitFn = s
         reasons.push(reason || `${repoLabel(tip)}: no push remote resolves — decide manually`);
         continue;
       }
+      const existing = peeledTagSha(gitFn, tagDir, tagName);
+      if (existing && existing !== tip.sha) {
+        reasons.push(`${repoLabel(tip)}: tag ${tagName} already points at ${existing.slice(0, 10)}…, not the current tip (${shortSha}…); the branch moved — decide manually`);
+        continue;
+      }
+      if (dryRun) {
+        planned.push({
+          repo: tip.repo,
+          branch: tip.ref,
+          detached: !tip.ref,
+          commit: tip.sha,
+          tag: tagName,
+          remote,
+          alreadySafe: false,
+          wouldCreate: !existing,
+        });
+        continue;
+      }
+      let createdThisRun = false;
       if (!existing) {
         const created = run(gitFn, tagDir, ['tag', '-a', tagName, '-m', `backup before draining session ${session}`, tip.sha]);
         if (created.status !== 0) {
           reasons.push(`${repoLabel(tip)}: git tag ${tagName} failed: ${String(created.stderr || '').trim()}`);
           continue;
         }
+        createdThisRun = true;
       }
       const pushed = gitFn('git', ['-C', tagDir, 'push', remote, `refs/tags/${tagName}`], netOpts(PUSH_TIMEOUT_MS));
       if (pushed.error || pushed.status !== 0) {
+        // A local tag that never reached a remote masquerades as a
+        // backup (and local refs prove nothing) — remove the one we made.
+        if (createdThisRun) run(gitFn, tagDir, ['tag', '-d', tagName]);
         const detail = pushed.error ? `timed out after ${PUSH_TIMEOUT_MS / 1000}s` : String(pushed.stderr || '').trim();
         reasons.push(`${repoLabel(tip)}: pushing ${tagName} to ${remote} failed (${detail}) — treat ${tip.ref ?? shortSha} as unbacked`);
         continue;
       }
       const verified = tagOnRemoteAt(gitFn, tagDir, remote, tagName, tip.sha);
       if (!verified) {
+        if (createdThisRun) run(gitFn, tagDir, ['tag', '-d', tagName]);
         reasons.push(`${repoLabel(tip)}: tag ${tagName} not found on ${remote} after pushing — treat ${tip.ref ?? shortSha} as unbacked`);
         continue;
       }
@@ -1121,6 +1329,7 @@ function backupSession(root, { session, remote: remoteOverride = null, gitFn = s
     }
   }
   if (reasons.length > 0) return { refused: true, reasons };
+  if (dryRun) return { session, dryRun: true, tips: planned, skipped };
   return { session, branches, skipped };
 }
 
@@ -1180,15 +1389,20 @@ function teardownSession(root, { session, discardUncommitted = false, discardIgn
   const res = spawnSync(process.execPath, [script, '--session-name', session], {
     cwd: rootDir, encoding: 'utf8',
   });
+  let cleanupOut = null;
+  try {
+    cleanupOut = JSON.parse(String(res.stdout || '').trim().split('\n').filter(Boolean).pop());
+  } catch { /* not JSON — fall back to raw stderr below */ }
   if (res.error) throw new Error(`spawning cleanup-work-session.mjs failed: ${res.error.message}`);
   if (res.status !== 0) {
-    throw new Error(`cleanup-work-session.mjs exited ${res.status}: ${String(res.stderr || '').trim()}`);
+    // Surface WHAT failed, not just that something did: cleanup's own
+    // JSON errors name the step and the repo.
+    const detail = cleanupOut?.errors?.length
+      ? cleanupOut.errors.join('; ')
+      : String(res.stderr || '').trim();
+    throw new Error(`cleanup-work-session.mjs exited ${res.status}: ${detail}`);
   }
-  let cleanup = null;
-  try {
-    cleanup = JSON.parse(String(res.stdout).trim().split('\n').filter(Boolean).pop());
-  } catch { /* report the removal below; the JSON is best-effort detail */ }
-  return { session, kind: 'session', removed: !existsSync(folder), cleanup };
+  return { session, kind: 'session', removed: !existsSync(folder), cleanup: cleanupOut };
 }
 
 // The launcher root is the main worktree of the workspace repo; every
@@ -1263,7 +1477,7 @@ const VALUE_FLAGS = new Map([
 ]);
 
 function parseArgs(argv) {
-  const args = { root: '.', mode: null, session: null, activeDays: null, remote: null, discardUncommitted: false, discardIgnored: false };
+  const args = { root: '.', mode: null, session: null, activeDays: null, remote: null, dryRun: false, discardUncommitted: false, discardIgnored: false };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
@@ -1274,6 +1488,7 @@ function parseArgs(argv) {
     }
     if (a === '--discard-uncommitted') { args.discardUncommitted = true; continue; }
     if (a === '--discard-ignored') { args.discardIgnored = true; continue; }
+    if (a === '--dry-run') { args.dryRun = true; continue; }
     const key = VALUE_FLAGS.get(a);
     if (key) {
       const v = rest[i + 1];
@@ -1303,6 +1518,9 @@ function parseArgs(argv) {
   if (args.remote != null && args.mode !== 'backup') {
     throw new Error('--remote is only valid with --backup');
   }
+  if (args.dryRun && args.mode !== 'backup') {
+    throw new Error('--dry-run is only valid with --backup');
+  }
   if (args.discardUncommitted && args.mode !== 'teardown') {
     throw new Error('--discard-uncommitted is only valid with --teardown');
   }
@@ -1326,7 +1544,7 @@ function main() {
     out = inventory(rootDir, { activeDays: args.activeDays ?? 14 });
     process.stderr.write(renderTable(out));
   } else if (args.mode === 'backup') {
-    out = backupSession(rootDir, { session: args.session, remote: args.remote });
+    out = backupSession(rootDir, { session: args.session, remote: args.remote, dryRun: args.dryRun });
   } else if (args.mode === 'teardown') {
     out = teardownSession(rootDir, {
       session: args.session,

@@ -12,7 +12,7 @@
 //   - success: true iff all of the above hold
 
 import { execFileSync, execSync, spawnSync } from 'child_process';
-import { mkdirSync, writeFileSync, existsSync, rmSync, cpSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync, cpSync, mkdtempSync, renameSync, symlinkSync } from 'fs';
 import { join, dirname, resolve, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
@@ -415,6 +415,65 @@ console.log('# security: traversal session names are refused');
     assertEq(status !== 0, true, 'cleanup exits non-zero on a traversal session name');
     assert(json?.errors?.[0]?.includes('single path segment'), 'the error explains the segment rule');
   } finally { teardownFixture(fx.T); }
+}
+
+// === Test 9: a plain dir under nested repos/ stops cleanup after step 1 (gh:147/R3) ===
+// cleanup enumerates every directory under workspace/repos/ (discovery),
+// so an unverified entry must STOP the run before the workspace worktree,
+// branch deletion, or the session folder are touched — never run
+// `branch -D` in a repo whose nested entry was not verified.
+console.log('# security: plain dir under nested repos/ stops after step 1, deletes nothing else');
+{
+  const fx = makeFixture('stale-plain', 'bugfix/stale-plain');
+  rmSync(join(fx.wsWt, 'session.md')); // force discovery, the /complete-work shape
+  mkdirSync(join(fx.wsWt, 'repos', 'ghost'));
+  writeFileSync(join(fx.wsWt, 'repos', 'ghost', 'leftover.txt'), 'irreplaceable');
+  const { status, json } = runCleanupRaw(fx.T, 'stale-plain');
+  assertEq(status !== 0, true, 'cleanup exits non-zero');
+  assert(json?.errors?.some((e) => e.includes('ghost')), 'the error names the unverified entry');
+  assert(json?.errors?.some((e) => e.includes('Stopped after step 1')), 'the error says later steps were skipped');
+  assertEq(json?.removed?.includes('workspace worktree') ?? false, false, 'the workspace worktree was NOT removed');
+  assert(existsSync(fx.wsWt), 'the workspace worktree still exists');
+  assertEq(git(fx.T, `branch --list "bugfix/stale-plain"`).trim() !== '', true, 'the branch was NOT deleted in the workspace repo');
+  assertEq(git(fx.projRepos.proj, `branch --list "bugfix/stale-plain"`).trim() !== '', true, 'the branch was NOT deleted in the project repo');
+  assert(existsSync(join(fx.T, 'work-sessions', 'stale-plain')), 'the session folder is kept');
+  assert(existsSync(join(fx.wsWt, 'repos', 'ghost', 'leftover.txt')), 'the plain dir content survives');
+}
+
+// === Test 10: a symlinked source clone is a supported layout (gh:147/R3) ===
+// repos/{name} may be a symlink to the real source clone elsewhere; that
+// is allowed when the nested worktree's git common dir resolves into the
+// symlink target's repository, and cleanup proceeds normally.
+console.log('# layout: symlinked repos/{name} source clone cleans up successfully');
+{
+  const fx = makeFixture('sym', 'bugfix/sym');
+  const outside = mkdtempSync(join(tmpdir(), 'cleanup-sym-'));
+  const target = join(outside, 'proj');
+  renameSync(fx.projRepos.proj, target);
+  symlinkSync(target, fx.projRepos.proj);
+  git(target, 'worktree repair');
+  const r = runCleanupRaw(fx.T, 'sym');
+  assertEq(r.status, 0, 'cleanup succeeds with a symlinked source clone');
+  assertEq(r.json?.success, true, 'success is true');
+  assert(!existsSync(join(fx.T, 'work-sessions', 'sym')), 'the session folder is gone');
+  assertEq(git(target, `branch --list "bugfix/sym"`).trim(), '', 'the branch is deleted in the real clone');
+}
+
+// === Test 11: a discovered (not tracker) entry refuses with the right wording ===
+console.log('# wording: refused discovered entries do not claim to come from the tracker');
+{
+  const fx = makeFixture('disc', 'bugfix/disc');
+  rmSync(join(fx.wsWt, 'session.md')); // discovery mode
+  const evilTarget = mkdtempSync(join(tmpdir(), 'cleanup-disc-'));
+  mkdirSync(evilTarget, { recursive: true });
+  symlinkSync(evilTarget, join(fx.wsWt, 'repos', 'evil')); // statSync follows → discovered
+  // The source-clone slot is a symlink to something that is NOT the
+  // repository the nested entry belongs to — the validation refusal.
+  symlinkSync(evilTarget, join(fx.T, 'repos', 'evil'));
+  const { status, json } = runCleanupRaw(fx.T, 'disc');
+  assertEq(status !== 0, true, 'a discovered symlink entry refuses');
+  assert(json?.errors?.some((e) => e.includes('discovered from disk')), 'the message says discovered from disk, not "in the session tracker"');
+  assert(json?.errors?.some((e) => e.includes('evil')), 'the entry is named');
 }
 
 function includesBoth(haystack, a, b) {

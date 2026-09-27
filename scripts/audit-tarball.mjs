@@ -58,7 +58,10 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // added migrate-sessions.mjs + its suite + the /migrate-sessions skill
 // (gh:147) → 225 kB after the gh:147 fix round: the teardown invariant,
 // per-remote states, and the cleanup-work-session.mjs security rewrite
-// grew migrate-sessions.mjs and both suites.
+// grew migrate-sessions.mjs and both suites → still 225 kB after the
+// gh:147 allowlist round (structure + tip allowlists, dry-run, submodule
+// and regenerable-ignore handling): 227,168 bytes means 220 kB fails and
+// 225 kB is the smallest passing multiple.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is

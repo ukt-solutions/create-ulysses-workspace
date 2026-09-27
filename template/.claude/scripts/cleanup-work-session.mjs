@@ -41,7 +41,7 @@
 // recover with.
 import '../lib/require-node.mjs';
 import { execFileSync } from 'child_process';
-import { existsSync, readdirSync, statSync, realpathSync } from 'fs';
+import { existsSync, readdirSync, statSync, lstatSync, realpathSync } from 'fs';
 import { join, resolve, isAbsolute, sep } from 'path';
 import {
   getWorkspaceRoot,
@@ -131,22 +131,24 @@ let branch = tracker?.branch || null;
 // If repos is empty, discover from work-sessions/{name}/workspace/repos/.
 // That directory is the workspace worktree's nested-project-worktrees dir;
 // each entry is one project repo this session checked out.
+let discovered = false;
 if (repos.length === 0) {
   const nestedReposDir = join(wsWorktree, 'repos');
   if (existsSync(nestedReposDir)) {
     try {
-      const discovered = readdirSync(nestedReposDir).filter((entry) => {
+      const found = readdirSync(nestedReposDir).filter((entry) => {
         try {
           return statSync(join(nestedReposDir, entry)).isDirectory();
         } catch {
           return false;
         }
       });
-      if (discovered.length > 0) {
-        repos = discovered;
+      if (found.length > 0) {
+        repos = found;
+        discovered = true;
         skipped.push({
           step: 'discovery',
-          reason: `Tracker missing repos; discovered ${discovered.length} from ${nestedReposDir}: ${discovered.join(', ')}`,
+          reason: `Tracker missing repos; discovered ${found.length} from ${nestedReposDir}: ${found.join(', ')}`,
         });
       }
     } catch (err) {
@@ -160,14 +162,45 @@ if (repos.length === 0) {
 // — a crafted tracker (`repos: ['../../outside']`) must never point this
 // script at a repository outside the workspace. Entries discovered from
 // disk are validated too: they become paths just the same.
+//
+// One supported exception: repos/{name} may be a SYMLINK to the source
+// clone that owns the nested worktree (a layout some machines use to
+// share clones). That is allowed only when the nested worktree's git
+// common dir resolves into the very repository the symlink points at —
+// anything else is an unverified entry and refused.
+const nestedCommonDir = (repo) => {
+  const wt = join(wsWorktree, 'repos', repo);
+  if (!existsSync(wt)) return null;
+  const res = git(wt, ['rev-parse', '--git-common-dir']);
+  if (!res.ok) return null;
+  return realOf(resolve(wt, res.out.trim()));
+};
+const repoCommonDir = (repoDir) => {
+  const res = git(repoDir, ['rev-parse', '--git-common-dir']);
+  if (!res.ok) return null;
+  return realOf(resolve(repoDir, res.out.trim()));
+};
 for (const repo of repos) {
+  const source = discovered ? 'discovered from disk' : 'in the session tracker';
   if (!isRepoSegment(repo)) {
-    errors.push(`Invalid repos entry "${repo}" in the session tracker: must be a single path segment`);
+    errors.push(`Invalid repos entry "${repo}" ${source}: must be a single path segment`);
     continue;
   }
-  const dirReal = realOf(join(reposDir, repo));
+  const dir = join(reposDir, repo);
+  let st = null;
+  try { st = lstatSync(dir); } catch { /* handled below */ }
+  if (st && st.isSymbolicLink()) {
+    const target = realOf(dir);
+    const targetCommon = existsSync(target) ? repoCommonDir(target) : null;
+    const nestedCommon = nestedCommonDir(repo);
+    if (!targetCommon || !nestedCommon || targetCommon !== nestedCommon) {
+      errors.push(`Invalid repos entry "${repo}" ${source}: repos/${repo} is a symlink whose target is not the repository the nested worktree belongs to`);
+    }
+    continue;
+  }
+  const dirReal = realOf(dir);
   if (dirReal !== reposRootReal && !dirReal.startsWith(reposRootReal + sep)) {
-    errors.push(`Invalid repos entry "${repo}" in the session tracker: resolves outside ${reposDir}`);
+    errors.push(`Invalid repos entry "${repo}" ${source}: resolves outside ${reposDir}`);
   }
 }
 
@@ -218,6 +251,25 @@ for (const repo of repos) {
   } else {
     errors.push(`Failed to remove ${repo} worktree: ${res.err || res.out}`);
   }
+}
+
+// === HARD STOP if step 1 recorded any error ===
+//
+// A nested entry that could not be removed is an entry whose nature was
+// never verified (a plain directory, a foreign clone, a live worktree in
+// an unexpected state). Continuing would run `branch -D` in repos whose
+// nested entry was not verified as its worktree, and would delete the
+// session folder around whatever survived — the exact data-loss shape
+// the review probes demonstrated. Stop, report, keep everything.
+if (errors.length > 0) {
+  errors.push('Stopped after step 1 (nested worktree removal) — steps 2-5 skipped; nothing else was touched');
+  console.log(JSON.stringify({
+    success: false,
+    removed,
+    skipped: skipped.length > 0 ? skipped : undefined,
+    errors,
+  }));
+  process.exit(1);
 }
 
 // === Step 2: Remove the workspace worktree AFTER project worktrees are gone ===
