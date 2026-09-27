@@ -497,5 +497,23 @@ console.log('# safety: an unlisted live nested worktree refuses before anything 
   assert(existsSync(join(fx.wsWt, 'repos', 'proj')), 'the listed worktree was not removed either');
 }
 
+console.log('# safety: a worktree nested outside repos/ refuses; Finder junk does not');
+{
+  const fx = makeFixture('nested', 'bugfix/nested');
+  const tool = join(fx.wsWt, 'tools', 'projwt');
+  mkdirSync(dirname(tool), { recursive: true });
+  git(fx.projRepos.proj, `worktree add -q -b bugfix/tool "${tool}"`);
+  writeFileSync(join(tool, 'wip.txt'), 'work in progress\n');
+  const { status, json } = runCleanupRaw(fx.T, 'nested');
+  assertEq(status !== 0, true, 'cleanup exits non-zero');
+  assert(json?.errors?.some((e) => e.includes('tools') && e.includes('not one this teardown removes')), 'the error names the nested worktree');
+  assert(existsSync(join(tool, 'wip.txt')), 'the nested work in progress survives');
+  git(fx.projRepos.proj, `worktree remove --force "${tool}"`);
+  // Finder junk alone never blocks a completion.
+  writeFileSync(join(fx.wsWt, 'repos', '.DS_Store'), 'junk');
+  const again = runCleanupRaw(fx.T, 'nested');
+  assertEq(again.status, 0, 'a .DS_Store under repos/ does not block cleanup');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

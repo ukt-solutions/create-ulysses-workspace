@@ -213,18 +213,50 @@ if (!branch && existsSync(wsWorktree)) {
   }
 }
 
-// A tracker that lists fewer repos than the session actually holds must
-// not decide the teardown: removing the workspace worktree takes every
-// nested directory with it, so an unlisted live worktree — with whatever
-// work is in it — would go too. Refuse, and name the unlisted entries.
-if (!discovered && repos.length > 0) {
+// Removing the workspace worktree (step 2, --force) deletes everything
+// still inside it. So before anything runs, every OTHER thing inside it
+// must be accounted for:
+//  - each directory under workspace/repos/ must be a repo this teardown
+//    handles (a tracker listing fewer repos than the session holds must
+//    not decide it); stray files there are named, with Finder/Explorer
+//    junk exempt;
+//  - no repository this workspace owns may have a worktree registered
+//    anywhere under the workspace worktree except the ones step 1 removes
+//    — a worktree nested elsewhere would be deleted with its contents.
+{
+  const NOISE = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
   const nestedReposDir = join(wsWorktree, 'repos');
   if (existsSync(nestedReposDir)) {
-    let onDisk = [];
-    try { onDisk = readdirSync(nestedReposDir); } catch { /* unreadable: nothing to compare */ }
-    const unlisted = onDisk.filter((entry) => !repos.includes(entry));
-    if (unlisted.length > 0) {
-      errors.push(`The session tracker lists repos [${repos.join(', ')}] but ${nestedReposDir} also holds [${unlisted.join(', ')}] — removing the workspace worktree would delete them; add them to the tracker or move them out first`);
+    let entries = [];
+    try { entries = readdirSync(nestedReposDir, { withFileTypes: true }); } catch { /* unreadable: the worktree scan below still runs */ }
+    const unlistedDirs = entries.filter((e) => e.isDirectory() && !repos.includes(e.name)).map((e) => e.name);
+    const strayFiles = entries.filter((e) => !e.isDirectory() && !NOISE.has(e.name)).map((e) => e.name);
+    if (unlistedDirs.length > 0) {
+      errors.push(`${nestedReposDir} holds [${unlistedDirs.join(', ')}] that this teardown does not handle — removing the workspace worktree would delete them; add them to the session tracker or move them out first`);
+    }
+    if (strayFiles.length > 0) {
+      errors.push(`${nestedReposDir} holds file(s) [${strayFiles.join(', ')}] that removing the workspace worktree would delete — move or delete them first`);
+    }
+  }
+  const handled = new Set([realOf(wsWorktree), ...repos.map((r) => realOf(join(wsWorktree, 'repos', r)))]);
+  const wsReal = realOf(wsWorktree);
+  const ownedRepoDirs = [root];
+  if (existsSync(reposDir)) {
+    try {
+      for (const e of readdirSync(reposDir, { withFileTypes: true })) {
+        if (e.isDirectory() && isRepoSegment(e.name)) ownedRepoDirs.push(join(reposDir, e.name));
+      }
+    } catch { /* no repos dir to scan */ }
+  }
+  for (const repoDir of ownedRepoDirs) {
+    const res = git(repoDir, ['worktree', 'list', '--porcelain']);
+    if (!res.ok) continue;
+    for (const line of res.out.split(/\r?\n/)) {
+      if (!line.startsWith('worktree ')) continue;
+      const p = realOf(line.slice(9));
+      if ((p === wsReal || p.startsWith(wsReal + sep)) && !handled.has(p)) {
+        errors.push(`${repoDir} has a worktree at ${p}, inside the workspace worktree but not one this teardown removes — removing the workspace worktree would delete it; move or remove it first`);
+      }
     }
   }
 }

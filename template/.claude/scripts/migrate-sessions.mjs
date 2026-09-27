@@ -44,7 +44,7 @@
 // reasons: [...]} and exits 1; any other error goes to stderr and exits 2.
 
 import {
-  readFileSync, writeFileSync, existsSync, readdirSync, lstatSync, statSync, mkdirSync, renameSync,
+  readFileSync, writeFileSync, existsSync, readdirSync, lstatSync, statSync, mkdirSync, renameSync, readlinkSync,
 } from 'node:fs';
 import { realpathSync } from 'node:fs';
 import { join, resolve, relative, dirname, sep, isAbsolute } from 'node:path';
@@ -113,14 +113,14 @@ function okLines(res) {
 }
 
 // A session name becomes a path segment under the sessions directory —
-// one segment only, no separators, dot segments, or absolute paths.
-// Unlike repo names there is no "." exception: a session is always a
-// directory, never the root itself.
+// one segment only, no separators or absolute paths, and no leading dot:
+// dot entries are the script's own (.archived/) and discovery never
+// lists them as sessions, so no mode may act on one either.
 function isSessionSegment(name) {
   if (typeof name !== 'string' || name === '' || isAbsolute(name)) return false;
   const segs = name.split(/[\\/]/);
   if (segs.length !== 1) return false;
-  return !/^\.+$/.test(segs[0]);
+  return !segs[0].startsWith('.');
 }
 
 // A project repo name: one path segment under repos/. This is the guard
@@ -1179,30 +1179,45 @@ function backupSession(root, { session, remote: remoteOverride = null, dryRun = 
   return { session, branches, skipped };
 }
 
-// Every `.git` FILE under a directory marks a linked worktree; its
-// gitdir: line names the repository that owns it. Embedded repositories
-// (`.git` directories) need no bookkeeping — they move with the folder.
-// Symlinks are never followed.
-function worktreeMarkers(dir, acc = []) {
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return acc;
-  }
-  for (const entry of entries) {
-    const p = join(dir, entry.name);
-    if (entry.isSymbolicLink()) continue;
-    if (entry.name === '.git') {
-      if (entry.isFile()) acc.push(p);
-      continue; // never descend into a git directory
+// Walk a session folder, never following a symlink, and report what
+// archive needs to know: every `.git` FILE (a linked worktree or a
+// submodule checkout — its gitdir: line names the owner), every relative
+// symlink whose target leaves the folder (it will dangle once the folder
+// sits one level deeper), and every directory it could not read. An
+// unread directory could hide a worktree, so it refuses the archive
+// rather than being skipped. Embedded repositories (`.git` DIRECTORIES)
+// need no bookkeeping — they move with the folder.
+function scanSessionFolder(folder) {
+  const out = { markers: [], unreadable: [], outwardLinks: [] };
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      out.unreadable.push({ dir, code: err.code || err.message });
+      return;
     }
-    if (entry.isDirectory()) worktreeMarkers(p, acc);
-  }
-  return acc;
+    for (const entry of entries) {
+      const p = join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        try {
+          const target = readlinkSync(p);
+          if (!isAbsolute(target) && !insideDir(realPath(folder), resolve(dir, target))) out.outwardLinks.push(p);
+        } catch { /* unreadable link: it moves as-is */ }
+        continue;
+      }
+      if (entry.name === '.git') {
+        if (entry.isFile()) out.markers.push(p);
+        continue; // never descend into a git directory
+      }
+      if (entry.isDirectory()) walk(p);
+    }
+  };
+  walk(folder);
+  return out;
 }
 
-// The admin directory a worktree's .git file points at, or null.
+// The admin directory a `.git` file points at, or null.
 function gitdirOfMarker(markerPath) {
   try {
     const m = /^gitdir:\s*(.+)\s*$/m.exec(readFileSync(markerPath, 'utf8'));
@@ -1227,33 +1242,62 @@ function workspaceRepos(rootDir) {
   return repos;
 }
 
+// Every worktree path a repository has registered, from git itself —
+// the authority the folder walk is checked against.
+function registeredWorktrees(gitFn, repoDir) {
+  const res = run(gitFn, repoDir, ['worktree', 'list', '--porcelain']);
+  if (res.status !== 0) return null;
+  return okLines(res).filter((l) => l.startsWith('worktree ')).map((l) => realPath(l.slice(9)));
+}
+
+// Registered worktrees git would prune — their recorded path no longer
+// exists. Compared before and after a move, a new entry means a link the
+// move broke.
+function prunable(gitFn, repoDir) {
+  const res = run(gitFn, repoDir, ['worktree', 'prune', '--dry-run', '-v']);
+  if (res.status !== 0) return null;
+  return okLines(res);
+}
+
 function archiveStamp(now) {
   return new Date(now).toISOString().replace(/[-:]/g, '').replace(/\..*$/, '');
 }
 
-// Point every repository at the worktrees' current location, then prove
-// it: each worktree resolves its own top level and its owning repo lists
-// it at that path.
-function repairWorktrees(gitFn, owned, worktreePaths) {
+// Point each owning repository at its worktrees' current location, then
+// prove it: every worktree resolves to itself, its owner lists it there,
+// and no owned repository has a newly prunable entry. Git failures of
+// any kind — including a thrown spawn error — become problems, never
+// exceptions, so the caller can always roll back.
+function repairAndVerify(gitFn, owned, worktreePaths, prunableBefore) {
   const problems = [];
-  const byRepo = new Map();
-  for (const w of worktreePaths) {
-    if (!byRepo.has(w.owner.dir)) byRepo.set(w.owner.dir, []);
-    byRepo.get(w.owner.dir).push(w.path);
-  }
-  for (const [repoDir, paths] of byRepo) {
-    const res = run(gitFn, repoDir, ['worktree', 'repair', ...paths]);
-    if (res.status !== 0) problems.push(`git worktree repair in ${repoDir} failed: ${String(res.stderr || '').trim()}`);
-  }
-  for (const w of worktreePaths) {
-    const top = run(gitFn, w.path, ['rev-parse', '--show-toplevel']);
-    if (top.status !== 0 || realPath(String(top.stdout).trim()) !== realPath(w.path)) {
-      problems.push(`worktree at ${w.path} does not resolve to itself after repair`);
-      continue;
+  try {
+    const byRepo = new Map();
+    for (const w of worktreePaths) {
+      if (!byRepo.has(w.owner.dir)) byRepo.set(w.owner.dir, []);
+      byRepo.get(w.owner.dir).push(w.path);
     }
-    const listed = run(gitFn, w.owner.dir, ['worktree', 'list', '--porcelain']);
-    const paths = okLines(listed).filter((l) => l.startsWith('worktree ')).map((l) => realPath(l.slice(9)));
-    if (!paths.includes(realPath(w.path))) problems.push(`${w.owner.dir} does not list the worktree at ${w.path} after repair`);
+    for (const [repoDir, paths] of byRepo) {
+      const res = run(gitFn, repoDir, ['worktree', 'repair', ...paths]);
+      if (res.error || res.status !== 0) problems.push(`git worktree repair in ${repoDir} failed: ${String(res.stderr || res.error?.message || '').trim()}`);
+    }
+    for (const w of worktreePaths) {
+      const top = run(gitFn, w.path, ['rev-parse', '--show-toplevel']);
+      if (top.error || top.status !== 0 || realPath(String(top.stdout).trim()) !== realPath(w.path)) {
+        problems.push(`worktree at ${w.path} does not resolve to itself after repair`);
+        continue;
+      }
+      const listed = registeredWorktrees(gitFn, w.owner.dir);
+      if (!listed || !listed.includes(realPath(w.path))) problems.push(`${w.owner.dir} does not list the worktree at ${w.path}`);
+    }
+    for (const o of owned) {
+      const after = prunable(gitFn, o.dir);
+      if (after === null) { problems.push(`could not check ${o.dir} for broken worktree links`); continue; }
+      const before = new Set(prunableBefore.get(o.dir) || []);
+      const fresh = after.filter((l) => !before.has(l));
+      if (fresh.length > 0) problems.push(`${o.dir} has broken worktree links: ${fresh.join('; ')}`);
+    }
+  } catch (err) {
+    problems.push(`git failed while repairing: ${err.message}`);
   }
   return problems;
 }
@@ -1266,15 +1310,19 @@ function repairWorktrees(gitFn, owned, worktreePaths) {
  * nothing is deleted. The session's branches stay checked out in the
  * archived worktrees until the operator removes them.
  *
- * Refused, with nothing moved, when a worktree inside the folder belongs
- * to a repository outside this workspace (repairing it would mean running
- * git there) or its link is unreadable. If repair fails after the rename,
- * the folder is renamed back and repaired again.
+ * Refused, with nothing moved, when: a directory in the folder cannot be
+ * read (it could hide a worktree); a worktree belongs to a repository
+ * outside this workspace; a submodule checkout is present (its link is
+ * not a worktree link and `worktree repair` cannot fix it); git's own
+ * list of worktrees names one under the folder that the walk did not
+ * find; or the archive directory is a symlink or resolves outside the
+ * workspace. If anything fails after the rename, the folder is renamed
+ * back and repaired, and the result reports the verified state.
  */
 function archiveSession(root, { session, gitFn = spawnSync, cwd = process.cwd(), now = Date.now() } = {}) {
   const rootDir = resolveRoot(root);
   if (!isSessionSegment(session)) {
-    throw new Error(`session name must be a single path segment, got: ${session}`);
+    throw new Error(`session name must be a single path segment not starting with ".", got: ${session}`);
   }
   const sessionsDir = sessionsDirOf(rootDir);
   const { folder, refusal } = sessionFolderGuards(rootDir, sessionsDir, session, cwd);
@@ -1282,57 +1330,75 @@ function archiveSession(root, { session, gitFn = spawnSync, cwd = process.cwd(),
 
   const owned = workspaceRepos(rootDir);
   const ownedByGitDir = new Map(owned.map((o) => [o.gitDir, o]));
-  const reasons = [];
+  const scan = scanSessionFolder(folder);
+  const reasons = scan.unreadable.map((u) => `cannot read ${relative(rootDir, u.dir)} (${u.code}) — it could hide a worktree; fix its permissions and retry`);
   const found = [];
-  for (const marker of worktreeMarkers(folder)) {
+  for (const marker of scan.markers) {
     const admin = gitdirOfMarker(marker);
     const wtPath = dirname(marker);
-    const rel = relative(folder, wtPath) || '.';
     if (!admin) {
-      reasons.push(`${relative(rootDir, marker)} has no readable gitdir — reconcile this worktree manually first`);
+      reasons.push(`${relative(rootDir, marker)} has no readable gitdir — reconcile it manually first`);
       continue;
     }
-    // Admin dirs live at {gitDir}/worktrees/{id}.
-    const owner = ownedByGitDir.get(realPath(dirname(dirname(admin))));
-    if (!owner || realPath(dirname(admin)) !== join(owner.gitDir, 'worktrees')) {
-      reasons.push(`${relative(rootDir, wtPath)} is a worktree of a repository outside this workspace (${admin}) — refusing to touch it; move or remove it manually`);
+    // A linked worktree's admin dir is exactly {gitDir}/worktrees/{id}.
+    const owner = ownedByGitDir.get(dirname(dirname(admin)));
+    if (owner && dirname(admin) === join(owner.gitDir, 'worktrees')) {
+      found.push({ rel: relative(folder, wtPath) || '.', owner });
       continue;
     }
-    found.push({ rel, owner });
+    const insideOwned = owned.some((o) => insideDir(o.gitDir, admin));
+    reasons.push(insideOwned
+      ? `${relative(rootDir, wtPath)} is a submodule checkout — moving it would break its link, and worktree repair cannot fix that; finish or keep this session instead`
+      : `${relative(rootDir, wtPath)} is a worktree of a repository outside this workspace (${admin}) — refusing to touch it; move or remove it manually`);
+  }
+  // Git is the authority on which worktrees exist: every one it has
+  // registered under this folder must be one the walk found.
+  const folderReal = realPath(folder);
+  const foundPaths = new Set(found.map((f) => realPath(f.rel === '.' ? folder : join(folder, f.rel))));
+  for (const o of owned) {
+    const listed = registeredWorktrees(gitFn, o.dir);
+    if (listed === null) { reasons.push(`could not list worktrees of ${relative(rootDir, o.dir) || '.'} — refusing rather than guessing`); continue; }
+    for (const p of listed) {
+      if ((p === folderReal || p.startsWith(folderReal + sep)) && !foundPaths.has(p)) {
+        reasons.push(`${relative(rootDir, o.dir) || 'the workspace repo'} has a worktree at ${relative(rootDir, p)} that the folder scan could not see — reconcile it first`);
+      }
+    }
   }
   if (reasons.length > 0) return { refused: true, reasons };
 
   const archiveDir = join(sessionsDir, '.archived');
+  let ast = null;
+  try { ast = lstatSync(archiveDir); } catch { /* absent: created below */ }
+  if (ast && (ast.isSymbolicLink() || !ast.isDirectory())) {
+    return { refused: true, reasons: [`${relative(rootDir, archiveDir)} exists but is not a real directory (symlink or file) — archives must stay inside the workspace; move it aside first`] };
+  }
+  mkdirSync(archiveDir, { recursive: true });
+  if (realPath(archiveDir) !== join(realPath(sessionsDir), '.archived') || !insideRoot(rootDir, archiveDir)) {
+    return { refused: true, reasons: [`${relative(rootDir, archiveDir)} resolves outside the workspace — refusing`] };
+  }
   const dest = join(archiveDir, `${session}--${archiveStamp(now)}`);
   if (existsSync(dest)) {
     return { refused: true, reasons: [`${relative(rootDir, dest)} already exists — wait a second and retry`] };
   }
-  mkdirSync(archiveDir, { recursive: true });
+
+  const prunableBefore = new Map(owned.map((o) => [o.dir, prunable(gitFn, o.dir) || []]));
   try {
     renameSync(folder, dest);
   } catch (err) {
     return { refused: true, reasons: [`could not move ${relative(rootDir, folder)}: ${err.code || err.message} — close anything using files in it (editors, terminals, dev servers) and retry`] };
   }
 
-  const moved = found.map((f) => ({ owner: f.owner, path: f.rel === '.' ? dest : join(dest, f.rel) }));
-  const problems = repairWorktrees(gitFn, owned, moved);
+  const at = (base) => found.map((f) => ({ owner: f.owner, path: f.rel === '.' ? base : join(base, f.rel) }));
+  const problems = repairAndVerify(gitFn, owned, at(dest), prunableBefore);
   if (problems.length > 0) {
-    // Put it back exactly where it was; nothing has been lost either way.
     let restored = false;
-    try {
-      renameSync(dest, folder);
-      restored = true;
-      repairWorktrees(gitFn, owned, found.map((f) => ({ owner: f.owner, path: f.rel === '.' ? folder : join(folder, f.rel) })));
-    } catch { /* reported below */ }
-    return {
-      refused: true,
-      reasons: [
-        ...problems,
-        restored
-          ? `the session was moved back to ${relative(rootDir, folder)}; nothing was lost`
-          : `the session is at ${relative(rootDir, dest)} and could not be moved back; nothing was deleted — run \`git worktree repair\` in each repo, naming the moved worktree paths`,
-      ],
-    };
+    try { renameSync(dest, folder); restored = true; } catch { /* reported below */ }
+    const where = restored ? folder : dest;
+    const after = repairAndVerify(gitFn, owned, at(where), prunableBefore);
+    const state = after.length === 0
+      ? `the session is ${restored ? 'back at' : 'still at'} ${relative(rootDir, where)} with every worktree link verified; nothing was lost`
+      : `the session is at ${relative(rootDir, where)}, but some worktree links are still broken (${after.join('; ')}); nothing has been deleted — do NOT run \`git worktree prune\`; run \`git -C <repo> worktree repair <path>\` for each worktree under ${relative(rootDir, where)}`;
+    return { refused: true, reasons: [...problems, state] };
   }
 
   return {
@@ -1340,7 +1406,8 @@ function archiveSession(root, { session, gitFn = spawnSync, cwd = process.cwd(),
     archived: true,
     from: relative(rootDir, folder),
     to: relative(rootDir, dest),
-    worktrees: moved.map((m) => ({ repo: m.owner.repo, path: relative(rootDir, m.path) })),
+    worktrees: at(dest).map((m) => ({ repo: m.owner.repo, path: relative(rootDir, m.path) })),
+    warnings: scan.outwardLinks.map((l) => `relative symlink ${relative(rootDir, join(dest, relative(folder, l)))} pointed outside the session and no longer resolves after the move — it was kept as-is`),
   };
 }
 

@@ -19,7 +19,7 @@
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, cpSync,
-  symlinkSync, utimesSync, renameSync, realpathSync,
+  symlinkSync, utimesSync, renameSync, realpathSync, chmodSync, readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -668,6 +668,7 @@ console.log('# archive: moves the session and keeps every kind of state intact')
     assertEq(git(dWs, 'rev-parse HEAD').trim(), wsTip, 'workspace branch tip unchanged');
     assertEq(git(dApp, 'rev-parse HEAD').trim(), appTip.length ? git(dApp, 'rev-parse bugfix/keep').trim() : '', 'project branch still checked out');
     assertEq(git(dApp, 'rev-parse refs/worktree/keep').trim(), appTip, 'the per-worktree ref is kept');
+    assertEq(git(dApp, `cat-file -t ${appTip}`).trim(), 'commit', 'and the commit it names is still present');
     assert(git(fx.root, 'worktree list --porcelain').includes(realpathSync(dWs)), 'the workspace repo lists the moved worktree');
     assert(git(fx.app, 'worktree list --porcelain').includes(realpathSync(dApp)), 'the project repo lists the moved worktree');
     assertEq(git(fx.root, 'worktree prune --dry-run -v').trim(), '', 'nothing is prunable in the workspace repo');
@@ -697,10 +698,97 @@ console.log('# archive: a failed repair moves the session back, nothing lost');
     };
     const out = archiveSession(fx.root, { session: 'rb', cwd: fx.root, gitFn: flaky });
     assertEq(out.refused, true, 'a failed repair refuses');
-    assert(out.reasons.some((r) => r.includes('moved back')), 'the refusal says the session was moved back');
+    assert(out.reasons.some((r) => r.includes('back at') && r.includes('nothing was lost')), 'the refusal reports a verified restore');
     assert(existsSync(join(fx.root, 'work-sessions', 'rb', 'workspace', 'NOTES.md')), 'the session is back where it was');
     assertEq(realpathSync(git(wsWt, 'rev-parse --show-toplevel').trim()), realpathSync(wsWt), 'and its worktree resolves there');
     assert(!existsSync(join(fx.root, 'work-sessions', '.archived', 'rb')), 'nothing was left in the archive');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# archive: a thrown git error during repair still rolls back consistently');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt } = makeSession(fx, { name: 'thr', branch: 'bugfix/thr', tracker: { branch: 'bugfix/thr', repos: ['app'], updated: daysAgoIso(40) } });
+    let fired = false;
+    const throwing = (cmd, args, opts) => {
+      if (!fired && args.includes('worktree') && args.includes('repair')) { fired = true; throw new Error('spawn exploded'); }
+      return gitFn(cmd, args, opts);
+    };
+    const out = archiveSession(fx.root, { session: 'thr', cwd: fx.root, gitFn: throwing });
+    assertEq(out.refused, true, 'a thrown error refuses instead of escaping');
+    assert(out.reasons.some((r) => r.includes('nothing was lost')), 'the restore is verified');
+    assertEq(realpathSync(git(wsWt, 'rev-parse --show-toplevel').trim()), realpathSync(wsWt), 'the session resolves where it was');
+    assertEq(git(fx.root, 'worktree prune --dry-run -v').trim(), '', 'no broken links in the workspace repo');
+    assertEq(git(fx.app, 'worktree prune --dry-run -v').trim(), '', 'no broken links in the project repo');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# archive: an unreadable directory refuses (it could hide a worktree)');
+if (process.platform !== 'win32' && process.getuid && process.getuid() !== 0) {
+  const fx = makeWorkspace();
+  const priv = join(fx.root, 'work-sessions', 'hid', 'workspace', 'private');
+  try {
+    const { wsWt } = makeSession(fx, { name: 'hid', branch: 'bugfix/hid', tracker: { branch: 'bugfix/hid', repos: ['app'], updated: daysAgoIso(40) } });
+    mkdirSync(priv, { recursive: true });
+    git(fx.app, `worktree add -q -b bugfix/hidden "${join(priv, 'appwt')}"`);
+    chmodSync(priv, 0o000);
+    const out = archiveSession(fx.root, { session: 'hid', cwd: fx.root });
+    chmodSync(priv, 0o755);
+    assertEq(out.refused, true, 'an unreadable directory refuses');
+    assert(out.reasons.some((r) => r.includes('cannot read')), 'the refusal names the unreadable directory');
+    assert(existsSync(join(wsWt, 'private', 'appwt', '.git')), 'nothing was moved');
+  } finally {
+    try { chmodSync(priv, 0o755); } catch { /* already restored */ }
+    clean(fx.root, fx.wsOrigin, fx.appOrigin);
+  }
+} else {
+  console.log('  (skipped: needs a non-root POSIX user)');
+}
+
+console.log('# archive: a symlinked .archived directory refuses (would leave the workspace)');
+{
+  const fx = makeWorkspace();
+  const elsewhere = mkdtempSync(join(tmpdir(), 'mig-elsewhere-'));
+  try {
+    makeSession(fx, { name: 'esc', branch: 'bugfix/esc', tracker: { branch: 'bugfix/esc', repos: ['app'], updated: daysAgoIso(40) } });
+    let linked = true;
+    try { symlinkSync(elsewhere, join(fx.root, 'work-sessions', '.archived')); } catch { linked = false; }
+    if (linked) {
+      const out = archiveSession(fx.root, { session: 'esc', cwd: fx.root });
+      assertEq(out.refused, true, 'a symlinked archive directory refuses');
+      assert(existsSync(join(fx.root, 'work-sessions', 'esc', 'workspace')), 'the session did not move');
+      assertEq(readdirSync(elsewhere).length, 0, 'nothing landed outside the workspace');
+    } else {
+      console.log('  (symlinks unsupported here — case skipped)');
+    }
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, elsewhere); }
+}
+
+console.log('# archive: a submodule checkout refuses with an accurate reason');
+{
+  const fx = makeWorkspace();
+  const subSrc = mkdtempSync(join(tmpdir(), 'mig-sub-src-'));
+  try {
+    git(subSrc, 'init -q -b main');
+    writeFileSync(join(subSrc, 's.txt'), 's\n');
+    commitAll(subSrc, 'sub');
+    const { projWts } = makeSession(fx, { name: 'sub', branch: 'bugfix/sub', tracker: { branch: 'bugfix/sub', repos: ['app'], updated: daysAgoIso(40) } });
+    execSync(`git -c protocol.file.allow=always -C "${projWts.app}" submodule add -q "${subSrc}" vendor/sub`, { stdio: 'pipe', env: process.env });
+    const out = archiveSession(fx.root, { session: 'sub', cwd: fx.root });
+    assertEq(out.refused, true, 'a submodule checkout refuses');
+    assert(out.reasons.some((r) => r.includes('submodule')), 'the reason says submodule, not "outside repository"');
+    assert(existsSync(join(projWts.app, 'vendor', 'sub', 's.txt')), 'nothing was moved');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, subSrc); }
+}
+
+console.log('# archive: dot-prefixed session names are rejected by every mode');
+{
+  throws(() => parseArgs(['node', 's', '--archive', '--session', '.archived']), 'parseArgs rejects .archived');
+  const fx = makeWorkspace();
+  try {
+    throws(() => archiveSession(fx.root, { session: '.archived' }), 'archiveSession rejects a dot name');
+    throws(() => backupSession(fx.root, { session: '.hidden', dryRun: true }), 'backupSession rejects a dot name');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
