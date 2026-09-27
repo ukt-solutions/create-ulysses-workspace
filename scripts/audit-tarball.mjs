@@ -54,12 +54,14 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // stage-2 review fixes grew task-worktree.mjs and its suite and added the
 // repo-write-detection test → 200 kB after the workspace repo became a task
 // target (gh:146 / Q6) grew task-worktree.mjs, its suite, and the
-// repo-write-detection suite.
+// repo-write-detection suite → 215 kB after the session→task migration
+// added migrate-sessions.mjs + its suite + the /migrate-sessions skill
+// (gh:147).
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 200 * 1024;
+const SIZE_LIMIT_BYTES = 215 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -211,6 +213,10 @@ function checkRequiredFiles(files) {
     // Without this script /start-work cannot create them and /complete-work
     // cannot tell the two lifecycles apart.
     'template/.claude/scripts/task-worktree.mjs',
+    // The per-workspace session→task migration (gh:147). Without it
+    // /migrate-sessions cannot inventory, back up, or drain old sessions,
+    // and existing workspaces have no path onto the task model.
+    'template/.claude/scripts/migrate-sessions.mjs',
     'LICENSE',
   ];
   const present = new Set(files.map((f) => f.path));

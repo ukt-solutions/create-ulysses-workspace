@@ -195,6 +195,12 @@ There is no session folder and no `session.md`. The chat stays at the workspace 
 
 Several tasks can be open at once across chats; each is just a branch plus its worktrees. The session model remains the right choice for long multi-chat efforts that want a folder, a tracker file, and pause/resume semantics — and both lifecycles can coexist in one workspace while a team migrates.
 
+## Migrating an Existing Workspace
+
+A workspace that grew up on sessions can move to the task model in place with `/migrate-sessions`. It inventories `work-sessions/` and proposes one of four outcomes per session — active, mergeable, abandoned, or a broken shell — with the evidence behind each (recency, content beyond session artifacts, commits ahead, uncommitted changes, whether anything exists on a remote). Proposals are only proposals: the operator decides each session, one at a time. Mergeable sessions finish through the normal `/start-work` → `/complete-work` flow; abandoned ones are backed up first — every ahead branch gets a `drain/*` tag pushed to a remote, and teardown re-verifies that backup before removing anything — and kept sessions simply keep working under the session lifecycle. When the list is drained, the skill flips `workspace.sessionModel` to `"task"`.
+
+The rule that holds it together: a migration only ever touches the workspace it runs in. Never point it at another workspace, and never batch several workspaces through one run — each workspace drains its own sessions from its own root.
+
 ---
 
 ## Key Takeaways

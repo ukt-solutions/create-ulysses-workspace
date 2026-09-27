@@ -119,6 +119,10 @@ git commit -m "chore: update workspace from template v{fromVersion} to v{toVersi
 
 Report: "Workspace updated to v{toVersion}. Restart Claude Code if rules or hooks changed."
 
+### Step 8: Session-model migration nudge
+
+After the update is applied, if `work-sessions/` has entries and `workspace.sessionModel` is not `"task"`, append one line to the report: "This workspace still has {N} session(s) under the session model — `/migrate-sessions` can inventory and drain them and switch to the task model whenever you're ready." Suggest only; the operator decides whether and when.
+
 ## Notes
 
 - The CLI (`npx @ulysses-ai/create-workspace --upgrade`) stages the payload. This skill processes it.
