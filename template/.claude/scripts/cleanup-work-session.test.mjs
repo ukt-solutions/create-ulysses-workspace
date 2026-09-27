@@ -11,9 +11,9 @@
 //   - the work-sessions/{name}/ folder is gone
 //   - success: true iff all of the above hold
 
-import { execFileSync, execSync } from 'child_process';
-import { mkdirSync, writeFileSync, existsSync, rmSync, cpSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { execFileSync, execSync, spawnSync } from 'child_process';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, mkdtempSync, renameSync, symlinkSync } from 'fs';
+import { join, dirname, resolve, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 
@@ -293,6 +293,227 @@ await (async () => {
 // post-verification code path is a 2-line `if (branchStill) errors.push`
 // and is hard to regress without Test 4's discovery+verification flow
 // noticing.)
+
+// Run the cleanup script and capture its exit status and JSON without
+// throwing — the security cases below EXPECT a non-zero refusal.
+function runCleanupRaw(T, sessionName) {
+  const scriptPath = join(T, SCRIPT_REL);
+  const res = spawnSync('node', [scriptPath, '--session-name', sessionName], {
+    cwd: T, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let json = null;
+  try {
+    json = JSON.parse(String(res.stdout).trim().split('\n').filter(Boolean).pop());
+  } catch { /* not JSON — callers assert on status/stdout instead */ }
+  return { status: res.status, json };
+}
+
+// === Test 5: shell metacharacters in the tracker branch never execute (gh:147/B5) ===
+// The tracker is session-controlled input. The old script interpolated it
+// into execSync shell strings, so a crafted branch name executed. The
+// rewrite passes argv arrays and validates the branch with git itself.
+// The crafted name goes into the TRACKER only — this suite's own fixture
+// helpers build git commands as shell strings, so routing the payload
+// through them would execute it here (exactly the bug under test).
+console.log('# security: shell metacharacters in branch are refused, nothing executes');
+{
+  const fx = makeFixture('inject-test', 'bugfix/inject', []);
+  writeFileSync(join(fx.wsWt, 'session.md'), `---
+type: session-tracker
+name: inject-test
+status: active
+branch: x"; touch "INJECT-MARKER"; echo "
+repos: []
+---
+
+# Session
+`);
+  const marker = join(fx.T, 'INJECT-MARKER');
+  try {
+    const { status, json } = runCleanupRaw(fx.T, 'inject-test');
+    assertEq(status !== 0, true, 'cleanup exits non-zero on an invalid branch');
+    assertEq(json?.success, false, 'success is false');
+    assert(!existsSync(marker), 'the injected command did NOT run — no marker file in the fixture');
+    assert(!existsSync(join(HERE, '..', '..', '..', 'INJECT-MARKER')), 'and none in the repo root either');
+    assert(existsSync(fx.wsWt), 'nothing was torn down');
+    assert(existsSync(join(fx.T, 'work-sessions', 'inject-test')), 'the session folder is kept');
+  } finally { teardownFixture(fx.T); }
+  assert(!existsSync(marker), 'no marker even after teardown of the fixture');
+}
+
+// === Test 6: a repos entry escaping root/repos/ is refused (gh:147/B5) ===
+// `repos: ['../../outside']` used to make the script run git in a repo
+// OUTSIDE the workspace — up to and including deleting its branch.
+console.log('# security: "../" repos entries are refused, the outside repo untouched');
+{
+  const outside = join(tmpdir(), `cleanup-outside-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  mkdirSync(outside, { recursive: true });
+  execSync(`git init -q -b main "${outside}"`, { stdio: 'pipe' });
+  writeFileSync(join(outside, 'README.md'), '# outside\n');
+  git(outside, '-c user.email=t@t -c user.name=t add -A');
+  git(outside, '-c user.email=t@t -c user.name=t commit -q -m init');
+  git(outside, 'branch bugfix/escape');
+
+  const escape = `../../${basename(outside)}`;
+  // A workspace fixture with no project repos of its own, whose tracker
+  // claims a repo OUTSIDE the workspace — the crafted input under test.
+  const fx = makeFixture('escape-test', 'bugfix/escape', []);
+  writeFileSync(join(fx.wsWt, 'session.md'), `---
+type: session-tracker
+name: escape-test
+status: active
+branch: bugfix/escape
+repos:
+  - ${escape}
+---
+
+# Session
+`);
+  try {
+    const { status, json } = runCleanupRaw(fx.T, 'escape-test');
+    assertEq(status !== 0, true, 'cleanup exits non-zero on an escaping repos entry');
+    assert(json?.errors?.some((e) => includesBoth(e, escape, 'single path segment')), 'the error names the entry');
+    assertEq(git(outside, 'branch --list bugfix/escape').trim() !== '', true, 'the outside repo branch survives');
+    assert(existsSync(join(fx.T, 'work-sessions', 'escape-test')), 'the session folder is kept');
+  } finally {
+    teardownFixture(fx.T);
+    try { rmSync(outside, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// === Test 7: an outright invalid branch name is refused ===
+console.log('# security: invalid branch names are refused');
+{
+  // Fixture on a valid branch; the INVALID name arrives via the tracker —
+  // the crafted input under test (git refuses `worktree add -b bad..name`
+  // outright, so the fixture cannot be built with it in the first place).
+  const fx = makeFixture('badname-test', 'bugfix/badname', []);
+  writeFileSync(join(fx.wsWt, 'session.md'), `---
+type: session-tracker
+name: badname-test
+status: active
+branch: bad..name
+repos: []
+---
+
+# Session
+`);
+  try {
+    const { status, json } = runCleanupRaw(fx.T, 'badname-test');
+    assertEq(status !== 0, true, 'cleanup exits non-zero on an invalid branch name');
+    assert(json?.errors?.some((e) => e.includes('check-ref-format')), 'the error cites check-ref-format');
+    assert(existsSync(join(fx.T, 'work-sessions', 'badname-test')), 'nothing was torn down');
+  } finally { teardownFixture(fx.T); }
+}
+
+// === Test 8: a traversal session name is refused before any path use ===
+console.log('# security: traversal session names are refused');
+{
+  const fx = makeFixture();
+  try {
+    const { status, json } = runCleanupRaw(fx.T, '../' + basename(fx.T));
+    assertEq(status !== 0, true, 'cleanup exits non-zero on a traversal session name');
+    assert(json?.errors?.[0]?.includes('single path segment'), 'the error explains the segment rule');
+  } finally { teardownFixture(fx.T); }
+}
+
+// === Test 9: a plain dir under nested repos/ stops cleanup after step 1 (gh:147/R3) ===
+// cleanup enumerates every directory under workspace/repos/ (discovery),
+// so an unverified entry must STOP the run before the workspace worktree,
+// branch deletion, or the session folder are touched — never run
+// `branch -D` in a repo whose nested entry was not verified.
+console.log('# security: plain dir under nested repos/ stops after step 1, deletes nothing else');
+{
+  const fx = makeFixture('stale-plain', 'bugfix/stale-plain');
+  rmSync(join(fx.wsWt, 'session.md')); // force discovery, the /complete-work shape
+  mkdirSync(join(fx.wsWt, 'repos', 'ghost'));
+  writeFileSync(join(fx.wsWt, 'repos', 'ghost', 'leftover.txt'), 'irreplaceable');
+  const { status, json } = runCleanupRaw(fx.T, 'stale-plain');
+  assertEq(status !== 0, true, 'cleanup exits non-zero');
+  assert(json?.errors?.some((e) => e.includes('ghost')), 'the error names the unverified entry');
+  assert(json?.errors?.some((e) => e.includes('Stopped after step 1')), 'the error says later steps were skipped');
+  assertEq(json?.removed?.includes('workspace worktree') ?? false, false, 'the workspace worktree was NOT removed');
+  assert(existsSync(fx.wsWt), 'the workspace worktree still exists');
+  assertEq(git(fx.T, `branch --list "bugfix/stale-plain"`).trim() !== '', true, 'the branch was NOT deleted in the workspace repo');
+  assertEq(git(fx.projRepos.proj, `branch --list "bugfix/stale-plain"`).trim() !== '', true, 'the branch was NOT deleted in the project repo');
+  assert(existsSync(join(fx.T, 'work-sessions', 'stale-plain')), 'the session folder is kept');
+  assert(existsSync(join(fx.wsWt, 'repos', 'ghost', 'leftover.txt')), 'the plain dir content survives');
+}
+
+// === Test 10: a symlinked source clone is a supported layout (gh:147/R3) ===
+// repos/{name} may be a symlink to the real source clone elsewhere; that
+// is allowed when the nested worktree's git common dir resolves into the
+// symlink target's repository, and cleanup proceeds normally.
+console.log('# layout: symlinked repos/{name} source clone cleans up successfully');
+{
+  const fx = makeFixture('sym', 'bugfix/sym');
+  const outside = mkdtempSync(join(tmpdir(), 'cleanup-sym-'));
+  const target = join(outside, 'proj');
+  renameSync(fx.projRepos.proj, target);
+  symlinkSync(target, fx.projRepos.proj);
+  git(target, 'worktree repair');
+  const r = runCleanupRaw(fx.T, 'sym');
+  assertEq(r.status, 0, 'cleanup succeeds with a symlinked source clone');
+  assertEq(r.json?.success, true, 'success is true');
+  assert(!existsSync(join(fx.T, 'work-sessions', 'sym')), 'the session folder is gone');
+  assertEq(git(target, `branch --list "bugfix/sym"`).trim(), '', 'the branch is deleted in the real clone');
+}
+
+// === Test 11: a discovered (not tracker) entry refuses with the right wording ===
+console.log('# wording: refused discovered entries do not claim to come from the tracker');
+{
+  const fx = makeFixture('disc', 'bugfix/disc');
+  rmSync(join(fx.wsWt, 'session.md')); // discovery mode
+  const evilTarget = mkdtempSync(join(tmpdir(), 'cleanup-disc-'));
+  mkdirSync(evilTarget, { recursive: true });
+  symlinkSync(evilTarget, join(fx.wsWt, 'repos', 'evil')); // statSync follows → discovered
+  // The source-clone slot is a symlink to something that is NOT the
+  // repository the nested entry belongs to — the validation refusal.
+  symlinkSync(evilTarget, join(fx.T, 'repos', 'evil'));
+  const { status, json } = runCleanupRaw(fx.T, 'disc');
+  assertEq(status !== 0, true, 'a discovered symlink entry refuses');
+  assert(json?.errors?.some((e) => e.includes('discovered from disk')), 'the message says discovered from disk, not "in the session tracker"');
+  assert(json?.errors?.some((e) => e.includes('evil')), 'the entry is named');
+}
+
+function includesBoth(haystack, a, b) {
+  return haystack.includes(a) && haystack.includes(b);
+}
+
+// === A tracker listing fewer repos than the session holds refuses (gh:147) ===
+// Removing the workspace worktree deletes every nested directory, so an
+// unlisted live worktree must stop the teardown before it starts.
+console.log('# safety: an unlisted live nested worktree refuses before anything is removed');
+{
+  const fx = makeFixture('partial', 'bugfix/partial', ['proj', 'lib']);
+  const md = join(fx.wsWt, 'session.md');
+  writeFileSync(md, readFileSync(md, 'utf8').replace(/  - lib\n/, ''));
+  writeFileSync(join(fx.wsWt, 'repos', 'lib', 'wip.txt'), 'work in progress\n');
+  const { status, json } = runCleanupRaw(fx.T, 'partial');
+  assertEq(status !== 0, true, 'cleanup exits non-zero');
+  assert(json?.errors?.some((e) => e.includes('[lib]')), 'the error names the unlisted entry');
+  assertEq(json?.removed?.length ?? 0, 0, 'nothing was removed');
+  assert(existsSync(join(fx.wsWt, 'repos', 'lib', 'wip.txt')), 'the unlisted work in progress survives');
+  assert(existsSync(join(fx.wsWt, 'repos', 'proj')), 'the listed worktree was not removed either');
+}
+
+console.log('# safety: a worktree nested outside repos/ refuses; Finder junk does not');
+{
+  const fx = makeFixture('nested', 'bugfix/nested');
+  const tool = join(fx.wsWt, 'tools', 'projwt');
+  mkdirSync(dirname(tool), { recursive: true });
+  git(fx.projRepos.proj, `worktree add -q -b bugfix/tool "${tool}"`);
+  writeFileSync(join(tool, 'wip.txt'), 'work in progress\n');
+  const { status, json } = runCleanupRaw(fx.T, 'nested');
+  assertEq(status !== 0, true, 'cleanup exits non-zero');
+  assert(json?.errors?.some((e) => e.includes('tools') && e.includes('not one this teardown removes')), 'the error names the nested worktree');
+  assert(existsSync(join(tool, 'wip.txt')), 'the nested work in progress survives');
+  git(fx.projRepos.proj, `worktree remove --force "${tool}"`);
+  // Finder junk alone never blocks a completion.
+  writeFileSync(join(fx.wsWt, 'repos', '.DS_Store'), 'junk');
+  const again = runCleanupRaw(fx.T, 'nested');
+  assertEq(again.status, 0, 'a .DS_Store under repos/ does not block cleanup');
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
