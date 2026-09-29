@@ -1,6 +1,6 @@
 ---
 name: migrate-sessions
-description: Migrate this workspace from the session lifecycle to the task lifecycle — inventory old work sessions, decide each one with the operator, finish or archive them, and switch workspace.json to the task model. Runs only inside the current workspace; never deletes anything.
+description: Migrate this workspace from the session lifecycle to the task lifecycle — inventory old work sessions, decide each one with the operator, finish or archive them, and switch workspace.json to the task model, settling workspace.publishes along the way. Runs only inside the current workspace; never deletes anything.
 ---
 
 # Migrate Sessions
@@ -17,7 +17,7 @@ Drain a workspace's accumulated session entries and switch new work to the task 
 node .claude/scripts/migrate-sessions.mjs --inventory
 ```
 
-Read-only. Present the stderr table plus each session's proposal with its reasons and warnings. Say plainly that the proposals are proposals — evidence and a starting point, not decisions. Pay particular attention to the per-remote state shown per worktree (`same`, `ahead +N`, `behind -N`, `diverged +N/-M`, `not-fetched`, `unknown`) and to `unbacked` warnings: they change what Finish and Archive mean for that session. Entries shown as `foreign` (symlinked) are never acted on — surface them for manual reconciliation.
+Read-only. Present the stderr table plus each session's proposal with its reasons and warnings. Say plainly that the proposals are proposals — evidence and a starting point, not decisions. Pay particular attention to the per-remote state shown per worktree (`same`, `ahead +N`, `behind -N`, `diverged +N/-M`, `not-fetched`, `unknown`) and to `unbacked` warnings: they change what Finish and Archive mean for that session. Entries shown as `foreign` (symlinked) are never acted on — surface them for manual reconciliation. The table's `release notes:` line (unreleased count, oldest note, and the current `publishes` value) feeds the Switch step below.
 
 ## 2. Decide per session, with the operator — one at a time
 
@@ -31,17 +31,29 @@ For each session, lay out its evidence and ask the operator which way to go. Nev
 
 Unbacked commits (present on no remote) are safe in an archive — they are only ever at risk when someone deletes one. Say so when you archive such a session, and offer the backup.
 
-## 3. Switch — never write the launcher's tracked `workspace.json` directly
+## 3. Switch — settle `publishes`, and never write the launcher's tracked `workspace.json` directly
+
+The switch is also where the workspace's `publishes` gets settled. `workspace.publishes` decides whether `/complete-work` writes branch release notes under `{releaseNotesDir}/unreleased/{repo}/` (`workspace.releaseNotesDir` in `workspace.json`, default `workspace-context/release-notes`) — notes that only a `/release` run ever consumes. Before running the switch, ask the operator: does this workspace publish anything via `/release` — a package, an app, a changelog other people read? The switch refuses outright when `publishes` is unset and no decision was passed; that refusal is the decision being asked for, not an error to work around.
+
+- **Publishes: yes** → run the switch with `--publishes true`. If the inventory showed unreleased notes, say plainly that the next `/release` will consume them; nothing else needs doing.
+- **Publishes: no** → run the switch with `--publishes false`. If the inventory showed unreleased notes, present them (count and oldest date from the inventory) and ask which the operator wants:
+  - **Leave them** — harmless: with `publishes: false`, nothing writes or reads them again.
+  - **Fold them into team context** — in the task worktree created below, `mkdir -p "workspace-context/shared"`, then `git -C <worktree> mv "{releaseNotesDir}/unreleased" "workspace-context/shared/past-work-notes"` so each note keeps its file name under `past-work-notes/{repo}/` (if `past-work-notes` already exists, move each repo folder under it instead of the whole directory), then from the launcher run `node .claude/scripts/build-workspace-context.mjs --write --root <worktree>` so the notes appear in the shared index as a record of past work.
+  - **Delete them** — only on an explicit request naming them. Never delete by default, and never offer deletion as the natural next step.
+
+Whatever was chosen commits in the same task worktree and PR as the switch itself.
+
+The switch procedure:
 
 1. Create a workspace task worktree for the change:
    ```bash
    node .claude/scripts/task-worktree.mjs --root . --create --repo . --branch chore/enable-task-model
    ```
-2. Run the switch against that worktree (the one mode that accepts a linked-worktree root — it only edits `workspace.json`):
+2. Run the switch against that worktree (the one mode that accepts a linked-worktree root — it only edits `workspace.json`), passing the publishes decision:
    ```bash
-   node .claude/scripts/migrate-sessions.mjs --enable-task-model --root .claude/worktrees/chore-enable-task-model
+   node .claude/scripts/migrate-sessions.mjs --enable-task-model --publishes true --root .claude/worktrees/chore-enable-task-model
    ```
-3. Commit there, open a PR through the workspace's normal flow, and pull the launcher after merge. The launcher root never commits to its default branch.
+3. Commit there — the switch, plus any notes move chosen above — open a PR through the workspace's normal flow, and pull the launcher after merge. The launcher root never commits to its default branch.
 
 The switch output reports `remainingSessions: null` when run from the worktree — the real remaining-sessions list comes from a separate `--inventory` at the launcher root. Remaining sessions are fine either way: they keep resuming and completing under the session lifecycle after the switch.
 
