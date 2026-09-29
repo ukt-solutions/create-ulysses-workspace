@@ -8,6 +8,7 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker
 - From root: only `local-only-*` and `workspace-scratchpad/` are writable
 - Team knowledge lives in `workspace-context/`
+- Run `/rename` to label this chat before `/clear` — keeps the chat findable in your CLI history after the context is wiped
 
 ## Workspace Config
 @workspace.json
@@ -33,3 +34,19 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - `/setup-tracker` — wire this workspace to an issue tracker (GitHub Issues shipped; others pluggable)
 - `/maintenance [audit|cleanup]` — workspace health checks and cleanup
 - `/build-docs-site` — build a comprehensive Docusaurus documentation site for a project
+
+## Compact Instructions
+
+When auto-compacting context, preserve in the summary:
+- Decisions made in this session and their rationale
+- Constraints and conventions established or confirmed
+- Active task list state and the next concrete step
+- File paths touched and the nature of the change
+- Errors hit and what was tried
+
+Drop from the summary:
+- Verbose tool output already reflected in committed code
+- Exploratory reads that did not lead to a change
+- Conversational asides
+
+Files in `workspace-context/`, the session tracker (`session.md`) or chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` survive compaction — they're on disk. Re-read them on demand instead of trying to keep their contents in summary.
