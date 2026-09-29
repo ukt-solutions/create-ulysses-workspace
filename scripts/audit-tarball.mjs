@@ -61,12 +61,16 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // grew migrate-sessions.mjs and both suites → still 225 kB after the
 // gh:147 allowlist round (structure + tip allowlists, dry-run, submodule
 // and regenerable-ignore handling): 227,168 bytes means 220 kB fails and
-// 225 kB is the smallest passing multiple.
+// 225 kB is the smallest passing multiple → 230 kB after the migration
+// learned to settle workspace.publishes and inventory existing release
+// notes (gh:155): the release-notes inventory, the --publishes flag, the
+// rewritten Switch step, and their tests brought the tarball to 231,553
+// bytes — 225 kB fails and 230 kB is the smallest passing multiple.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 225 * 1024;
+const SIZE_LIMIT_BYTES = 230 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
