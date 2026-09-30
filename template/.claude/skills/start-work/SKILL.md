@@ -281,7 +281,7 @@ The auto-commit at the end of "Capture prior conversation context" picks up the 
 
 ### Capture prior conversation context
 
-If brainstorming, spec writing, or design discussion happened in this conversation before `/start-work` was called, that reasoning needs to be captured into the session tracker body. Otherwise it will be lost when the conversation ends and `/complete-work` will produce thin release notes.
+If brainstorming, spec writing, or design discussion happened in this conversation before `/start-work` was called, that reasoning needs to be captured into the session tracker body. Otherwise it will be lost when the conversation ends and `/complete-work` will write a thin PR body.
 
 Check: has the current conversation included substantive discussion (design decisions, requirements exploration, approach selection) before this point?
 

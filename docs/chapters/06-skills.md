@@ -67,8 +67,8 @@ Finalizes the active work session. This is the most complex skill — it handles
 1. Rebases all project repos against their default branches
 2. Offers a final braindump to capture remaining discussion
 3. Gathers all source material (session tracker, specs, plans, handoffs, commit logs)
-4. Synthesizes release notes from the gathered material
-5. Consumes branch-scoped specs and plans
+4. Builds the PR bodies from the gathered material
+5. Promotes or strips branch-scoped specs and plans
 6. Pushes all repos
 7. Creates pull requests for all project repos plus the workspace
 8. Presents a unified summary with "Merge all?" prompt
@@ -100,7 +100,7 @@ Moves personal knowledge into shared context. Scans auto-memory, local-only file
 
 ### /release
 
-Combines unreleased branch release notes into a versioned release document. Archives the consumed branch notes. Synthesizes ephemeral shared context into locked entries where appropriate. This is a project repo operation — each repo has its own release cadence. See [Chapter 9](09-the-release-cycle.md) for the full flow.
+Cuts a versioned release of one project repo: bumps the version, merges the bump through a PR, tags the merge commit, and publishes a forge release whose notes are generated from merged PR titles. No release-notes files. Each repo has its own release cadence. See [Chapter 9](09-the-release-cycle.md) for the full flow.
 
 ### /maintenance
 

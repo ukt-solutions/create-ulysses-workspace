@@ -12,7 +12,7 @@ Activate this rule if the superpowers plugin is installed.
 ## Specs and Plans
 
 - Specs and plans live in the active worktree during development
-- They are ephemeral — consumed by /complete-work into release notes, then removed
+- They are ephemeral — consumed by /complete-work into the PR body, then removed
 - If a spec/plan already exists for the current branch, version it: `-v2`, `-v3`, etc.
 
 ## Execution

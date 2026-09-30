@@ -25,6 +25,13 @@
 //   releaseView({ tag, repo? })
 //     → { tag, url, name, publishedAt }
 //     throws ReleaseNotFound if the tag has no release
+//   releaseCreate({ tag, target?, title?, generateNotes = true, repo? })
+//     → { url, tag }
+//     target: commitish the tag points at (default: the repo's default
+//     branch head); title: release name (default: the tag)
+//     generateNotes: when true (the default) the forge generates the
+//     release notes from merged PRs — this is the only notes mechanism
+//     the workspace ships.
 //   workflowRunFind({ workflow, branch, repo?, limit = 1 })
 //     → { runId, status, conclusion, url } | null
 //   workflowRunWatch({ runId, repo?, exitStatus = false })

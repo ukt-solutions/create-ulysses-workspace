@@ -96,12 +96,11 @@ For the codebase:
 - Read actual implementations, not just existing docs about them
 
 For shared context:
-- Walk `workspace-context/` for handoffs, braindumps, locked team knowledge, release notes
+- Walk `workspace-context/` for handoffs, braindumps, and locked team knowledge
 
 For work-session history:
-- Walk `work-sessions/*/workspace/session.md` for any currently-active session trackers — their bodies may contain decisions not yet consumed into release notes
-- Walk the chat drawers `workspace-scratchpad/chats/*/` for in-progress task-model material — designs, plans, braindumps, research not yet promoted into `workspace-context/` — same rationale: it is thinking the site may need that release notes will never carry
-- Check git history for previously-completed session trackers that were synthesized into release notes by `/complete-work`
+- Walk `work-sessions/*/workspace/session.md` for any currently-active session trackers — their bodies may contain decisions not yet captured anywhere durable
+- Walk the chat drawers `workspace-scratchpad/chats/*/` for in-progress task-model material — designs, plans, braindumps, research not yet promoted into `workspace-context/` — same rationale: it is thinking the site may need that no merged artifact carries
 
 For existing project documentation (from Phase 1 Q2):
 - Read every file the user pointed at
@@ -313,11 +312,11 @@ Produce a final report:
 - **Files needing user decision.** Any old docs with content that didn't migrate cleanly — coverage check found gaps the user needs to resolve.
 - **URLs that may need redirects.** If the old docs had live URLs, list them. The skill flags but does not set up redirects.
 
-Update the session tracker with the final state. The skill's work ends here. `/complete-work` handles the merge, release notes, and cleanup.
+Update the session tracker with the final state. The skill's work ends here. `/complete-work` handles the merge, the PR, and cleanup.
 
 ## Notes
 
-- Specs and plans live at the project worktree root, not inflight (per workspace-structure rule). They are consumed by `/complete-work` into release notes.
+- Specs and plans live at the project worktree root, not inflight (per workspace-structure rule). They are consumed by `/complete-work` when it builds the PR body, or promoted into `workspace-context/`.
 - Diagrams primitives are deliberately fixed (no project customization) because the class-based fill pattern is load-bearing for theme support.
 - The leak grep is project-accurate because it derives the list from the project's own dependency manifests. Do not maintain a hardcoded master list — it would over-trigger for projects whose docs legitimately discuss their own dependencies.
 - The forbidden-word grep is per-project — each project supplies its own list from Phase 1 Q5. There is no default.

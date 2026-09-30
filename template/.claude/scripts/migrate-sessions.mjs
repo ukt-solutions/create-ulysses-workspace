@@ -7,9 +7,7 @@
 // some still live. This script is the mechanical half of draining them:
 //
 //   --inventory   read-only evidence + a proposal (ACTIVE / ABANDONED /
-//                 MERGEABLE / UNKNOWN / REMOVE_SHELL / LEAVE) per session,
-//                 plus the unreleased release-notes count and the current
-//                 workspace.publishes value (gh:155)
+//                 MERGEABLE / UNKNOWN / REMOVE_SHELL / LEAVE) per session
 //   --backup      tag each tip the session holds that no remote branch or
 //                 tag already points at, push the tag, verify it
 //                 (--dry-run reports the plan with no side effects)
@@ -17,12 +15,8 @@
 //                 folder is renamed into {sessions}/.archived/ and git's
 //                 worktree links are repaired to follow it
 //   --enable-task-model
-//                 flip workspace.sessionModel to "task" and settle
-//                 workspace.publishes (gh:155): --publishes true|false
-//                 sets it, an existing boolean is kept when the flag is
-//                 absent, and an unset publishes refuses rather than guess
-//                 (accepts a task worktree root — the one mode allowed off
-//                 the launcher)
+//                 flip workspace.sessionModel to "task" (accepts a task
+//                 worktree root — the one mode allowed off the launcher)
 //
 // NOTHING HERE DELETES. Draining a session means taking it out of the
 // active lifecycle, not destroying it. An earlier design tore sessions
@@ -178,102 +172,6 @@ function sessionsDirOf(rootDir) {
     throw new Error(`workspace.workSessionsDir (${name}) resolves outside the workspace root`);
   }
   return path;
-}
-
-// workspace.publishes as evidence (gh:155): the boolean when it is one,
-// null when unset or not a boolean at all. /complete-work writes branch
-// release notes only when this is true; nothing else ever consumes them.
-function publishesOf(cfg) {
-  return typeof cfg?.workspace?.publishes === 'boolean' ? cfg.workspace.publishes : null;
-}
-
-// workspace.releaseNotesDir, resolved inside the root (default
-// workspace-context/release-notes). A configuration pointing outside the
-// root would violate the boundary; the inventory skips it and says so
-// instead of throwing — inventory is evidence, and one bad key must not
-// cost the operator the whole table.
-function releaseNotesDirOf(rootDir, cfg) {
-  const dir = cfg?.workspace?.releaseNotesDir;
-  const name = typeof dir === 'string' && dir !== '' ? dir : 'workspace-context/release-notes';
-  const path = resolve(rootDir, name);
-  return insideRoot(rootDir, path)
-    ? { path }
-    : { path, note: `workspace.releaseNotesDir (${name}) resolves outside the workspace root — not scanned` };
-}
-
-// The date: value of a note's frontmatter, or null when the frontmatter
-// is missing or garbled — tolerated, never fatal (gh:155).
-function noteDateOf(file) {
-  let content;
-  try {
-    content = readFileSync(file, 'utf8');
-  } catch {
-    return null;
-  }
-  if (!content.startsWith('---')) return null;
-  const end = content.indexOf('\n---', 3);
-  const fm = end === -1 ? content : content.slice(0, end);
-  const m = fm.match(/^date:[ \t]*(.*)$/m);
-  return m ? m[1].trim() : null;
-}
-
-// Count *.md files under a directory, never following a symlink; every
-// date: value found is collected for the oldest-note answer.
-function countNotes(dir, dates) {
-  let count = 0;
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return count;
-  }
-  for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue;
-    const p = join(dir, entry.name);
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) {
-      count += countNotes(p, dates);
-      continue;
-    }
-    if (entry.isFile() && entry.name.endsWith('.md')) {
-      count += 1;
-      const d = noteDateOf(p);
-      if (d != null && d !== '') dates.push(d);
-    }
-  }
-  return count;
-}
-
-// Read-only release-notes evidence for the switch decision (gh:155):
-// how many notes sit unreleased per repo under
-// {releaseNotesDir}/unreleased/{repo}/, and the oldest date among them
-// (null when no frontmatter date parses — garbled files still count).
-function releaseNotesInfo(rootDir, cfg) {
-  const { path, note } = releaseNotesDirOf(rootDir, cfg);
-  const out = { dir: relative(rootDir, path), unreleased: 0, repos: {}, oldest: null };
-  if (note) return { ...out, note };
-  const unreleasedDir = join(path, 'unreleased');
-  if (!existsSync(unreleasedDir)) return out;
-  let entries;
-  try {
-    entries = readdirSync(unreleasedDir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  const dates = [];
-  for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
-    if (entry.name.startsWith('.') || entry.isSymbolicLink() || !entry.isDirectory()) continue;
-    out.repos[entry.name] = countNotes(join(unreleasedDir, entry.name), dates);
-    out.unreleased += out.repos[entry.name];
-  }
-  let oldestTs = Infinity;
-  for (const d of dates) {
-    const t = Date.parse(d);
-    if (!Number.isFinite(t) || t >= oldestTs) continue;
-    oldestTs = t;
-    out.oldest = d;
-  }
-  return out;
 }
 
 // Session entries with their nature: a symlinked entry is foreign — it
@@ -797,7 +695,6 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
  */
 function inventory(root, { activeDays = 14, gitFn = spawnSync, now = Date.now() } = {}) {
   const rootDir = resolveRoot(root);
-  const cfg = readConfig(rootDir);
   const sessionsDir = sessionsDirOf(rootDir);
   const sessions = listSessionEntries(rootDir).map((entry) => (
     entry.foreign
@@ -813,8 +710,6 @@ function inventory(root, { activeDays = 14, gitFn = spawnSync, now = Date.now() 
     root: rootDir,
     activeDays,
     note: 'Proposals are proposals — inventory evidence only; the operator decides each session.',
-    releaseNotes: releaseNotesInfo(rootDir, cfg),
-    publishes: publishesOf(cfg),
     sessions,
   };
 }
@@ -1529,16 +1424,13 @@ function isLinkedWorktree(gitFn, rootDir) {
 }
 
 /**
- * Switch the workspace to the task model and settle workspace.publishes
- * (gh:155): --publishes sets it to the boolean given; without the flag an
- * existing boolean is kept; an unset (or non-boolean) publishes refuses —
- * whether /complete-work should keep writing release notes is the
- * operator's decision, and the script never guesses it. From the launcher
- * this also reports the remaining sessions; from a task worktree (the S6
- * flow) there is no sessions directory to read — remainingSessions is
- * null and the note says where the real list comes from.
+ * Switch the workspace to the task model: flip workspace.sessionModel to
+ * "task", keeping every other key untouched. From the launcher this also
+ * reports the remaining sessions; from a task worktree (the S6 flow)
+ * there is no sessions directory to read — remainingSessions is null and
+ * the note says where the real list comes from.
  */
-function enableTaskModel(root, { publishes = null, gitFn = spawnSync } = {}) {
+function enableTaskModel(root, { gitFn = spawnSync } = {}) {
   const rootDir = resolveRoot(root);
   const cfgPath = join(rootDir, 'workspace.json');
   let cfg;
@@ -1547,43 +1439,19 @@ function enableTaskModel(root, { publishes = null, gitFn = spawnSync } = {}) {
   } catch (err) {
     throw new Error(`workspace.json unreadable: ${err.message}`);
   }
-  let next;
-  if (publishes === true || publishes === false) {
-    next = publishes;
-  } else if (typeof cfg.workspace?.publishes === 'boolean') {
-    next = cfg.workspace.publishes;
-  } else {
-    return {
-      refused: true,
-      reasons: ['workspace.publishes is unset — decide whether this workspace publishes anything via /release, then pass --publishes true or --publishes false'],
-    };
-  }
   // Spread-then-set keeps an existing sessionModel in place and every
   // other key untouched; 2-space JSON with a trailing newline is the
   // file's house format.
-  cfg.workspace = { ...(cfg.workspace || {}), sessionModel: 'task', publishes: next };
+  cfg.workspace = { ...(cfg.workspace || {}), sessionModel: 'task' };
   writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`);
   const linked = isLinkedWorktree(gitFn, rootDir);
   return linked
     ? {
       sessionModel: 'task',
-      publishes: next,
       remainingSessions: null,
       note: 'run from a task worktree — remaining sessions come from --inventory at the launcher root',
     }
-    : { sessionModel: 'task', publishes: next, remainingSessions: listSessionNames(rootDir) };
-}
-
-// One line for the operator: how many release notes sit unreleased (and
-// how old the oldest is), plus the current publishes value — the pair the
-// switch step settles (gh:155).
-function releaseNotesSummary(result) {
-  const publishes = result.publishes == null ? 'unset' : String(result.publishes);
-  const rn = result.releaseNotes;
-  if (!rn) return `release notes: — · publishes: ${publishes}`;
-  if (rn.note) return `release notes: not scanned (dir resolves outside the workspace root) · publishes: ${publishes}`;
-  const oldest = rn.oldest != null ? ` (oldest ${rn.oldest})` : '';
-  return `release notes: ${rn.unreleased} unreleased${oldest} · publishes: ${publishes}`;
+    : { sessionModel: 'task', remainingSessions: listSessionNames(rootDir) };
 }
 
 // Human-readable inventory rendering for stderr — the operator's table;
@@ -1591,7 +1459,6 @@ function releaseNotesSummary(result) {
 function renderTable(result) {
   const lines = [
     `${result.sessions.length} session(s); proposals are proposals — the operator decides each one.`,
-    releaseNotesSummary(result),
   ];
   for (const s of result.sessions) {
     lines.push('');
@@ -1616,11 +1483,10 @@ const VALUE_FLAGS = new Map([
   ['--session', 'session'],
   ['--active-days', 'activeDays'],
   ['--remote', 'remote'],
-  ['--publishes', 'publishes'],
 ]);
 
 function parseArgs(argv) {
-  const args = { root: '.', mode: null, session: null, activeDays: null, remote: null, publishes: null, dryRun: false };
+  const args = { root: '.', mode: null, session: null, activeDays: null, remote: null, dryRun: false };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
@@ -1659,17 +1525,6 @@ function parseArgs(argv) {
   if (args.remote != null && args.mode !== 'backup') {
     throw new Error('--remote is only valid with --backup');
   }
-  if (args.publishes != null) {
-    if (args.mode !== 'enable-task-model') {
-      throw new Error('--publishes is only valid with --enable-task-model');
-    }
-    // Strictly the literal strings — anything else is a decision the
-    // script must not interpret on the operator's behalf (gh:155).
-    if (args.publishes !== 'true' && args.publishes !== 'false') {
-      throw new Error('--publishes must be "true" or "false"');
-    }
-    args.publishes = args.publishes === 'true';
-  }
   if (args.dryRun && args.mode !== 'backup') {
     throw new Error('--dry-run is only valid with --backup');
   }
@@ -1694,7 +1549,7 @@ function main() {
   } else if (args.mode === 'archive') {
     out = archiveSession(rootDir, { session: args.session });
   } else {
-    out = enableTaskModel(rootDir, { publishes: args.publishes });
+    out = enableTaskModel(rootDir);
   }
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   if (out && out.refused) {

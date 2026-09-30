@@ -1,192 +1,87 @@
 ---
 name: release
-description: Prepend a new CHANGELOG.md entry per project repo by synthesizing unreleased branch notes. Deletes consumed branch notes and synthesizes workspace-context into canonical (locked) entries. Use at release time.
+description: Cut a versioned release of one project repo — bump the version, merge it through a PR, tag it, and publish a forge release whose notes are generated from merged PRs. No release-notes files.
 ---
 
 # Release
 
-Synthesize unreleased branch notes (in the **workspace** repo) into a concise, user-facing entry at the top of each project repo's `CHANGELOG.md`. Delete the consumed branch notes from the workspace. Bump the project repo's `package.json` version. In parallel, promote resolved workspace-context into canonical (locked) team knowledge.
+Cut a versioned release of one project repo. The version bump travels through a PR like any other change; the tag marks the merge commit; the forge generates the release notes from merged PR titles. The workspace keeps no release-notes files of its own.
 
 ## Why this shape
 
-Branch notes are detailed dogfood-retrospective artifacts that should not bloat public project repos. By keeping them in the workspace repo until release time, the project repo stays lean — it only ever sees code commits and `CHANGELOG.md` entries. A single `CHANGELOG.md` with one concise entry per version is what users of a published package actually want. Branch notes remain the input format for `/complete-work` (they capture per-session detail at the right moment), but they live in the workspace and are consumed-then-deleted by `/release`.
-
-Versions are bumped here, not in `/complete-work`, because version semantics describe what shipped — accumulated changes since the last release — not the timing of any individual feature merge.
+Release notes come from the forge. GitHub's generated notes (merged PR titles) are what users of a published release actually read; the detail behind each PR already lives in the issue and the PR body, so duplicating it into workspace files buys nothing. Projects that use changesets, semantic-release, or their own release tooling simply don't use this skill. A repo's `CHANGELOG.md`, if it has one, is historical — this skill never writes it.
 
 ## Parameters
-- `/release {version}` — create a release entry for a specific version
+
+- `/release {version}` — release a specific version
 - `/release` — ask for the version
-- `/release {version} --force` — proceed even when the coverage guard in Step 2 finds merged
-  PRs with no branch notes. Operator escape hatch; see Step 2.
 
 ## Flow
 
 **Step 1: Determine version and repo**
-If no version parameter: ask "What version is this release? (e.g., 1.2.0)"
 
-Check `workspace.json` for `releaseMode`:
-- **per-repo** (default): ask which repo to release
-- **workspace**: process all repos together
-- **ask**: "Process all repos together or individually?"
-
-**Release-notes base directory.** Read `workspace.releaseNotesDir` from `workspace.json` (default `workspace-context/release-notes` if the field is absent). Throughout this skill `{releaseNotesDir}` refers to that resolved value; every branch-note path is `{releaseNotesDir}/unreleased/{repo}/…`. Never use a bare `release-notes/`.
-
-**Step 2: Prove the notes pile is complete, then read it**
-
-Branch notes live in the **workspace** repo, written there by `/complete-work`. An empty
-unreleased directory is ambiguous: it means either nothing shipped, or `/complete-work` was
-skipped on merged sessions and their detail never made it into the pile. Releasing on the
-second reading silently drops work from the changelog and the next release inherits the gap.
-
-Run the guard before reading anything:
+Ask which repo to release — read `repos` from `workspace.json` and default to the entry with `"primary": true`. If no version was given, ask the bump kind (patch/minor/major) after showing the merged PRs since the last tag, so the operator can judge the impact:
 
 ```bash
-node .claude/scripts/check-release-coverage.mjs --root . --repo {repo}
+git -C repos/{repo} describe --tags --abbrev=0
 ```
 
-It compares merged PRs since the last `CHANGELOG.md` entry against the `branch:` frontmatter
-of the notes on hand, and scans `work-sessions/*/workspace/` for sessions and
-`workspace-scratchpad/chats/*.json` for chat-record task entries whose branch merged without
-`/complete-work` running (task entries for the workspace repo, `repo: "."`, are ignored — the
-guard runs per project repo). Release PRs (`release/*`) are excluded — those are the
-release, not content needing notes.
+Then call the forge adapter's `prList` with a merged-after search bounded by that tag's date (e.g. `merged:>{date}`). Pre-v1.0 breaking changes are a minor bump.
 
-- **Exit 0** — coverage is complete. Continue.
-- **Exit 1** — refuse to release. Show the script's output verbatim: it names each merged PR
-  with no notes (number, title, branch) and each session worktree that needs completing. Do
-  not write `CHANGELOG.md`. The operator either runs `/complete-work` from each listed
-  worktree, or — for PRs whose worktree is already gone — hand-writes a
-  `branch-release-notes-{topic}.md` into `{releaseNotesDir}/unreleased/{repo}/`.
+**Step 2: Preflight the tag**
 
-Only when the missing PRs were deliberately left undocumented, pass the escape hatch through:
+If `v{version}` already exists on origin, stop and ask — reuse it, investigate with `forge.releaseView`, or pick another version. Never force-push a tag.
 
 ```bash
-node .claude/scripts/check-release-coverage.mjs --root . --repo {repo} --force
+git -C repos/{repo} ls-remote --exit-code origin refs/tags/v{version}
 ```
 
-`--force` still reports what is missing; it just stops refusing. Reach for it when the
-operator has said so, not to get past a refusal on your own judgement.
+**Step 3: Bump on a branch**
 
-With coverage proven, list and read the notes:
+Create a task worktree for the release branch:
 
 ```bash
-ls {releaseNotesDir}/unreleased/{repo}/
+node .claude/scripts/task-worktree.mjs --root . --create --repo "{repo}" --branch "release/v{version}"
 ```
 
-Read all `branch-release-notes-*.md` and `branch-release-questions-*.md` files. The
-frontmatter `repo:` field confirms which project repo each belongs to — match it to the
-directory name as a sanity check. A mismatch means files were moved by hand; surface it.
+If the repo has a `package.json` with a `version`, set it to `{version}` (edit the JSON; keep formatting) and update `package-lock.json`'s top-level version fields if that file is present. Commit `chore: release v{version}`. If the repo has no version file, skip the commit — step 5 tags the current default-branch head instead.
 
-If the guard exits 0 and the directory is genuinely empty, this is the trivial case: "No
-unreleased notes found for {repo}, and no merged PRs since the last release. Nothing to
-release."
+**Step 4: Merge**
 
-**Step 3: Group and organize**
-Group notes by `type:` frontmatter (feature, fix, chore). Within each group, order chronologically by date. This ordering drives bullet sequence in the synthesized entry.
+Push the branch and open a PR through the forge adapter — per-repo `createForge({ ...ws.workspace?.forge, repo: '{owner}/{name}' })` with head `release/v{version}`. Ask `Merge? [Y/n]`, then merge (squash, delete branch).
 
-**Step 4: Handle questions**
-Present all open questions from `branch-release-questions-*.md` files:
-"These questions are still open from development. For each one:"
-- **Answer** — provide the answer, remove from questions
-- **Defer** — keep as a "Known issues" sub-bullet in the CHANGELOG entry
-- **Discard** — no longer relevant
+**Step 5: Tag and publish**
 
-**Step 5: Synthesize the CHANGELOG entry**
+Pull the merge, tag it, push the tag, and publish the forge release:
 
-Read the current `repos/{repo}/CHANGELOG.md` (if it exists) so the new entry matches the existing voice and structure. If no CHANGELOG exists, create one with a short header explaining that entries are written for package users, not contributors.
-
-Prepend a new section at the top of the changelog body (after the header, before any existing version entries). Write it user-facing — what shipped, not how it shipped:
-
-```markdown
-## v{version} — {YYYY-MM-DD}
-
-- {Concise bullet per meaningful change. Features, fixes, and chores interleaved
-  by significance, not by category. Each bullet is one sentence or short paragraph
-  in plain user-facing language: "the CLI now supports X", "corrected Y behavior
-  on Z", not "we decided" or "the team merged." Deduplicate related items.
-  Write from scratch per the coherent-revisions rule.}
-
-### Known issues
-- {Deferred questions from Step 4, if any. Omit this subsection when empty.}
-```
-
-The entry stays short. If a change needs more detail, reference the repo's docs or a dedicated design doc — do not inline session-level retrospection into the public changelog.
-
-**Step 6: Delete consumed branch notes from the workspace**
 ```bash
-rm {releaseNotesDir}/unreleased/{repo}/branch-release-*
-# If the directory is now empty, remove it too:
-rmdir {releaseNotesDir}/unreleased/{repo} 2>/dev/null || true
+git -C repos/{repo} pull --ff-only
+git -C repos/{repo} tag v{version}
+git -C repos/{repo} push origin v{version}
 ```
-The branch notes were an intermediate capture; their content is now in the CHANGELOG entry and their raw form in git history. They do not survive into the project repo.
 
-**Step 7: Commit the CHANGELOG entry to the project repo**
+```js
+await forge.releaseCreate({ tag: 'v{version}', repo, generateNotes: true });
+```
+
+If the repo has `.github/workflows/publish.yml`, find and watch its run with `workflowRunFind` / `workflowRunWatch` — retry the find up to 5 times with 3 s backoff (the run may not be registered the moment the tag lands). A failed run is reported to the operator, not thrown.
+
+**Step 6: Tear down and report**
+
+Remove the release worktree:
+
 ```bash
-cd repos/{repo}
-git add CHANGELOG.md
-git commit -m "docs: v{version} changelog entry"
+node .claude/scripts/task-worktree.mjs --root . --remove --repo "{repo}" --branch "release/v{version}" --delete-branch
 ```
-This commit lands on the project repo's source clone (which stays on its default branch). The user pushes it when ready — `/release` does not push automatically.
 
-**Step 7b: Bump package.json version (project repo)**
-If the project repo has a `package.json` with a `version` field, update it to match the release version:
-```bash
-cd repos/{repo}
-# Update "version": "..." in package.json to the release version
-git add package.json
-git commit -m "chore: bump version to v{version}"
-```
-Skip this step if the repo has no package.json or no version field.
+Report the PR, the tag, the release URL, and the publish status.
 
-**Step 7c: Commit the consumed-notes deletion in the workspace**
-```bash
-# From the workspace root
-git add {releaseNotesDir}/unreleased/
-git commit -m "release: consume {repo} branch notes for v{version}"
-```
-Workspace and project repos have separate commits — they are separate git histories.
+**Step 7: Update workspace release state**
 
-**Step 8: Consume project-scoped specs**
-Project-scoped specs and plans in `workspace-context/team-member/{user}/` (ongoing) that are fully covered by this release:
-- Consume into the CHANGELOG entry (their content is now captured there)
-- Remove the source files
-- If partially covered: rewrite the spec to reflect only what remains unimplemented
-
-**Step 9: Synthesize workspace-context for canonical promotion**
-Process ephemeral workspace-context entries:
-
-1. List all ephemeral entries with `lifecycle: resolved` (across `shared/` and any `team-member/{user}/`).
-2. For each, determine:
-   - Does an existing locked entry cover this topic? → Merge into it (enrich)
-   - Are there related resolved entries? → Combine into a new locked entry
-   - Is it stale/fully consumed by release notes? → Archive or delete
-   - Is it unresolvable but still valuable? → Move to `team-member/{user}/` ongoing or keep at `shared/` root ephemeral
-3. For merged/new locked entries:
-   - Set `state: locked`, `type: synthesized` (or `type: reference` for clean truths)
-   - Write to `workspace-context/shared/locked/{bare-name}.md` — locked files use bare names (location signals the type), so strip any `braindump_/handoff_/research_` prefix when promoting
-   - Write concise, focused content — team truths, not session history
-4. Regenerate auto-files so `canonical.md` and `index.md` reflect the new locked content:
-   ```bash
-   node .claude/scripts/build-workspace-context.mjs --write --root .
-   ```
-5. Commit:
-   ```bash
-   git add workspace-context/
-   git commit -m "release: synthesize workspace-context for v{version}"
-   ```
-
-**Step 10: Report**
-"Release v{version} complete for {repo}. {N} branch notes consumed into CHANGELOG.md. {M} context entries synthesized into {K} locked entries."
+If the workspace keeps release state in `workspace-context/` (for example a current-release line in a status file under `shared/locked/`), offer to update it — through a workspace task worktree and PR, never on the launcher.
 
 ## Notes
 
-- Release entries live in `CHANGELOG.md` at the project repo root — one file, one concise entry per version. No `release-notes/v*.md`, no `release-notes/archive/`.
-- Branch notes live in the WORKSPACE at `{releaseNotesDir}/unreleased/{repo}/` (resolved from `workspace.json` → `workspace.releaseNotesDir`, default `workspace-context/release-notes`). `/complete-work` writes them; `/release` consumes and deletes them. They never reach project repos.
-- Versions are bumped here, not in `/complete-work`. This keeps the version semantics aligned with what actually shipped (accumulated changes since last release).
-- The public repo stays lean. Detailed per-branch retrospection exists in workspace git history (the consumed-notes commit) but is not surfaced as standalone files in either repo.
-- Context synthesis happens in the WORKSPACE repo — Step 7c (consumed-notes) and Step 9 (workspace-context synthesis) are separate workspace commits.
-- Per-repo is the default — each project repo has its own release cadence.
-- The coherent-revisions rule applies: write the CHANGELOG entry from scratch, don't concatenate branch notes.
-- Tagging happens in `/complete-work`, not here. When the session branch starts with `release/`, `/complete-work` tags the merge commit on the project repo's default branch and pushes the tag, which triggers `.github/workflows/publish.yml` to publish to npm. `/release` produces the synthesis (CHANGELOG entry + version bump + consumed-notes deletion); `/complete-work` does the push, PR, merge, and tag.
-- Do not run `npm publish` locally. The publish workflow is the only path that exercises OIDC trusted publishing — local publish requires 2FA OTP and bypasses that. If the workflow fails, investigate via `gh run view`; do not fall back to local publish.
-- Recovery from a failed publish. Transient failure: rerun via `gh run rerun {run_id}`. Content failure: delete the tag (`git push origin --delete v{version} && git tag -d v{version}`), then redo the release in a new release session — `/start-work`, then `/release v{version}`, then `/complete-work`. Once a version is published to npm, that version is committed on the registry; bump and start a new release.
+- Never run `npm publish` locally. The publish workflow is the only path that exercises OIDC trusted publishing; a local publish requires a 2FA OTP and bypasses it. If the workflow fails, investigate via `gh run view` — do not fall back to a local publish.
+- Recovery from a failed publish: transient failures rerun via `gh run rerun {run_id}`; content failures mean deleting the tag and redoing the release. Once a version is published to a registry, that version number is committed — bump and release a new version instead.
+- Pre-v1.0 breaking changes are a minor bump, not major.

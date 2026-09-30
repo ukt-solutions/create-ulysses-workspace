@@ -24,7 +24,7 @@ Every session follows the same arc:
 
 **Pause (optional)** — `/pause-work` suspends the session. It captures the current state, pushes all branches, and creates draft pull requests. The session folder stays in place — worktrees stay, the tracker stays, and you can resume later.
 
-**Complete** — `/complete-work` finalizes everything. It rebases your branches, synthesizes release notes from the session's accumulated context, pushes all repos, creates pull requests, and presents a unified merge prompt. After merging, it tears down the worktrees in the correct order and removes the entire session folder.
+**Complete** — `/complete-work` finalizes everything. It rebases your branches, builds the PR bodies from the session's accumulated context, pushes all repos, creates pull requests, and presents a unified merge prompt. After merging, it tears down the worktrees in the correct order and removes the entire session folder.
 
 ```
 /start-work → work → /sync-work (backup) → work → /complete-work
@@ -51,7 +51,7 @@ work-sessions/fix-auth/
         └── my-api/                    # Project worktree on bugfix/fix-auth
 ```
 
-Session content — tracker, specs, plans — lives at the top of the workspace worktree and is tracked on the session branch. Pushing the branch carries the durable session thinking across machines. `/complete-work` reads the content into release notes, then removes the files from the branch before the final PR so main's top level stays free of session-scoped files.
+Session content — tracker, specs, plans — lives at the top of the workspace worktree and is tracked on the session branch. Pushing the branch carries the durable session thinking across machines. `/complete-work` offers to promote whatever deserves to survive into `workspace-context/`, then removes the files from the branch before the final PR so main's top level stays free of session-scoped files.
 
 The `work-sessions/` folder itself is fully gitignored at the workspace root — nothing at the launcher level is tracked. The tracking happens inside each session's worktree, on the session branch, where it naturally belongs.
 
@@ -94,7 +94,7 @@ Decisions made, work completed, blockers hit. Updated across chats.
 
 Machine state lives in the frontmatter: the current status (`active`, `paused`), the branch, the list of repos, the `workItem` linkage to a configured tracker (an adapter-prefixed ID like `gh:42` for GitHub Issues), and the chat sessions that have contributed to this work session. Hooks and scripts read and update these fields via a small parser at `.claude/lib/session-frontmatter.mjs` that rewrites only the fields that changed, leaving every other byte of the file untouched.
 
-Human content lives in the body: decisions, progress, next steps, captured reasoning from `/handoff` and `/braindump`. This is what `/complete-work` synthesizes into release notes at the end of the session.
+Human content lives in the body: decisions, progress, next steps, captured reasoning from `/handoff` and `/braindump`. This is what `/complete-work` draws on for the PR body at the end of the session.
 
 Because the tracker is a single tracked file, the session's durable thinking travels with the workspace branch. Push on one machine, pull on another, and the tracker (and any specs or plans) is already there. Worktrees are local — they get recreated the first time you resume the session on each machine.
 
@@ -191,15 +191,13 @@ There is no session folder and no `session.md`. The chat stays at the workspace 
 
 `/start-work` under the task model: pick or create the tracker issue (or skip tracking entirely), pick the repo(s) — the workspace repo can be one of them — propose the branch, create one worktree per repo with `.claude/scripts/task-worktree.mjs`, and record the task on the chat record. The record, the issue, and the branch are the entire state.
 
-`/complete-work` under the task model: rebases each worktree onto its default branch, offers to promote drawer items into `workspace-context/` (through a workspace-repo worktree on the task's branch, so nothing lands on the launcher's default branch), writes release notes when `workspace.publishes` is set, then pushes and opens one PR per repo — the workspace repo included, merged last — tears the worktrees down, and clears the record entries.
+`/complete-work` under the task model: rebases each worktree onto its default branch, offers to promote drawer items into `workspace-context/` (through a workspace-repo worktree on the task's branch, so nothing lands on the launcher's default branch), then pushes and opens one PR per repo — the workspace repo included, merged last — tears the worktrees down, and clears the record entries.
 
 Several tasks can be open at once across chats; each is just a branch plus its worktrees. The session model remains the right choice for long multi-chat efforts that want a folder, a tracker file, and pause/resume semantics — and both lifecycles can coexist in one workspace while a team migrates.
 
 ## Migrating an Existing Workspace
 
-A workspace that grew up on sessions can move to the task model in place with `/migrate-sessions`. It inventories `work-sessions/` and proposes one of six outcomes per session — **MERGEABLE** (real content survives: files on the branch, commits ahead in a project repo, or uncommitted work), **ABANDONED** (stale, artifact-only), **ACTIVE** (worked on recently), **UNKNOWN** (no activity signal at all — never assumed abandoned), **REMOVE_SHELL** (a broken folder with no worktree left), or **LEAVE** (a symlinked "foreign" entry that is never followed) — with the evidence behind each: recency, content beyond session artifacts, commits ahead, per-remote divergence, and whether anything exists on a remote. Proposals are only proposals: the operator decides each session, one at a time. Mergeable sessions finish through the normal `/start-work` → `/complete-work` flow; kept sessions simply keep working under the session lifecycle; the rest are **archived** — the session folder moves to `work-sessions/.archived/`, git's worktree links follow it, and every commit and file comes along. The migration never deletes anything: an optional backup pushes `drain/{session}/…` tags to a remote first, and deleting an archive later is a separate, manual decision. When the list is drained, the skill flips `workspace.sessionModel` to `"task"`.
-
-The switch also settles `workspace.publishes` — whether `/complete-work` keeps writing branch release notes for `/release` to consume — by asking the operator to pass `--publishes true` or `--publishes false`; it refuses to guess when the field is unset. Notes already accumulated under `unreleased/` are then left for the next `/release` in a publishing workspace, and in a non-publishing one they are left alone, folded into `workspace-context/shared/past-work-notes/` as a record of past work, or — only on an explicit request — deleted.
+A workspace that grew up on sessions can move to the task model in place with `/migrate-sessions`. It inventories `work-sessions/` and proposes one of six outcomes per session — **MERGEABLE** (real content survives: files on the branch, commits ahead in a project repo, or uncommitted work), **ABANDONED** (stale, artifact-only), **ACTIVE** (worked on recently), **UNKNOWN** (no activity signal at all — never assumed abandoned), **REMOVE_SHELL** (a broken folder with no worktree left), or **LEAVE** (a symlinked "foreign" entry that is never followed) — with the evidence behind each: recency, content beyond session artifacts, commits ahead, per-remote divergence, and whether anything exists on a remote. Proposals are only proposals: the operator decides each session, one at a time. Mergeable sessions finish through the normal `/start-work` → `/complete-work` flow; kept sessions simply keep working under the session lifecycle; the rest are **archived** — the session folder moves to `work-sessions/.archived/`, git's worktree links follow it, and every commit and file comes along. The migration never deletes anything: an optional backup pushes `drain/{session}/…` tags to a remote first, and deleting an archive later is a separate, manual decision. When the list is drained, the skill flips `workspace.sessionModel` to `"task"` — through a task worktree and a PR, never a direct edit on the launcher's tracked `workspace.json`.
 
 The rule that holds it together: a migration only ever touches the workspace it runs in. Never point it at another workspace, and never batch several workspaces through one run — each workspace drains its own sessions from its own root.
 

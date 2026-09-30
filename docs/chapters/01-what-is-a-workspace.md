@@ -56,8 +56,8 @@ my-workspace/
 │       │       ├── my-app/     # Project worktree on the session branch
 │       │       └── my-api/     # Another project worktree
 │       ├── session.md          # Session tracker — frontmatter + body (tracked)
-│       ├── design-auth.md      # Spec — tracked, consumed into release notes
-│       └── plan-auth.md        # Plan — tracked, consumed into release notes
+│       ├── design-auth.md      # Spec — tracked, consumed by /complete-work
+│       └── plan-auth.md        # Plan — tracked, consumed by /complete-work
 ├── shared-context/             # Team memory (tracked in git)
 │   ├── locked/                 # Team truths — always loaded
 │   ├── alice/                  # User-scoped context
@@ -70,7 +70,6 @@ my-workspace/
 │   ├── scripts/                # Helper scripts
 │   ├── lib/                    # Shared parser helpers
 │   └── agents/                 # Subagent definitions
-└── release-notes/              # Version history (lives inside project repos)
 ```
 
 Each directory has one job:
@@ -97,7 +96,6 @@ The workspace configuration file declares which repos belong to the workspace an
     "scratchpadDir": "workspace-scratchpad",
     "workSessionsDir": "work-sessions",
     "sharedContextDir": "shared-context",
-    "releaseNotesDir": "release-notes",
     "greeting": "Welcome back to my-workspace."
   },
   "repos": {

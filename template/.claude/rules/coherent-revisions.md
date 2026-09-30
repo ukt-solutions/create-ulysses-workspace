@@ -19,6 +19,6 @@ Injected revisions create fragmented, hard-to-follow output where the seams betw
 
 - When updating a section of a document, rewrite the entire section — not just the changed sentences
 - When updating a workspace-context file, rewrite it as a fresh snapshot of current understanding
-- When synthesizing multiple sources into release notes, write the narrative from scratch — don't concatenate
+- When synthesizing multiple sources into a PR body or summary, write the narrative from scratch — don't concatenate
 - When revising code with comments, ensure the comments tell a coherent story, not a changelog
 - Small, isolated edits (fixing a typo, updating a single value) are fine — this rule targets substantive revisions

@@ -160,6 +160,21 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     };
   }
 
+  // Creating the release is where release notes now come from: with
+  // --generate-notes the forge builds them from merged PR titles, so the
+  // workspace keeps no notes files of its own (gh:157).
+  async function releaseCreate({ tag, target, title, generateNotes = true, repo }) {
+    if (!tag) throw new Error('releaseCreate: tag is required');
+    const args = ['release', 'create', tag, '--repo', repoFor(repo)];
+    if (target) args.push('--target', target);
+    if (title) args.push('--title', title);
+    if (generateNotes) args.push('--generate-notes');
+    const stdout = ghOrThrow(args).trim();
+    // gh prints the release URL on success; sometimes preceded by warnings.
+    const url = stdout.split('\n').filter(Boolean).pop();
+    return { url, tag };
+  }
+
   async function workflowRunFind({ workflow, branch, repo, limit = 1 }) {
     if (!workflow) throw new Error('workflowRunFind: workflow is required');
     const target = repoFor(repo);
@@ -211,6 +226,7 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     prView,
     prList,
     releaseView,
+    releaseCreate,
     workflowRunFind,
     workflowRunWatch,
     get identity() { return `github:${defaultRepo}`; },

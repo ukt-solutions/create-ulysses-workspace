@@ -1,128 +1,48 @@
 # The Release Cycle
 
-The release cycle is how accumulated work becomes a versioned artifact. During development, each completed work session deposits release notes into an `unreleased/` directory. At release time, those notes are combined into a versioned document, open questions are resolved, and ephemeral shared context is synthesized into team truths. The cycle keeps the workspace from accumulating stale context indefinitely.
+The release cycle is how accumulated work becomes a versioned artifact. A release is now a thin operation: `/release` bumps the version, merges the bump through a PR, tags the merge commit, and publishes a forge release whose notes the forge generates from merged PR titles. The workspace keeps no release-notes files of its own — the detail behind each change already lives in the issue and the PR body, and the forge is where readers of a published release actually look.
 
-This chapter traces the full pipeline from branch work to versioned release.
+This chapter traces that path and notes who opts out of it.
 
 ---
 
-## The Pipeline
-
-Release notes flow through four stages:
-
-```
-Branch work → unreleased/ → versioned release → archive/
-```
-
-**Stage 1: Branch work.** During a work session, you write code, make commits, capture context. The session tracker's body accumulates progress. Specs and plans live in the session folder alongside the tracker.
-
-**Stage 2: Unreleased.** When `/complete-work` finalizes a session, it synthesizes the accumulated material into two files: `branch-release-notes-{commit}.md` (the narrative) and `branch-release-questions-{commit}.md` (open questions). These land in `release-notes/unreleased/` in the project repo.
-
-**Stage 3: Versioned release.** When you run `/release`, it reads all unreleased notes, combines them into a single `v{version}.md` document, resolves open questions, and commits the result. This is the surviving artifact — the definitive record of what shipped in this version.
-
-**Stage 4: Archive.** The consumed branch notes move to `release-notes/archive/v{version}/`. They are preserved for audit but no longer active.
-
-## How /complete-work Synthesizes
-
-When a session completes, `/complete-work` gathers material from four sources:
-
-1. **The session tracker body** — accumulated progress, decisions, and reasoning from the session
-2. **Session-scoped specs and plans** — `design-*.md` and `plan-*.md` files in the session folder
-3. **Handoffs** — shared context entries referencing this branch
-4. **The commit log** — what actually changed, commit by commit
-
-From these sources, it writes a coherent narrative — not a concatenation of notes, but a fresh synthesis written from scratch per the coherent-revisions rule. The release notes describe what was built and why, not the mechanics of how the session proceeded.
-
-The branch-release-questions file captures only genuinely open questions — things that were not resolved during implementation. Design tradeoffs that were settled, bugs that were fixed, approaches that were rejected — these are not open questions.
-
-After writing the release notes, the skill tears down the session. The cleanup script removes project worktrees first, then the workspace worktree, then the entire `work-sessions/{name}/` folder — tracker, specs, and plans disappear along with it. Their content now lives in the release notes, which are the surviving artifacts.
-
 ## How /release Works
 
-The `/release` skill is a project-repo operation — each repo has its own release cadence. When invoked:
+The `/release` skill is a per-repo operation — each repo has its own release cadence. When invoked:
 
-1. **Read unreleased notes.** All `branch-release-notes-*.md` and `branch-release-questions-*.md` files in `release-notes/unreleased/`.
+1. **Version and repo.** `/release {version}` or ask; ask which repo (defaulting to the `primary` one in `workspace.json`). With no version given, it shows the merged PRs since the last tag so the operator can judge patch/minor/major. Pre-v1.0 breaking changes are a minor bump.
 
-2. **Group by type.** Features first, then fixes, then maintenance. Within each group, ordered chronologically.
+2. **Preflight the tag.** If `v{version}` already exists on origin, stop and ask — reuse, investigate, or pick another version. Never force-push a tag.
 
-3. **Resolve open questions.** Each question from the branch-release-questions files gets one of three treatments: answer it (remove from the release), defer it (move to a "Known Issues" section), or discard it (no longer relevant).
+3. **Bump on a branch.** A task worktree on `release/v{version}` carries the version bump: `package.json` (and `package-lock.json`'s top-level version fields) set to the new version, committed as `chore: release v{version}`. A repo with no version file skips the commit and tags the default-branch head instead.
 
-4. **Synthesize the release document.** Write `release-notes/v{version}.md` — a coherent narrative combining all branch notes. Features, fixes, maintenance, known issues, contributors. Written from scratch, not concatenated.
+4. **Merge.** Push the branch, open a PR through the forge adapter, and merge (squash, delete branch) after the operator confirms.
 
-5. **Archive consumed notes.** Move branch-release files to `release-notes/archive/v{version}/`.
+5. **Tag and publish.** Tag the merge commit `v{version}`, push the tag, and create the forge release with generated notes. If the repo has a publish workflow (`.github/workflows/publish.yml`), the skill finds and watches its run; a failed run is reported, not thrown.
 
-6. **Synthesize shared context.** Process ephemeral shared context entries that are marked resolved. Merge them into existing locked entries, combine them into new locked entries, or remove them. This is how accumulated session knowledge gets distilled into durable team truths.
+6. **Tear down** the release worktree and report the PR, tag, release URL, and publish status.
 
-## The Ephemeral Cleanup Pattern
+## Where the Notes Come From
 
-The release cycle is the workspace's natural garbage collector. Without it, shared context would grow indefinitely — every braindump, every handoff, every session tracker would accumulate until the workspace became noisy and stale.
+The forge. GitHub's generated notes — merged PR titles, grouped and linked — are the release notes. Because PR bodies are written from the session tracker, the linked issue, and the commits (a short summary plus a Verification section), everything a reader needs is already at the forge. Duplicating that into workspace files bought nothing: workspaces that don't publish never consumed the notes, and a template-level notes mechanism would clash with projects that already use changesets, semantic-release, or their own tooling.
 
-The cleanup works in layers:
-
-**Session-scoped artifacts** (the session tracker, specs, plans) are consumed by `/complete-work` when a session finalizes. They do not survive past the session that created them — the entire `work-sessions/{name}/` folder is removed.
-
-**Unreleased notes** are consumed by `/release` when a version is cut. They are archived, not deleted — preserved for audit but no longer in the active pipeline.
-
-**Ephemeral shared context** is synthesized by `/release` into locked entries. An ephemeral braindump about authentication design becomes a locked entry about the team's authentication architecture. The ephemeral is removed; the locked entry persists.
-
-**User-scoped leftovers** are the individual's responsibility after a release. `/promote` helps — it scans personal context and recommends what to promote, keep, or discard. But the action is yours.
-
-The principle: **every piece of context has a natural expiration.** Branch artifacts expire at session completion. Unreleased notes expire at release. Ephemerals expire at synthesis. Nothing accumulates without a cleanup mechanism.
+A repo's `CHANGELOG.md`, if it has one, is historical — this skill does not write it. Repos with their own release tooling simply don't use this skill; their bumps and tags happen in their own pipeline.
 
 ## Version Numbering
 
 Versions are assigned at release time, not pre-planned. The convention:
 
-- **Patch** (0.x.**Y**): Bug fixes, design debt, small improvements. No new skills, no schema changes.
-- **Minor** (0.**X**.0): New features or significant template changes. May add skills, hooks, or workspace.json fields.
+- **Patch** (0.x.**Y**): Bug fixes, design debt, small improvements.
+- **Minor** (0.**X**.0): New features or significant template changes.
 - **Major** (**X**.0.0): Breaking changes to conventions, schema, or skill interfaces.
 
-The version number describes what shipped, not when it was planned. A feature you expected to be a minor might turn out to be a patch if the actual change was small. The milestone plan uses expected version numbers for readability, but the actual number comes from the work that shipped.
-
-## Release Notes Structure
-
-A versioned release document follows this structure:
-
-```markdown
-# v1.2.0 Release Notes
-
-**Date:** 2026-04-06
-
-## Features
-Coherent narrative of what was added.
-
-## Fixes
-What was broken and how it was fixed.
-
-## Maintenance
-Refactoring, documentation, tooling changes.
-
-## Known Issues
-Deferred questions from development.
-
-## Contributors
-Who contributed to this release.
-```
-
-The archive directory preserves the raw branch notes that fed this document:
-
-```
-release-notes/
-├── v1.2.0.md                          # Versioned release document
-├── unreleased/                         # Next version's branch notes
-└── archive/
-    └── v1.2.0/
-        ├── branch-release-notes-abc123.md
-        ├── branch-release-notes-def456.md
-        └── branch-release-questions-abc123.md
-```
+The version number describes what shipped, not when it was planned. A feature you expected to be a minor might turn out to be a patch if the actual change was small.
 
 ---
 
 ## Key Takeaways
 
-- Release notes flow from branch work through unreleased/ to a versioned document, then archive.
-- `/complete-work` synthesizes session material into branch release notes and consumes the sources.
-- `/release` combines unreleased notes into a version, resolves questions, and synthesizes shared context.
-- The release cycle is the natural cleanup mechanism — every context artifact has an expiration point.
+- `/release` bumps, merges through a PR, tags, and publishes a forge release with generated notes.
+- Release notes come from the forge (merged PR titles); the workspace writes none.
+- Repos with their own release tooling ignore `/release` entirely.
 - Versions are assigned at release time based on what shipped, not pre-planned.

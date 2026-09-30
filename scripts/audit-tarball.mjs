@@ -61,11 +61,13 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // grew migrate-sessions.mjs and both suites → still 225 kB after the
 // gh:147 allowlist round (structure + tip allowlists, dry-run, submodule
 // and regenerable-ignore handling): 227,168 bytes means 220 kB fails and
-// 225 kB is the smallest passing multiple → 230 kB after the migration
-// learned to settle workspace.publishes and inventory existing release
-// notes (gh:155): the release-notes inventory, the --publishes flag, the
-// rewritten Switch step, and their tests brought the tarball to 231,553
-// bytes — 225 kB fails and 230 kB is the smallest passing multiple.
+// 225 kB is the smallest passing multiple → 230 kB after the gh:155
+// round grew the migration's switch step and its tests, bringing the
+// tarball to 231,553 bytes — 225 kB fails and 230 kB is the smallest
+// passing multiple → still 230 kB after the release-notes machinery was
+// scrapped (gh:157): check-release-coverage.mjs and its test left, and
+// migrate-sessions shed its gh:155 inventory — the tarball only shrank,
+// so the ceiling holds.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
@@ -210,10 +212,6 @@ function checkRequiredFiles(files) {
     // Claude to price a placement before writing it. If this script does not
     // ship, that instruction silently becomes advice nobody can follow.
     'template/.claude/scripts/context-footprint.mjs',
-    // /release Step 2 refuses to write a changelog without this guard. If it
-    // does not ship, the skill falls back to the silent-empty-release bug it
-    // was written to close (gh:89).
-    'template/.claude/scripts/check-release-coverage.mjs',
     // The chat record is the durable per-chat state in the post-inversion
     // session model (gh:132). Without it the new lifecycle has nowhere to
     // record scope, concerns, or open tasks.

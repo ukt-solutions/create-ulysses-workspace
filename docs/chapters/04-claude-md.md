@@ -43,9 +43,9 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - `/braindump [name]` — capture discussion/reasoning
 - `/aside [--quick] <thought>` — capture a drive-by idea
 - `/pause-work` — suspend work, push, draft PR
-- `/complete-work` — finalize branch, release notes, real PR
+- `/complete-work` — finalize the work — rebase, PR, merge, close the issue
 - `/promote` — move personal memory to shared context
-- `/release [version]` — combine unreleased notes into versioned doc
+- `/release [version]` — cut a versioned release: bump, tag, forge release with generated notes
 - `/sync-work` — push branches without ceremony
 - `/workspace-update` — apply template updates
 - `/maintenance [audit|cleanup]` — workspace health checks
