@@ -150,7 +150,7 @@ export function createSessionTracker(root, sessionName, fields, body) {
 
 /**
  * Delete the entire work-sessions/{name}/ folder. Used by /complete-work
- * after the session is finalized and archived into release notes.
+ * after the session is finalized and its artifacts promoted or discarded.
  * Caller is responsible for any git bookkeeping (branch deletes, prunes).
  */
 export function deleteSessionFolder(root, sessionName) {

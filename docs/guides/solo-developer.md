@@ -1,6 +1,6 @@
 # Solo Developer Guide
 
-You use Claude Code for your projects. Maybe you have one repo, maybe a few. You want your work to have structure — tracked sessions, captured decisions, clean release notes — without the overhead of a team workflow. This guide walks you through setting up a workspace and running your first work session from start to finish.
+You use Claude Code for your projects. Maybe you have one repo, maybe a few. You want your work to have structure — tracked sessions, captured decisions, clean releases — without the overhead of a team workflow. This guide walks you through setting up a workspace and running your first work session from start to finish.
 
 ---
 
@@ -91,7 +91,7 @@ When you are done:
 /complete-work
 ```
 
-Claude runs the full completion pipeline: rebases your branch, synthesizes release notes from everything the session accumulated (tracker, commits, any specs or plans), pushes the branch, creates a pull request, and asks if you want to merge.
+Claude runs the full completion pipeline: rebases your branch, builds the PR body from everything the session accumulated (tracker, commits, any specs or plans), pushes the branch, creates a pull request, and asks if you want to merge.
 
 ```
 Work session complete:
@@ -102,7 +102,6 @@ PROJECT: my-app
   Changes:
     - Added JWT-based auth middleware
     - Login and registration endpoints
-  Release notes: branch-release-notes-abc123.md
 
 WORKSPACE: my-workspace
   PR #3: context: add-auth work session
@@ -117,7 +116,7 @@ Type `y` and everything merges. The worktrees are cleaned up. You are back on ma
 
 That is the core loop: `/start-work` → work → `/complete-work`. Along the way, `/braindump` and `/sync-work` keep your context captured and your work backed up.
 
-When you are ready to cut a release across multiple completed sessions, run `/release` to combine the accumulated branch notes into a versioned document.
+When you are ready to cut a version, run `/release` — it bumps the version, merges the bump through a PR, tags it, and publishes a forge release whose notes are generated from the merged PRs.
 
 ## Where to Go Next
 

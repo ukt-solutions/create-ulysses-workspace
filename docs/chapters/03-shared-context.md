@@ -65,7 +65,7 @@ Three capture skills feed the shared context system. Each serves a different pur
 
 **`/aside`** captures drive-by ideas without interrupting the current work. It dispatches a background agent to research and expand on the idea while you continue working. Use it when a thought crosses your mind that does not belong in the current session but should not be lost.
 
-All three default to user-scoped context for standalone captures. During active work sessions, `/handoff` and `/braindump` route to the session tracker body so the captured reasoning becomes part of the session's durable thinking — synthesized into release notes by `/complete-work` when the session finishes.
+All three default to user-scoped context for standalone captures. During active work sessions, `/handoff` and `/braindump` route to the session tracker body so the captured reasoning becomes part of the session's durable thinking — carried into the PR body by `/complete-work` when the session finishes.
 
 ## The Promotion Lifecycle
 

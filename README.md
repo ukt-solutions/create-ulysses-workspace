@@ -74,11 +74,11 @@ Rules say what's safe. Skills say how to do the recurring things. Hooks notice w
 
 Four things, in the order you'll touch them:
 
-1. **A workflow lifecycle that survives chat boundaries.** `/start-work` provisions a session — branch, worktree, tracker — atomically. `/pause-work` and `/sync-work` checkpoint mid-stream. `/complete-work` rebases, synthesizes release notes, opens PRs, and tears down. The same session resumes cleanly in a fresh chat.
+1. **A workflow lifecycle that survives chat boundaries.** `/start-work` provisions a session — branch, worktree, tracker — atomically. `/pause-work` and `/sync-work` checkpoint mid-stream. `/complete-work` rebases, opens PRs, merges, and tears down. The same session resumes cleanly in a fresh chat.
 
 2. **Parallel work sessions you can run from separate terminals.** Each session lives in its own folder under `work-sessions/{name}/` with its own workspace worktree and nested project worktrees. Two sessions can't collide on a branch or a working directory.
 
-3. **Multi-repo support with versioning across repos.** A workspace wraps your project repos rather than replacing them. Each session can span one repo or many. `/release` synthesizes versioned release docs across the repos that contributed.
+3. **Multi-repo support with versioning across repos.** A workspace wraps your project repos rather than replacing them. Each session can span one repo or many. `/release` cuts a versioned release per repo — bump, tag, forge release with notes generated from merged PRs.
 
 4. **Shared context with a locked layer that stays in the window.** `shared-context/locked/` is loaded every turn and injected into subagents. Team truths arrive in the model's context window without anyone remembering to paste them.
 

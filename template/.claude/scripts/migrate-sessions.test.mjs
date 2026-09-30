@@ -85,15 +85,12 @@ function commitAll(cwd, message, dateIso = null) {
 // an origin bare remote, a project source clone at repos/app with its
 // own bare remote, and a copy of .claude/ (real workspaces ship .claude/
 // as a copy, never a symlink).
-function makeWorkspace({ appDefaultBranch = 'main', configAppBranch = 'main', includeApp = true, publishes = true } = {}) {
+function makeWorkspace({ appDefaultBranch = 'main', configAppBranch = 'main', includeApp = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'mig-ws-'));
   const wsOrigin = join(mkdtempSync(join(tmpdir(), 'mig-ws-origin-')), 'origin.git');
   execSync(`git init -q --bare "${wsOrigin}"`, { stdio: 'pipe' });
   const reposCfg = includeApp ? { app: { branch: configAppBranch, remote: 'none' } } : {};
-  // publishes: null leaves the key out — the pre-gh:155 shape most real
-  // workspaces have, and the one the switch must refuse to guess about.
   const wsCfg = { name: 'fixture', workSessionsDir: 'work-sessions', sessionModel: 'session' };
-  if (publishes !== null) wsCfg.publishes = publishes;
   writeFileSync(join(root, 'workspace.json'), `${JSON.stringify({
     workspace: wsCfg,
     repos: reposCfg,
@@ -198,15 +195,6 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's', '--teardown', '--session', 'x']), 'there is no teardown mode');
   throws(() => parseArgs(['node', 's', '--archive', '--session', 'x', '--remote', 'origin']), '--remote only with --backup');
   throws(() => parseArgs(['node', 's', '--inventory', '--bogus']), 'unknown flag rejected');
-  throws(() => parseArgs(['node', 's', '--enable-task-model', '--publishes', 'yes']), '--publishes must be literally true or false');
-  throws(() => parseArgs(['node', 's', '--enable-task-model', '--publishes', 'TRUE']), '--publishes is case-strict');
-  throws(() => parseArgs(['node', 's', '--inventory', '--publishes', 'true']), '--publishes only with --enable-task-model');
-  throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--publishes', 'false']), '--publishes rejected with --backup');
-  throws(() => parseArgs(['node', 's', '--enable-task-model', '--publishes']), 'a dangling --publishes value is rejected');
-  const pubT = parseArgs(['node', 's', '--enable-task-model', '--publishes', 'true']);
-  assertEq([pubT.mode, pubT.publishes], ['enable-task-model', true], '--publishes true parses to boolean true');
-  const pubF = parseArgs(['node', 's', '--enable-task-model', '--publishes', 'false']);
-  assertEq(pubF.publishes, false, '--publishes false parses to boolean false');
   const inv = parseArgs(['node', 's', '--root', '/w', '--inventory']);
   assertEq([inv.mode, inv.root, inv.activeDays], ['inventory', '/w', null], 'inventory defaults parse');
   const ar = parseArgs(['node', 's', '--archive', '--session', 'x']);
@@ -467,69 +455,6 @@ console.log('# S1: table renders remote states');
     assertEq(app.remotes.origin.state, 'none', 'unpushed branch is none');
     const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
     assert(r.stderr.includes('[origin:none]'), 'table renders [origin:none]');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# gh:155: inventory counts unreleased notes per repo, oldest date, publishes');
-{
-  const fx = makeWorkspace();
-  try {
-    const rnDir = join(fx.root, 'workspace-context', 'release-notes', 'unreleased');
-    mkdirSync(join(rnDir, 'app'), { recursive: true });
-    mkdirSync(join(rnDir, 'web'), { recursive: true });
-    const note = (repo, file, body) => writeFileSync(join(rnDir, repo, file), body);
-    note('app', 'branch-release-notes-111.md', '---\nbranch: b\nrepo: app\ndate: 2026-06-01\n---\n\n## A\n');
-    note('app', 'branch-release-notes-222.md', '---\nbranch: b\nrepo: app\ndate: 2026-05-02\n---\n\n## B\n');
-    note('web', 'branch-release-notes-333.md', '---\ndate: whenever we got to it\n---\n\nno parseable date\n');
-    note('web', 'branch-release-notes-444.md', 'no frontmatter at all\n');
-    note('app', 'not-a-note.txt', 'ignored — not markdown\n');
-    let inv = inventory(fx.root);
-    assertEq(inv.publishes, true, 'a boolean publishes is reported');
-    assertEq(inv.releaseNotes.dir, join('workspace-context', 'release-notes'), 'dir is reported relative to the root');
-    assertEq(inv.releaseNotes.unreleased, 4, 'only .md files count; garbled frontmatter tolerated');
-    assertEq(inv.releaseNotes.repos, { app: 2, web: 2 }, 'counts are per repo');
-    assertEq(inv.releaseNotes.oldest, '2026-05-02', 'oldest is the earliest parseable date: value');
-    // Once no note carries a parseable date, oldest is null — not a guess.
-    rmSync(join(rnDir, 'app', 'branch-release-notes-111.md'), { force: true });
-    rmSync(join(rnDir, 'app', 'branch-release-notes-222.md'), { force: true });
-    inv = inventory(fx.root);
-    assertEq(inv.releaseNotes.unreleased, 2, 'recounted after removal');
-    assertEq(inv.releaseNotes.oldest, null, 'no parseable date anywhere means oldest null');
-    const cli = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
-    assert(cli.stderr.includes('release notes: 2 unreleased'), 'the table carries the count');
-    assert(!cli.stderr.includes('oldest'), 'no oldest segment when no date parses');
-    assert(cli.stderr.includes('publishes: true'), 'the table carries the publishes value');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# gh:155: releaseNotesDir honored; one that escapes the root is skipped');
-{
-  const fx = makeWorkspace({ publishes: false });
-  try {
-    const cfgPath = join(fx.root, 'workspace.json');
-    const rewrite = (dir) => {
-      const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
-      if (dir == null) delete cfg.workspace.releaseNotesDir;
-      else cfg.workspace.releaseNotesDir = dir;
-      writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`);
-    };
-    rewrite('notes/nr');
-    mkdirSync(join(fx.root, 'notes', 'nr', 'unreleased', 'app'), { recursive: true });
-    writeFileSync(join(fx.root, 'notes', 'nr', 'unreleased', 'app', 'branch-release-notes-999.md'), '---\ndate: 2026-01-05\n---\n\n## D\n');
-    let inv = inventory(fx.root);
-    assertEq(inv.publishes, false, 'false is reported as false');
-    assertEq(inv.releaseNotes.dir, join('notes', 'nr'), 'a custom releaseNotesDir is honored');
-    assertEq(inv.releaseNotes.unreleased, 1, 'notes counted inside the custom dir');
-    assertEq(inv.releaseNotes.oldest, '2026-01-05', 'oldest read there too');
-    rewrite('../outside-notes');
-    inv = inventory(fx.root);
-    assertEq(inv.releaseNotes.unreleased, 0, 'an escaping dir is never scanned');
-    assertEq(inv.releaseNotes.oldest, null, 'nothing is read from outside the root');
-    assert(inv.releaseNotes.note && inv.releaseNotes.note.includes('outside the workspace root'), 'the skip says why');
-    rewrite(null);
-    inv = inventory(fx.root);
-    assertEq(inv.releaseNotes.dir, join('workspace-context', 'release-notes'), 'the default dir applies when the key is absent');
-    assertEq(inv.releaseNotes.unreleased, 0, 'nothing there in this fixture');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -966,47 +891,15 @@ console.log('# enable-task-model preserves the rest of workspace.json');
     mkdirSync(join(fx.root, 'work-sessions', 'alpha'), { recursive: true });
     const out = enableTaskModel(fx.root);
     assertEq(out.sessionModel, 'task', 'reports the switch');
-    assertEq(out.publishes, true, 'an existing boolean publishes is kept and reported');
     assertEq(out.remainingSessions, ['alpha'], 'remaining sessions are reported');
     const raw = readFileSync(join(fx.root, 'workspace.json'), 'utf-8');
     const cfg = JSON.parse(raw);
     assertEq(cfg.workspace.sessionModel, 'task', 'sessionModel set to task');
-    assertEq(cfg.workspace.publishes, true, 'publishes preserved when the flag is absent');
     assertEq(cfg.workspace.name, 'fixture', 'sibling keys preserved');
     assertEq(cfg.workspace.workSessionsDir, 'work-sessions', 'nested sibling keys preserved');
     assertEq(cfg.repos.app.branch, 'main', 'the repos block is untouched');
     assert(raw.endsWith('}\n') && !raw.endsWith('\n\n'), 'trailing newline, exactly one');
     assert(/^{\n  "workspace"/.test(raw), '2-space JSON formatting');
-  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
-}
-
-console.log('# gh:155: the switch settles publishes — refuses when unset, sets it, reports it');
-{
-  const fx = makeWorkspace({ publishes: null });
-  try {
-    assertEq(inventory(fx.root).publishes, null, 'an unset publishes reports null');
-
-    const refused = enableTaskModel(fx.root);
-    assertEq(refused.refused, true, 'unset publishes without the flag refuses');
-    assert(refused.reasons.some((r) => r.includes('--publishes true') && r.includes('--publishes false')), 'the reason tells the operator to decide');
-    const cfg0 = JSON.parse(readFileSync(join(fx.root, 'workspace.json'), 'utf-8'));
-    assertEq(cfg0.workspace.sessionModel, 'session', 'a refusal writes nothing');
-
-    const cli = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--enable-task-model'], { encoding: 'utf8' });
-    assertEq(cli.status, 1, 'the publishes refusal exits 1');
-    assertEq(JSON.parse(cli.stdout).refused, true, 'refusal JSON on stdout');
-
-    const out = enableTaskModel(fx.root, { publishes: false });
-    assertEq(out.refused, undefined, 'the flag is accepted');
-    assertEq(out.publishes, false, 'the resulting publishes is reported');
-    const cfg = JSON.parse(readFileSync(join(fx.root, 'workspace.json'), 'utf-8'));
-    assertEq(cfg.workspace.sessionModel, 'task', 'the switch happened');
-    assertEq(cfg.workspace.publishes, false, 'publishes written as a real boolean');
-    assertEq(cfg.workspace.name, 'fixture', 'sibling keys preserved');
-
-    const flipped = enableTaskModel(fx.root, { publishes: true });
-    assertEq(flipped.publishes, true, 'the flag overrides an existing value');
-    assertEq(JSON.parse(readFileSync(join(fx.root, 'workspace.json'), 'utf-8')).workspace.publishes, true, 'overridden on disk too');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -1029,11 +922,6 @@ console.log('# S6: enable-task-model from a task worktree; acting modes refuse a
 
     const cli = spawnSync(process.execPath, [SCRIPT, '--enable-task-model', '--root', wt], { encoding: 'utf8' });
     assertEq(cli.status, 0, '--enable-task-model accepts the worktree root');
-
-    const cliPub = spawnSync(process.execPath, [SCRIPT, '--enable-task-model', '--publishes', 'false', '--root', wt], { encoding: 'utf8' });
-    assertEq(cliPub.status, 0, '--publishes false via the CLI exits 0');
-    assertEq(JSON.parse(cliPub.stdout).publishes, false, 'the CLI reports the resulting publishes');
-    assertEq(JSON.parse(readFileSync(join(wt, 'workspace.json'), 'utf-8')).workspace.publishes, false, 'the CLI writes the boolean');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 

@@ -228,7 +228,7 @@ fixed from the original `/goal` invocation. The corrected condition only takes e
 A reasonable template:
 
 ```
-Every phase in goal-<topic>.md shows status: complete, or status: awaiting-review with its artifact written. Phase artifacts exist at: <list paths>. Either the /complete-work skill has produced release notes and opened the final PR with the URL in the transcript, or the goal is blocked on a named operator step and that is stated. Or stop after <N> turns.
+Every phase in goal-<topic>.md shows status: complete, or status: awaiting-review with its artifact written. Phase artifacts exist at: <list paths>. Either the /complete-work skill has opened the final PR with the URL in the transcript, or the goal is blocked on a named operator step and that is stated. Or stop after <N> turns.
 ```
 
 Fill in `<topic>`, paths, and `<N>` per goal. Anchor on artifacts and committed state, not on feelings.
@@ -243,7 +243,7 @@ Every `goal-{topic}.md` body MUST include a `## Start command` section containin
 ## Start command
 
 ```
-/goal "All phases in goal-<topic>.md show status: complete. Phase artifacts exist at: <paths>. The /complete-work skill has produced release notes and opened the final PR; the PR URL appeared in the transcript. Or stop after <N> turns."
+/goal "All phases in goal-<topic>.md show status: complete. Phase artifacts exist at: <paths>. The /complete-work skill has opened the final PR; the PR URL appeared in the transcript. Or stop after <N> turns."
 ```
 ````
 
@@ -423,7 +423,7 @@ on the session branch.
 ## Start command
 
 ```
-/goal "All 5 phases in goal-evaluate-rate-limiting.md show status: complete. Phase artifacts exist at: research-rate-limiting-strategies.md, crossref-existing-infrastructure.md, design-rate-limiting.md, plan-rate-limiting.md, and the implementation commits land on the session branch (visible in git log). The /complete-work skill has produced release notes and opened the final PR; the PR URL appeared in the transcript. Or stop after 60 turns."
+/goal "All 5 phases in goal-evaluate-rate-limiting.md show status: complete. Phase artifacts exist at: research-rate-limiting-strategies.md, crossref-existing-infrastructure.md, design-rate-limiting.md, plan-rate-limiting.md, and the implementation commits land on the session branch (visible in git log). The /complete-work skill has opened the final PR; the PR URL appeared in the transcript. Or stop after 60 turns."
 ```
 
 This is the frontmatter `completion_condition` flattened to one line. Run it after reviewing the artifact; it flips the goal to `status: active`.

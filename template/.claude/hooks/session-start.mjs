@@ -152,7 +152,6 @@ if (trackers.length > 0) {
 // Surface team-shared workspace context (secondary)
 // Only scan shared/ — locked/ is now a sub-dir of shared/ and is included
 // naturally. team-member/ is per-user (loaded via CLAUDE.local.md).
-// release-notes/ is operational, not knowledge.
 if (existsSync(sharedDir)) {
   const entries = [];
 

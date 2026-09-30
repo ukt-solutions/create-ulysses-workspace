@@ -1,11 +1,11 @@
 ---
 name: complete-work
-description: Finalize a work session — rebase, synthesize release notes from spec/plan/session tracker/commits, create PRs with unified presentation. Handles all project repos and workspace repo. Use when work on a session is done.
+description: Finalize a work session — rebase, PR, merge, and close the linked issue. Handles all project repos and the workspace repo. Use when work on a session is done.
 ---
 
 # Complete Work
 
-Finalize the active work session. Handles all project repos (code changes, release notes, PRs) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval, then tears down the session folder.
+Finalize the active work session. Handles all project repos (code changes, PRs) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval, then tears down the session folder.
 
 ## Flow
 
@@ -32,7 +32,6 @@ Determine paths:
 - Workspace worktree: `work-sessions/{session-name}/workspace/`
 - Project worktrees: `work-sessions/{session-name}/workspace/repos/{repo}/` for each repo in the tracker's `repos:` list
 - Read each repo's default branch from workspace.json (`repos.{repo}.branch`)
-- **Release-notes base directory.** Read `workspace.releaseNotesDir` from `workspace.json` (default `workspace-context/release-notes` if the field is absent). Throughout this skill `{releaseNotesDir}` refers to that resolved value; every branch-note path is `{releaseNotesDir}/unreleased/{repo}/…`. Never use a bare `release-notes/`.
 
 ### Step 2: Rebase project repos
 
@@ -52,7 +51,7 @@ If the user declines or there's nothing to capture, skip.
 
 ### Step 4: Flush task list to session.md
 
-Before reading sources for synthesis, flush current `TodoWrite` state to `## Tasks` per the `task-list-mirroring` rule. This ensures the synthesis in Step 6 sees the final state:
+Before reading sources for the PR body, flush current `TodoWrite` state to `## Tasks` per the `task-list-mirroring` rule. This ensures the body written in Step 9 sees the final state:
 
 ```bash
 cd "work-sessions/{session-name}/workspace"
@@ -63,7 +62,7 @@ Mark `Complete work` as `in_progress` in the JSON before flushing — the rest o
 
 ### Step 5: Gather source material
 
-Formally read ALL sources before synthesizing — do not write release notes from memory alone:
+Formally read ALL sources before writing the PR body — do not summarize from memory alone:
 
 1. **Session tracker** at `work-sessions/{session-name}/workspace/session.md` — read the full body (frontmatter is machine state, body is human content)
 
@@ -88,69 +87,13 @@ Formally read ALL sources before synthesizing — do not write release notes fro
    git log "origin/{repo-branch}..HEAD" --oneline
    ```
 
-### Step 6: Synthesize release notes
+5. **The linked issue** — if the tracker has a `workItem:` field and `workspace.tracker` is configured, read the issue through the tracker adapter so the PR body can speak to what was asked.
 
-Branch notes are written to the **workspace** repo, not the project repo. They are an internal retrospection artifact consumed by `/release` at release time; the project repo only ever receives a `CHANGELOG.md` entry. This separation keeps dogfood content out of public project repos between feature merge and the next release cut.
+These sources feed the PR bodies in Step 9: a short summary of what changed and why, plus a Verification section.
 
-For each repo in the tracker's `repos:` list that has commits beyond the base branch:
+### Step 6: Remove session artifacts from the workspace branch
 
-```bash
-cd "work-sessions/{session-name}/workspace/repos/{repo}"
-COMMIT_ID=$(git rev-parse --short HEAD)
-cd ../..  # back to the workspace worktree
-mkdir -p "{releaseNotesDir}/unreleased/{repo-name}"
-```
-
-**File 1: `{releaseNotesDir}/unreleased/{repo-name}/branch-release-notes-{COMMIT_ID}.md`** (relative to the workspace worktree)
-```markdown
----
-branch: {branch}
-repo: {repo-name}
-type: {feature|fix|chore}
-author: {user}
-date: {YYYY-MM-DD}
----
-
-## {Human-readable title}
-
-{Coherent narrative synthesized from tracker + spec + plan + commits.
-Written from scratch per coherent-revisions rule.}
-```
-
-**File 2: `{releaseNotesDir}/unreleased/{repo-name}/branch-release-questions-{COMMIT_ID}.md`**
-```markdown
----
-branch: {branch}
-repo: {repo-name}
-author: {user}
-date: {YYYY-MM-DD}
----
-
-## Open Questions
-
-{Only genuinely open questions — not things resolved during implementation.}
-```
-
-The `repo:` frontmatter field is what `/release` uses to know which project repo's `CHANGELOG.md` should consume each note. The directory name is the same as the field for redundancy.
-
-After all repos are processed, commit once on the workspace branch:
-```bash
-cd "work-sessions/{session-name}/workspace"
-git add "{releaseNotesDir}/unreleased/"
-git commit -m "docs: add release notes for {branch}"
-```
-
-If a repo has no commits beyond the base, skip release notes for it.
-
-**Count what you wrote.** Keep track of how many branch-note files Step 6 produced. Notes
-are written only for repos in the tracker's `repos:` list, so a session whose changes are
-entirely in the workspace repo — research, context, documentation, or workspace code such as
-hooks and scripts — matches no project repo and produces **zero** notes. That count is the
-guard Step 7 depends on.
-
-### Step 7: Remove session artifacts from the workspace branch
-
-The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 12. Before that happens, make sure everything worth preserving has landed in release notes (Step 6) — once Step 6 has run, the tracker, specs, plans, and goal artifacts have served their purpose.
+The entire `work-sessions/{session-name}/` folder is removed by the cleanup script in Step 11. Before that happens, decide what deserves to survive: the tracker, specs, plans, and goal artifacts hold the session's reasoning, and the commands below delete them from the branch.
 
 **Goal sub-branch pre-flight (only when a `goal-*.md` artifact is present).** A `/goal`-driven session can produce per-phase sub-branches for code phases (any phase declaring `integration.strategy: sub-branch` in the goal artifact). Those sub-branches must be merged into the session branch before completion, or their work is lost when the session folder is torn down. Before stripping anything, check each repo in the session — the workspace worktree itself and every `repos/{repo}/` project worktree:
 
@@ -164,30 +107,11 @@ done
 
 If any `UNMERGED:` lines print, abort completion and show the list. The user merges the intended sub-branches into the session branch, or closes abandoned ones, then re-runs `/complete-work`. When no `goal-*.md` artifact is present, this check is a no-op and completion proceeds normally.
 
-**Zero-notes guard — runs after the pre-flight, never before it.** When Step 6 wrote zero
-branch-note files, nothing this session produced has been archived, and the next commands
-delete the artifacts. Stop and report before stripping.
-
-The right message depends on where the session's work actually lives, so check first:
-
-```bash
-cd "work-sessions/{session-name}/workspace"
-git log origin/main..HEAD --oneline -- . ':(exclude)session.md' ':(exclude)design-*.md' \
-  ':(exclude)plan-*.md' ':(exclude)goal-*.md' ':(exclude)research-*.md' ':(exclude)crossref-*.md'
-```
-
-- **Commits listed** — the session changed workspace-repo files (hooks, scripts, rules,
-  context). That work merges normally and is not at risk. What the strip would lose is the
-  reasoning in `session.md` and any specs or plans: why the change was made, what was
-  rejected, what remains open.
-- **No commits listed** — the artifacts *are* the deliverable. Research, design, or context
-  work with nothing else to merge. Stripping deletes the session's entire output.
-
-Report which case applies, name the files that would be removed, then offer two choices:
+**Decide the fate of the artifacts — runs after the pre-flight, never before it.** Before stripping, list the session artifacts present at the top of the workspace worktree — `session.md` plus every `design-*.md`, `plan-*.md`, `goal-*.md`, `research-*.md`, and `crossref-*.md` — and offer two choices:
 
 1. **Promote first (default).** Run `/promote` on the artifacts so they land in
    `workspace-context/` as durable team knowledge, then strip and continue. This is the
-   right answer in both cases: reasoning that is worth keeping belongs in workspace-context,
+   right answer in every case: reasoning that is worth keeping belongs in workspace-context,
    which is where it will actually be read.
 2. **Discard.** Strip anyway, with an explicit confirmation that names each file.
 
@@ -198,7 +122,7 @@ unconditionally. Keeping artifacts on the branch does not preserve them — it c
 `main` and then loses them anyway on the next session.
 
 
-Session content lives at the top of the workspace worktree on the session branch. Once the pre-flight passes, remove these files from the branch before the final push so main's top level stays free of session artifacts:
+Session content lives at the top of the workspace worktree on the session branch. Once the pre-flight passes and the artifacts' fate is decided, remove these files from the branch before the final push so main's top level stays free of session artifacts:
 
 ```bash
 cd "work-sessions/{session-name}/workspace"
@@ -215,11 +139,11 @@ The `|| true` guards keep this idempotent — if a file is already gone (e.g., a
 
 This commit persists in the branch's history. On squash merge or rebase merge, branch history collapses to one clean commit on main with no session artifacts. On merge commits, branch history is reachable but the final tree on main shows no session content.
 
-> **No version bump here.** Versions are bumped at release time by `/release`, which consumes accumulated unreleased branch notes into a single `CHANGELOG.md` entry per project repo. `/complete-work` only writes branch notes; it does not modify any project repo's `package.json`. This avoids version drift when multiple feature branches land between releases.
+> **No version bump here.** Versions are bumped at release time by `/release`, which tags the merge and cuts a forge release whose notes are generated from merged PRs. `/complete-work` does not modify any project repo's `package.json`.
 
-### Step 8: Detect remote type per repo
+### Step 7: Detect remote type per repo
 
-For each repo in the tracker's `repos:` plus the workspace repo, determine the remote type. This drives how Step 9 and Step 10 push and merge.
+For each repo in the tracker's `repos:` plus the workspace repo, determine the remote type. This drives how Step 8 and Step 9 push and merge.
 
 ```bash
 cd "work-sessions/{session-name}/workspace/repos/{repo}"
@@ -228,14 +152,14 @@ git remote get-url origin 2>&1
 
 Classify the result:
 
-- **GitHub remote** — URL contains `github.com` or `gh repo view` succeeds against origin → use the PR flow (Step 9a, Step 10a).
-- **Local / bare remote** — URL is a filesystem path (starts with `/`, `./`, `file://`, or points at a `.git` bare mirror) → use the local merge flow (Step 9b, Step 10b).
-- **Other remote** (e.g., GitLab, Bitbucket, self-hosted) — no `gh` support → fall back to the local merge flow (Step 9b, Step 10b), and mention it in the final summary.
+- **GitHub remote** — URL contains `github.com` or `gh repo view` succeeds against origin → use the PR flow (Step 8a, Step 9a).
+- **Local / bare remote** — URL is a filesystem path (starts with `/`, `./`, `file://`, or points at a `.git` bare mirror) → use the local merge flow (Step 8b, Step 9b).
+- **Other remote** (e.g., GitLab, Bitbucket, self-hosted) — no `gh` support → fall back to the local merge flow (Step 8b, Step 9b), and mention it in the final summary.
 - **No remote at all** — "No remote configured for {repo}. Want me to create one on GitHub, add an existing URL, or keep the session local (push/merge inside the local clone only)?" Act on the user's choice. Never silently skip push.
 
-### Step 9: Push all repos
+### Step 8: Push all repos
 
-#### Step 9a: GitHub remotes
+#### Step 8a: GitHub remotes
 
 ```bash
 # Each project repo with a GitHub remote
@@ -249,7 +173,7 @@ git commit -m "chore: finalize context for {session-name}"
 git push -u origin "{branch}"
 ```
 
-#### Step 9b: Local/bare remotes
+#### Step 8b: Local/bare remotes
 
 ```bash
 # Push the feature branch to the bare remote so it exists there
@@ -263,13 +187,15 @@ git commit -m "chore: finalize context for {session-name}"
 git push -u origin "{branch}"
 ```
 
-The push shape is the same as 9a — what differs is the merge mechanics in Step 10b.
+The push shape is the same as 8a — what differs is the merge mechanics in Step 9b.
 
-### Step 10: Merge and present unified summary
+### Step 9: Merge and present unified summary
 
-#### Step 10a: GitHub remotes — create PRs, unified summary, merge
+#### Step 9a: GitHub remotes — create PRs, unified summary, merge
 
 Create one PR per project repo plus one workspace PR. PR operations go through the forge adapter (`.claude/scripts/forges/interface.mjs`), not `gh` directly — see `.claude/rules/forge-operations.md` for the contract. The adapter resolves the target repo from `workspace.forge.repo` or the local git remote.
+
+Each PR body is built from the material gathered in Step 5 — the session tracker body, the linked issue, and the commits: a short summary of what changed and why, then a **Verification** section stating how the change was checked (tests run, commands executed, results).
 
 ```javascript
 import { createForge } from './.claude/scripts/forges/interface.mjs';
@@ -282,7 +208,7 @@ const forge = createForge(ws.workspace?.forge);
 // work-sessions/{session-name}/workspace/repos/{repo}:
 const projectPr = await forge.prCreate({
   title: `${type}: ${description}`,
-  body: prBody,  // synthesized release notes + verification section
+  body: prBody,  // short summary + Verification section
 });
 
 // Workspace PR — from the workspace worktree:
@@ -300,14 +226,13 @@ PROJECT: {repo-1}
   PR #{n}: {type}: {description}
   Branch: {branch} → {repo-1-branch}
   Changes:
-    - {bullet points from release notes}
-  Release notes: branch-release-notes-{COMMIT_ID}.md
+    - {bullet points from the PR body}
 
 PROJECT: {repo-2}
   PR #{m}: {type}: {description}
   Branch: {branch} → {repo-2-branch}
   Changes:
-    - {bullet points from release notes}
+    - {bullet points from the PR body}
 
 WORKSPACE: {workspace-name}
   PR #{p}: context: {session-name} work session
@@ -319,7 +244,7 @@ Merge all? [Y/n]
 If yes — merge all PRs atomically through the forge adapter:
 
 ```javascript
-// For each project PR returned from Step 10a's prCreate calls:
+// For each project PR returned from Step 9a's prCreate calls:
 await forge.prMerge({ id: projectPr.id, strategy: 'squash', deleteBranch: true });
 
 // Workspace PR:
@@ -336,108 +261,7 @@ cd "repos/{repo}" && git pull origin "{repo-branch}"
 cd "{main-workspace-root}" && git pull origin main
 ```
 
-**Step 10a.1: Tag the merge commit (release sessions only, project repos with `package.json`)**
-
-The next three sub-substeps run only when the session branch starts with `release/` — the convention for release sessions (e.g., `release/v0.15.0-beta.0`). For feature, bugfix, and chore sessions, skip 10a.1, 10a.2, and 10a.3 entirely; non-release sessions don't trigger publishes. Detection is purely by branch prefix.
-
-Derive the version tag from the branch name by stripping the `release/` prefix (so `release/v0.15.0-beta.0` yields `v0.15.0-beta.0`). For each project repo whose `package.json` declares a `version` field, verify that version matches the derived tag. The workspace repo is **never** tagged — only project repos with publishable `package.json` files get tagged, since the tag triggers `.github/workflows/publish.yml` in that project repo. If a project repo's `package.json` version doesn't match the release tag, skip that repo with a warning rather than failing the whole completion flow — the mismatch usually means `/release` was run against a different version than the branch name suggests, and the user needs to investigate before publishing.
-
-Before tagging, preflight against origin: if `v{version}` already exists remotely, surface the conflict to the user with three explicit recovery options — **Reuse** (skip to 10a.2 if the existing tag points at the right commit), **Replace** (`git push origin --delete v{version}` then re-run 10a.1), or **Investigate** (`forge.releaseView({ tag: 'v{version}', repo: '{org}/{repo}' })` — or `gh release view v{version}` as a manual fallback — to see what shipped). Do **not** silently force-push the tag; an existing tag means a published artifact, and overwriting it without confirmation can corrupt the npm registry's view of the release history.
-
-If the tag is absent on origin, tag the merge commit (HEAD on `{default-branch}` after the prior `git pull origin {default-branch}`) and push the tag. The tag push triggers `.github/workflows/publish.yml`.
-
-```bash
-# Detect: only run for release sessions.
-if [[ ! "$branch" =~ ^release/ ]]; then
-  # Not a release session — skip 10a.1, 10a.2, 10a.3.
-  return
-fi
-
-# Extract the version from the branch name (release/v{X} → v{X}).
-version_tag="${branch#release/}"   # e.g. "v0.15.0-beta.0"
-
-# For each project repo with a package.json containing a version field:
-for repo in {project-repos-with-package-json}; do
-  cd "repos/{repo}"
-
-  # Verify package.json version matches the tag.
-  pkg_version=$(node -p "require('./package.json').version")
-  expected_version="${version_tag#v}"
-  if [ "$pkg_version" != "$expected_version" ]; then
-    echo "Skipping {repo}: package.json version ($pkg_version) does not match release tag ($expected_version)."
-    continue
-  fi
-
-  # Preflight: does the tag already exist on origin?
-  if git ls-remote --exit-code origin "refs/tags/$version_tag" >/dev/null 2>&1; then
-    # Tag exists. Surface to user with three options:
-    # 1. Reuse — skip to 10a.2 if the existing tag points at the right commit.
-    # 2. Replace — `git push origin --delete $version_tag` then re-run 10a.1.
-    # 3. Investigate — call forge.releaseView({ tag: '$version_tag' }) — or
-    #    `gh release view $version_tag` as a manual fallback — to see what shipped.
-    # Do NOT silently force-push.
-    echo "Tag $version_tag already exists on origin. Aborting with recovery options."
-    return 1
-  fi
-
-  # Tag the merge commit (HEAD on default branch after the prior `git pull`).
-  git tag "$version_tag"
-  git push origin "$version_tag"   # Triggers .github/workflows/publish.yml
-done
-```
-
-**Step 10a.2: Watch the publish workflow (release sessions only)**
-
-For each project repo tagged in 10a.1, find and follow the `publish.yml` workflow run on GitHub. The workflow takes a moment to register against the new tag — poll up to 5 times with a 3-second backoff before giving up. Once the run is found, attach with `workflowRunWatch` so the maintainer sees progress live alongside the unified summary. The adapter's `exitStatus: true` makes the underlying `gh run watch --exit-status` exit non-zero on workflow failure; the adapter returns the exit code via `res.exitCode` instead of throwing, so a failure does **not** abort the rest of `/complete-work` — the maintainer still needs to see the unified summary, including the failure URL, to decide whether to rerun, redo the release, or roll the tag back. If no run registers within the retry window, log a warning with the manual investigation command and continue.
-
-```javascript
-import { createForge } from './.claude/scripts/forges/interface.mjs';
-import { readFileSync } from 'node:fs';
-
-const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
-const forge = createForge(ws.workspace?.forge);
-
-// Retry up to 5 times with 3-second backoff — the run takes a moment to register.
-let run = null;
-for (let i = 0; i < 5; i++) {
-  run = await forge.workflowRunFind({
-    workflow: 'publish.yml',
-    branch: versionTag,        // e.g. 'v0.15.0-beta.0'
-    repo: `${org}/${repo}`,
-    limit: 1,
-  });
-  if (run) break;
-  await new Promise(r => setTimeout(r, 3000));
-}
-
-if (!run) {
-  console.warn(`Warning: no publish workflow run found for ${versionTag} after 15s. Investigate via 'gh run list --workflow publish.yml --branch ${versionTag}'.`);
-} else {
-  const result = await forge.workflowRunWatch({
-    runId: run.runId,
-    repo: `${org}/${repo}`,
-    exitStatus: true,
-  });
-  // result.exitCode === 0 on success; non-zero on workflow failure (NOT thrown).
-  // result.exitCode and run.url feed into the unified summary in Step 10a.3.
-}
-```
-
-**Step 10a.3: Update the unified summary (release sessions only)**
-
-The unified summary block presented earlier in Step 10a already has a section per project repo. For release sessions, append a `PUBLISH` section per tagged project repo to the same summary — this goes inside the existing summary, not in a new location, so the maintainer sees one consolidated report covering merges, tags, and npm publishes:
-
-```
-PUBLISH ({repo}):
-  Tag: v{version}
-  Workflow: {run-url}
-  Status: success | failure
-  Published: {dist-tag}@{version} on npm
-```
-
-Pull `Status` from the watch result's `exitCode` (success when `result.exitCode === 0`, failure otherwise). Pull `Workflow` from `run.url` captured in 10a.2. Pull `Published: {dist-tag}@{version}` from the workflow's published-package output if available; if the workflow failed before publishing, omit the `Published:` line and rely on `Status: failure` plus the workflow URL to point the maintainer at the failure.
-
-#### Step 10b: Local / bare / other remotes — local merge flow
+#### Step 9b: Local / bare / other remotes — local merge flow
 
 No PRs are created — these remotes don't have a PR concept (or we don't have a client wired up for them). Present an adjusted summary:
 
@@ -447,13 +271,12 @@ Work session complete:
 PROJECT: {repo-1}  (local remote)
   Branch: {branch} → {repo-1-branch}
   Changes:
-    - {bullet points from release notes}
-  Release notes: branch-release-notes-{COMMIT_ID}.md
+    - {bullet points from the PR-body material}
 
 PROJECT: {repo-2}  (local remote)
   Branch: {branch} → {repo-2-branch}
   Changes:
-    - {bullet points from release notes}
+    - {bullet points from the PR-body material}
 
 WORKSPACE: {workspace-name}  (local remote)
   Branch: {branch} → main
@@ -483,7 +306,7 @@ For repos with no remote at all (user chose "keep local"): skip push entirely. T
 cd "repos/{repo}" && git merge --ff-only "{branch}"
 ```
 
-### Step 11: Close the linked issue on the tracker
+### Step 10: Close the linked issue on the tracker
 
 If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, close the linked issue via the adapter after all PRs have merged:
 
@@ -499,7 +322,7 @@ if (ws.workspace?.tracker) {
     'Merged PRs:',
     ...mergedPrs.map(p => `- ${p.repo}: ${p.url}`),
     '',
-    releaseSummary, // 1-3 sentence synthesis of what shipped, drawn from release notes
+    releaseSummary, // 1-3 sentence synthesis of what shipped, drawn from the session tracker
   ].join('\n');
   await tracker.closeIssue(workItem, { comment });
 }
@@ -507,9 +330,9 @@ if (ws.workspace?.tracker) {
 
 If `workItem:` is unset, skip the close — this was a blank session.
 
-If the close call fails (tracker unreachable, auth expired), report the error in the unified summary but do not block Step 12 cleanup. The issue can be closed manually via the GitHub UI; no data is at risk.
+If the close call fails (tracker unreachable, auth expired), report the error in the unified summary but do not block Step 11 cleanup. The issue can be closed manually via the GitHub UI; no data is at risk.
 
-### Step 12: Cleanup
+### Step 11: Cleanup
 
 Run the cleanup helper script from the main workspace root:
 ```bash
@@ -521,7 +344,7 @@ The script tears down in the **mandatory** order:
 2. Remove the workspace worktree from the workspace repo
 3. `git worktree prune` on each project repo (belt-and-suspenders for orphan records)
 4. Delete local branches in all repos
-5. `rm -rf work-sessions/{session-name}/` — the tracker, specs, plans, and any local-only artifacts vanish. Their content was already archived into release notes in Step 6.
+5. `rm -rf work-sessions/{session-name}/` — the tracker, specs, plans, and any local-only artifacts vanish. Anything worth preserving was promoted into `workspace-context/` in Step 6.
 
 Workspace-first removal silently deletes the nested project worktrees' `.git` files and leaves orphan worktree records in the project repos. The script enforces the safe order.
 
@@ -542,19 +365,19 @@ Ask: "These changes weren't part of a formal work session. What do you want to d
 
 ## Task completion (session model v2)
 
-Reached from Step 1 when detection says `model: task`. The state is the branch, the chat record's task entries, and the linked issue — there is no session folder and no `session.md`. This chat normally runs at the workspace root (the launcher) but may be running inside one of the worktrees; either way, every input comes from the detect result, never from cwd. Run `cd "{launcher-root}"` first — steps 2–6 and every relative path in them are anchored there:
+Reached from Step 1 when detection says `model: task`. The state is the branch, the chat record's task entries, and the linked issue — there is no session folder and no `session.md`. This chat normally runs at the workspace root (the launcher) but may be running inside one of the worktrees; either way, every input comes from the detect result, never from cwd. Run `cd "{launcher-root}"` first — steps 2–5 and every relative path in them are anchored there:
 
 - `{chat}` — the `Chat record:` line injected by the SessionStart hook (the same value Step 1 passed as `--chat`)
 - `{tasks}` — the detect result's task entries from the chat record, each carrying `{workItem}`, `{branch}`, `{repo}`; `repo: "."` is the workspace repo itself. When detection came from cwd alone (`source: 'worktree'`, no chat record entry — e.g. a no-tracker task) there are no task entries: take `{repo}` and `{branch}` from the detect result itself and treat `{workItem}` as absent
 - `{worktree}` — `{launcher-root}/repos/{repo}/.claude/worktrees/{slug}` for a project repo, or `{launcher-root}/.claude/worktrees/{slug}` for the workspace repo (`.`), where `{slug}` is the branch with `/` replaced by `-`
-- `{workspace-worktree}` — `{launcher-root}/.claude/worktrees/{slug}`: the workspace repo's own task worktree, present when the task includes `.` (Claude Code's native worktree location — the two converge on it)
+- `{workspace-worktree}` — `{launcher-root}/.claude/worktrees/{slug}`: the workspace repo's own task worktree, created in step 2 only when drawer items are promoted (Claude Code's native worktree location — the two converge on it)
 - `{defaultBranch}` — `workspace.json` → `repos.{repo}.branch`, default `main`; for `.` it is the workspace origin's HEAD with `main` as the fallback — exactly what `task-worktree.mjs`'s `defaultBranchFor` resolves
 
 If several tasks are open, ask the user which one to complete — group by branch; a multi-repo task is several entries sharing a branch — and complete one branch at a time.
 
 0. **Pre-flight: the worktrees must be clean.** For each `{worktree}` of the chosen task, `git -C "{worktree}" status --porcelain` must be empty. If it is not, stop here — before the rebase — and ask the user to commit or discard: rebasing over uncommitted work silently invalidates it.
 
-1. **Rebase each task worktree onto `origin/{defaultBranch}`** (`git -C "{worktree}" fetch origin`, then `git -C "{worktree}" rebase "origin/{defaultBranch}"`). Freshness first: the PR in step 4 must describe the branch as it will merge. If conflicts arise, STOP and present them — do not auto-resolve.
+1. **Rebase each task worktree onto `origin/{defaultBranch}`** (`git -C "{worktree}" fetch origin`, then `git -C "{worktree}" rebase "origin/{defaultBranch}"`). Freshness first: the PR in step 3 must describe the branch as it will merge. If conflicts arise, STOP and present them — do not auto-resolve.
 
 2. **Route durable thinking.** List anything in the chat drawer `{launcher-root}/workspace-scratchpad/chats/{chat}/` and ask which items should graduate into `workspace-context/`. If nothing is chosen, skip this step — no `.` worktree is needed yet. Do NOT invoke `/promote`: it writes relative to cwd and commits per item, which at the launcher lands on the default branch — exactly the hole this flow closes, and it does not know about drawer items. For the chosen items, first create the workspace worktree on the task's branch and record it alongside the project entries:
 
@@ -573,22 +396,13 @@ If several tasks are open, ask the user which one to complete — group by branc
 
    The drawer is per-chat, so it survives task teardown — but it is machine-local and backed up nowhere, and this review, with the work fresh in mind, is the moment to decide what graduates. Items left behind are not lost, only unreviewed.
 
-3. **Release notes.** If `workspace.publishes` is not set in `workspace.json`, skip this step and say it was skipped. If it is `true`: for each **project** repo of the task with commits beyond its base, write `{releaseNotesDir}/unreleased/{repo}/branch-release-notes-{COMMIT_ID}.md` inside the workspace worktree — `{COMMIT_ID}` is that project repo's short HEAD, and `{releaseNotesDir}` is `workspace.json` → `workspace.releaseNotesDir` (default `workspace-context/release-notes` when absent). Ensure the `.` worktree exists first (step 2 shows the create-and-record commands), but only when at least one note will actually be written. Follow the note format and synthesis guidance of Step 6 of the session flow above: frontmatter `branch`, `repo`, `type`, `author`, `date`, then a coherent narrative drawn from the commits and the linked issue. Stage and commit inside the workspace worktree, and only when something is staged:
-
-   ```bash
-   git -C "{workspace-worktree}" add "{releaseNotesDir}/unreleased/"
-   git -C "{workspace-worktree}" diff --cached --quiet || git -C "{workspace-worktree}" commit -m "docs: add release notes for {branch}"
-   ```
-
-   A project repo with no commits beyond its base gets no note.
-
-4. **Check each origin, push, then open one PR per repo through the forge adapter** — never `gh pr` directly. The workspace repo (`.`) is handled exactly like a project repo: same origin check and push in `{workspace-worktree}`, same PR, with `wsForge` — the per-repo forge constructed from the workspace worktree's own origin — yielding `wsPr`. First, drop empty branches: for every repo of the task, `.` included when its worktree exists, run
+3. **Check each origin, push, then open one PR per repo through the forge adapter** — never `gh pr` directly. The workspace repo (`.`) is handled exactly like a project repo: same origin check and push in `{workspace-worktree}`, same PR, with `wsForge` — the per-repo forge constructed from the workspace worktree's own origin — yielding `wsPr`. First, drop empty branches: for every repo of the task, `.` included when its worktree exists, run
 
    ```bash
    git -C "{worktree}" rev-list --count "origin/{defaultBranch}..{branch}"
    ```
 
-   and if the count is `0`, skip push and PR for that repo entirely — it is torn down in step 6 like any other. A workspace branch that collected no promotions and no notes gets no PR. Then, in order: the origin decides whether this path can proceed at all (nothing is pushed to a repo this path cannot finish), and the forge is constructed per repo so it aims at the worktree's own remote, never the launcher's.
+   and if the count is `0`, skip push and PR for that repo entirely — it is torn down in step 5 like any other. A workspace branch that collected no promotions gets no PR. Then, in order: the origin decides whether this path can proceed at all (nothing is pushed to a repo this path cannot finish), and the forge is constructed per repo so it aims at the worktree's own remote, never the launcher's.
 
    ```bash
    git -C "{worktree}" remote get-url origin   # → parse {owner}/{name} FIRST
@@ -629,11 +443,11 @@ If several tasks are open, ask the user which one to complete — group by branc
     // git -C "{worktree}" log "origin/{defaultBranch}..HEAD" --oneline,
     // then a blank line and `Closes {workItem}` when a workItem exists.
     const pr = await forge.prCreate({ title, body, head: '{branch}', base: '{defaultBranch}' });
-    // The workspace PR, when step 4 did not skip "." as empty:
+    // The workspace PR, when step 3 did not skip "." as empty:
     const wsPr = await wsForge.prCreate({ title: `context: {branch} task`, body: workspacePrBody, head: '{branch}', base: '{defaultBranch}' });
     ```
 
-5. **Ask before merging, then merge, then close the linked issue.** Present a summary per repo that got a PR — the workspace repo included — and ask once:
+4. **Ask before merging, then merge, then close the linked issue.** Present a summary per repo that got a PR — the workspace repo included — and ask once:
 
    ```
    Task complete:
@@ -646,14 +460,13 @@ If several tasks are open, ask the user which one to complete — group by branc
    WORKSPACE: {ws-owner}/{ws-name}   # from the workspace worktree's origin
      PR: {ws-pr.url}
      Branch: {branch} → {defaultBranch}
-     Notes: {releaseNotesDir}/unreleased/{repo}/… for each project repo
 
    Merge all? [Y/n]
    ```
 
    On "n", stop: the PRs stay open and the worktrees, branches, and record entries stay in place — say so.
 
-   On "y", merge the project PRs first, each through the same per-repo forge. **If any project merge fails, do NOT merge the workspace PR** — stop, report the failure, and leave every unmerged PR open for retry: the notes on the workspace branch describe the project merges and must never merge ahead of them. Merge must also precede close, because an issue closed before its PR merges points at work that never landed.
+   On "y", merge the project PRs first, each through the same per-repo forge. **If any project merge fails, do NOT merge the workspace PR** — stop, report the failure, and leave every unmerged PR open for retry: the workspace branch's promoted context describes the project merges and must never merge ahead of them. Merge must also precede close, because an issue closed before its PR merges points at work that never landed.
 
    ```javascript
    for (const pr of projectPrs) {
@@ -678,7 +491,7 @@ If several tasks are open, ask the user which one to complete — group by branc
 
    Without a `{workItem}` (no tracker, or the task was never recorded), skip the close and say so.
 
-6. **Tear down only what finished — worktree first, then the record entry**, and only for a repo whose PR merged in step 5, or whose branch was empty and never pushed in step 4; the workspace repo included (`--repo "."`). If a repo's push, PR, or merge failed, or the user declined the merge, leave that repo's worktree, branch, and record entry exactly in place and say so: `--delete-branch` would otherwise `branch -D` commits that exist nowhere but the local worktree. For `.` the script never deletes the branch checked out at the launcher root.
+5. **Tear down only what finished — worktree first, then the record entry**, and only for a repo whose PR merged in step 4, or whose branch was empty and never pushed in step 3; the workspace repo included (`--repo "."`). If a repo's push, PR, or merge failed, or the user declined the merge, leave that repo's worktree, branch, and record entry exactly in place and say so: `--delete-branch` would otherwise `branch -D` commits that exist nowhere but the local worktree. For `.` the script never deletes the branch checked out at the launcher root.
 
    ```bash
    node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --remove --repo "{repo}" --branch "{branch}" --delete-branch
@@ -687,12 +500,9 @@ If several tasks are open, ask the user which one to complete — group by branc
 
    Skip the `--remove-task` line when there is no record entry (no `{workItem}`). Worktree first because a refusal (dirty worktree, slug collision) then leaves both the worktree and its record entry in place — nothing orphaned, safe to retry. `--delete-branch` also removes the local branch: the forge's `deleteBranch` removed only the remote one, so post-merge teardown passes it to clean the local clone; this is the only step that ever passes it. Never pass `--force` without asking the user.
 
-The release-branch publish sub-steps (10a.1–10a.3) are out of scope for the task path in this stage.
-
 ## Notes
-- Branch release notes live in the WORKSPACE repo at `{releaseNotesDir}/unreleased/{repo-name}/` (resolved from `workspace.json` → `workspace.releaseNotesDir`, default `workspace-context/release-notes`) — never in project repos. Project repos only ever see code commits and (at release time) `CHANGELOG.md` entries written by `/release`.
-- The session tracker's body is the primary source for release note synthesis — it captures the full session history alongside specs and plans
+- The session tracker's body is the primary source for PR-body synthesis — it captures the full session history alongside specs and plans
 - All repos get PRed and merged together — one approval for all
-- Version bumps happen in `/release`, not `/complete-work` — this avoids version drift when multiple feature branches land between releases
+- Version bumps, tags, and publish happen in `/release`, not `/complete-work` — this avoids version drift when multiple feature branches land between releases
 - The teardown order is mandatory: project worktrees first, then workspace worktree, then prune, then delete the session folder
-- Context consumption, cleanup, and auto-committing release notes are intentional workflow behavior — these bypass normal commit conventions by design
+- Context promotion and cleanup are intentional workflow behavior — they bypass normal commit conventions by design

@@ -232,6 +232,66 @@ console.log('# releaseView');
   else fail(`releaseView not-found wrong: ${threw?.message ?? 'no throw'}`);
 }
 
+console.log('# releaseCreate');
+
+// Builds the right argv with all options and parses the URL from stdout.
+{
+  const spawnFn = buildSpawn({
+    'remote get-url origin': GH_ORIGIN,
+    'release create v1.2.3 --repo foo/bar --target abc123 --title Release 1.2.3 --generate-notes':
+      'https://github.com/foo/bar/releases/tag/v1.2.3\n',
+  });
+  const forge = createForge({ type: 'github' }, { spawnFn });
+  const rel = await forge.releaseCreate({ tag: 'v1.2.3', target: 'abc123', title: 'Release 1.2.3' });
+  if (rel.tag === 'v1.2.3' && rel.url === 'https://github.com/foo/bar/releases/tag/v1.2.3') ok();
+  else fail(`releaseCreate full wrong: ${JSON.stringify(rel)}`);
+}
+
+// Without target/title/generateNotes the argv is minimal: repo + tag only.
+{
+  const spawnFn = buildSpawn({
+    'remote get-url origin': GH_ORIGIN,
+    'release create v0.1.0 --repo foo/bar': 'https://github.com/foo/bar/releases/tag/v0.1.0\n',
+  });
+  const forge = createForge({ type: 'github' }, { spawnFn });
+  const rel = await forge.releaseCreate({ tag: 'v0.1.0', generateNotes: false });
+  if (rel.url === 'https://github.com/foo/bar/releases/tag/v0.1.0') ok();
+  else fail(`releaseCreate minimal wrong: ${JSON.stringify(rel)}`);
+  const call = spawnFn.calls.find(c => c.args.includes('create'));
+  if (call.args.includes('--generate-notes')) fail('releaseCreate passed --generate-notes despite generateNotes: false');
+  else ok();
+  if (call.args.includes('--target') || call.args.includes('--title')) fail('releaseCreate passed target/title when unset');
+  else ok();
+}
+
+// URL is the last stdout line (gh may print warnings first).
+{
+  const spawnFn = buildSpawn({
+    'remote get-url origin': GH_ORIGIN,
+    'release create v2.0.0 --repo foo/bar --generate-notes':
+      'warning: something verbose\nhttps://github.com/foo/bar/releases/tag/v2.0.0\n\n',
+  });
+  const forge = createForge({ type: 'github' }, { spawnFn });
+  const rel = await forge.releaseCreate({ tag: 'v2.0.0' });
+  if (rel.url === 'https://github.com/foo/bar/releases/tag/v2.0.0') ok();
+  else fail(`releaseCreate URL parse wrong: ${JSON.stringify(rel)}`);
+}
+
+// Non-zero exit throws with stderr.
+{
+  const spawnFn = buildSpawn({
+    'remote get-url origin': GH_ORIGIN,
+    'release create v3.0.0 --repo foo/bar --generate-notes': () => ({
+      status: 1, stdout: '', stderr: 'tag already exists',
+    }),
+  });
+  const forge = createForge({ type: 'github' }, { spawnFn });
+  let threw = null;
+  try { await forge.releaseCreate({ tag: 'v3.0.0' }); } catch (e) { threw = e; }
+  if (threw && /tag already exists/.test(threw.message)) ok();
+  else fail(`releaseCreate failure wrong: ${threw?.message ?? 'no throw'}`);
+}
+
 console.log('# workflowRunFind');
 
 // Finds the most recent run for a workflow/branch, returns null when none.

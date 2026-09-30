@@ -10,7 +10,7 @@ All paths are relative to the workspace root. Two work lifecycles coexist, selec
 | `repos/{repo}/.claude/worktrees/{slug}/` | Task worktree for a project repo (`{slug}` = branch with `/` → `-`) | No |
 | `.claude/worktrees/{slug}/` | Task worktree for the workspace repo (`--repo .`) — Claude Code's native worktree location; the two converge | No |
 | `work-sessions/{name}/workspace/…` | Session lifecycle: workspace worktree, nested project worktrees at `workspace/repos/{repo}/`, `session.md` + artifacts (`design/plan/goal/research/crossref-*.md`) on top | Session branch |
-| `workspace-context/` | Team knowledge: `shared/` (ephemerals), `shared/locked/` (canonical truths), `team-member/{user}/` (per-user), `release-notes/` | Yes |
+| `workspace-context/` | Team knowledge: `shared/` (ephemerals), `shared/locked/` (canonical truths), `team-member/{user}/` (per-user) | Yes |
 | `workspace-context/index.md`, `canonical.md`, `team-member/{user}/index.md` | Auto-generated catalogs (`canonical.md` = verbatim `shared/locked/`; `.indexignore` excludes paths) — regenerate with `build-workspace-context.mjs`, never hand-edit | Yes |
 | `workspace-scratchpad/` | Machine-local, regenerable: session log, hook debug output, chat records `chats/{chat}.json`, chat drawers `chats/{chat}/` (task-lifecycle designs, plans, braindumps, research in progress) | No |
 | `CLAUDE.md`, `CLAUDE.local.md`, `.claude/` | Launcher prompt (imports `canonical.md` + `index.md`); per-user prompt; rules, agents, skills, hooks, scripts | All but `CLAUDE.local.md`, `settings.local.json`, `.claude/.active-session.json`, and `.claude/worktrees/` |
@@ -21,7 +21,7 @@ All paths are relative to the workspace root. Two work lifecycles coexist, selec
 |-------|------|------------------|-------------------|
 | Personal | `team-member/{user}/` | Per-user braindumps, handoffs, research | Default for `/braindump`, `/handoff`, `/aside` (session lifecycle / no drawer; task-lifecycle chats default to the chat drawer) |
 | Shared | `shared/` | Team-visible ephemerals | Explicit `--scope shared` or `/promote` |
-| Canonical | `shared/locked/` | Promoted truths — conventions, discipline, status | `/release` (or `/promote`, locked target) |
+| Canonical | `shared/locked/` | Promoted truths — conventions, discipline, status | `/promote` (locked target) |
 
 Canonical loads verbatim into every session (`CLAUDE.md` → `@workspace-context/canonical.md`); personal only for the active user (`CLAUDE.local.md`). Inflight work state (session tracker, chat drawer) never lives in `workspace-context/` — that is for knowledge that outlives any single effort.
 
@@ -51,7 +51,6 @@ Ephemeral files under `shared/` and `team-member/{user}/` carry a type prefix:
 | `/handoff` | `handoff_{topic}.md` |
 | `/aside` (full) / `--quick` | `research_{topic}.md` / `braindump_{topic}.md` (`variant: aside`) |
 | `/promote` | preserves source prefix |
-| `/release` | strips the prefix when locking — `shared/locked/` uses bare names |
 
 Local-only drafts add a `local-only-` prefix to stay gitignored until promoted.
 

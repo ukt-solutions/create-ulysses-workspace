@@ -61,7 +61,6 @@ function makeFixture(sessionName = 'test', branch = 'bugfix/test', repoNames = [
       name: 'fixture',
       scratchpadDir: 'workspace-scratchpad',
       workSessionsDir: 'work-sessions',
-      releaseNotesDir: 'workspace-context/release-notes',
     },
     repos: Object.fromEntries(repoNames.map(n => [n, { remote: 'none', branch: 'main' }])),
   }, null, 2));
