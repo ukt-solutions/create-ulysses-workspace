@@ -19,11 +19,11 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Upgrade npm to latest (OIDC trusted publishing requires npm >= 11.5.1)
-        run: npm install -g npm@latest
+      - name: Upgrade npm to 11.x (OIDC trusted publishing requires npm >= 11.5.1; pinned so a new npm major cannot break publishing)
+        run: npm install -g npm@^11.5.1
 
       - name: Verify tag matches package.json version
         run: |
