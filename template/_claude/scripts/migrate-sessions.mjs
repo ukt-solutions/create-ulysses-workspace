@@ -7,13 +7,32 @@
 // some still live. This script is the mechanical half of draining them:
 //
 //   --inventory   read-only evidence + a proposal (ACTIVE / ABANDONED /
-//                 MERGEABLE / UNKNOWN / REMOVE_SHELL / LEAVE) per session
+//                 MERGEABLE / UNKNOWN / REMOVE_SHELL / LEAVE) per session,
+//                 listing every worktree's remotes by name, fetch URL, and
+//                 (when it differs) push URL(s)
 //   --backup      tag each tip the session holds that no remote branch or
-//                 tag already points at, push the tag, verify it
+//                 tag already points at — LOCAL tags only, nothing pushed
 //                 (--dry-run reports the plan with no side effects)
+//   --backup --remote
+//                 push mode: pushes only where explicitly allowed, via
+//                 --remote-allow <repo>=<remote> (repeatable; "." is the
+//                 workspace repo) or --remote-allow-all. With neither it
+//                 pushes nothing, lists the exact URL(s) every repo would
+//                 push to, and exits non-zero — a plan, not a refusal of
+//                 the whole idea. A repo's resolved remote can be anyone's
+//                 (a third-party upstream counts as "origin" too), so an
+//                 unallowed push is never a guess the script gets to make.
+//                 Pushing approves and verifies against the PUSH URL(s)
+//                 (remote.<name>.pushurl, url.*.pushInsteadOf — resolved
+//                 by git itself), never the fetch URL: a remote whose push
+//                 targets differ from its fetch URL needs an explicit
+//                 --remote-allow entry naming it, so no approval is ever
+//                 granted against a URL the push does not go to.
 //   --archive     move the session out of the active lifecycle — the whole
 //                 folder is renamed into {sessions}/.archived/ and git's
-//                 worktree links are repaired to follow it
+//                 worktree links are repaired to follow it. Refuses when a
+//                 worktree holds uncommitted changes (an edited session.md
+//                 counts) unless --allow-uncommitted says leave them be.
 //   --enable-task-model
 //                 flip workspace.sessionModel to "task" (accepts a task
 //                 worktree root — the one mode allowed off the launcher)
@@ -287,6 +306,57 @@ function remotesOf(gitFn, path) {
   return okLines(res);
 }
 
+// The URL of every configured remote, read from local config. This never
+// touches the network, so it answers even when a remote is unreachable or
+// has never been fetched — the one fact that stops "origin" from being an
+// anonymous label. A repo whose origin is a third-party upstream shows
+// that URL here, whatever ls-remote later says about the branch.
+function remoteUrlsOf(gitFn, path, remotes) {
+  const urls = {};
+  for (const remote of remotes) {
+    const res = run(gitFn, path, ['remote', 'get-url', remote]);
+    urls[remote] = res.status === 0 ? String(res.stdout).trim() : null;
+  }
+  return urls;
+}
+
+// The URL of one remote, or null when it cannot be read (fail closed —
+// a push plan that cannot name where it would push is not a plan).
+function remoteUrlOf(gitFn, repoDir, remote) {
+  if (!remote) return null;
+  const res = run(gitFn, repoDir, ['remote', 'get-url', remote]);
+  return res.status === 0 ? String(res.stdout).trim() : null;
+}
+
+// Where `git push <remote>` would ACTUALLY send, resolved by git itself:
+// every configured pushurl (it is multi-valued — a push goes to each),
+// falling back to the fetch URL, with url.*.pushInsteadOf rewriting
+// applied (`remote get-url` expands insteadOf/pushInsteadOf). Offline,
+// like the fetch URL. The operator reads the fetch URL as "the remote",
+// but their approval lands on the push URL(s) — a remote whose push
+// targets differ from its fetch URL must be approved against the push
+// targets, never against the fetch URL it will not go to.
+function pushUrlsFor(gitFn, repoDir, remote) {
+  if (!remote) return [];
+  const res = run(gitFn, repoDir, ['remote', 'get-url', '--push', '--all', remote]);
+  return res.status === 0 ? okLines(res).filter(Boolean) : null;
+}
+
+function pushUrlsOf(gitFn, path, remotes) {
+  const urls = {};
+  for (const remote of remotes) {
+    urls[remote] = pushUrlsFor(gitFn, path, remote);
+  }
+  return urls;
+}
+
+// Do this push target(s) say the same thing as the fetch URL the operator
+// sees? Anything else — a decoy pushurl, a pushInsteadOf rewrite, several
+// pushurls — means the fetch URL is not where a push lands.
+function pushMatchesFetch(fetchUrl, pushUrls) {
+  return fetchUrl != null && pushUrls != null && pushUrls.length === 1 && pushUrls[0] === fetchUrl;
+}
+
 // Does {branch} exist on {remote}, and at what commit? Local tracking
 // refs prove nothing (they are stale the moment anything fetches), so
 // the remote is asked directly. Timeouts and failures degrade to
@@ -304,44 +374,53 @@ function lsRemoteBranch(gitFn, cwd, remote, branch) {
 //
 // For each remote holding the branch, record how the local tip relates:
 // same / local-ahead / local-behind / diverged (with counts) when the
-// remote commit is known locally, not-fetched when it is not. This is
-// what tells the operator "finishing needs a force-push decision" BEFORE
-// they choose Finish, rather than after /complete-work's push bounces.
-function remoteStatesFor(gitFn, wtPath, branch, head) {
+// remote commit is known locally, not-fetched when it is not. Every entry
+// carries the remote's URL (from local config, so it survives an
+// unreachable or never-fetched remote). This is what tells the operator
+// "finishing needs a force-push decision" BEFORE they choose Finish,
+// rather than after /complete-work's push bounces. A detached worktree
+// still lists its remotes — with state 'no-branch', never as "no remotes".
+function remoteStatesFor(gitFn, wtPath, branch, head, remotesList, urls) {
   const out = {};
-  if (!branch) return out;
-  for (const remote of remotesOf(gitFn, wtPath)) {
+  if (!branch) {
+    for (const remote of remotesList) {
+      out[remote] = { url: urls[remote] ?? null, exists: false, sha: null, state: 'no-branch' };
+    }
+    return out;
+  }
+  for (const remote of remotesList) {
+    const url = urls[remote] ?? null;
     const probe = lsRemoteBranch(gitFn, wtPath, remote, branch);
     if (probe.exists === 'unknown') {
-      out[remote] = { exists: false, sha: null, state: 'unknown' };
+      out[remote] = { url, exists: false, sha: null, state: 'unknown' };
       continue;
     }
     if (!probe.exists) {
-      out[remote] = { exists: false, sha: null, state: 'none' };
+      out[remote] = { url, exists: false, sha: null, state: 'none' };
       continue;
     }
     const { sha } = probe;
     if (sha === head) {
-      out[remote] = { exists: true, sha, state: 'same' };
+      out[remote] = { url, exists: true, sha, state: 'same' };
       continue;
     }
     const known = run(gitFn, wtPath, ['cat-file', '-e', `${sha}^{commit}`]).status === 0;
     if (!known) {
-      out[remote] = { exists: true, sha, state: 'not-fetched' };
+      out[remote] = { url, exists: true, sha, state: 'not-fetched' };
       continue;
     }
     const lr = run(gitFn, wtPath, ['rev-list', '--left-right', '--count', `${sha}...HEAD`]);
     if (lr.status !== 0) {
-      out[remote] = { exists: true, sha, state: 'unknown' };
+      out[remote] = { url, exists: true, sha, state: 'unknown' };
       continue;
     }
     const counts = String(lr.stdout).trim().split(/\s+/).map(Number);
     const remoteOnly = counts[0]; // left side: commits only the remote has
     const localOnly = counts[1]; // right side: commits only HEAD has
-    if (remoteOnly === 0 && localOnly === 0) out[remote] = { exists: true, sha, state: 'same' };
-    else if (localOnly > 0 && remoteOnly === 0) out[remote] = { exists: true, sha, state: 'local-ahead', ahead: localOnly };
-    else if (localOnly === 0 && remoteOnly > 0) out[remote] = { exists: true, sha, state: 'local-behind', behind: remoteOnly };
-    else out[remote] = { exists: true, sha, state: 'diverged', ahead: localOnly, behind: remoteOnly };
+    if (remoteOnly === 0 && localOnly === 0) out[remote] = { url, exists: true, sha, state: 'same' };
+    else if (localOnly > 0 && remoteOnly === 0) out[remote] = { url, exists: true, sha, state: 'local-ahead', ahead: localOnly };
+    else if (localOnly === 0 && remoteOnly > 0) out[remote] = { url, exists: true, sha, state: 'local-behind', behind: remoteOnly };
+    else out[remote] = { url, exists: true, sha, state: 'diverged', ahead: localOnly, behind: remoteOnly };
   }
   return out;
 }
@@ -489,7 +568,10 @@ function inspectWorktree(gitFn, rootDir, kind, repo, wtPath) {
     info.contentFiles = countContentFiles(gitFn, wtPath, defaultBranch);
     info.dirtyContent = dirtyRecords.filter((r) => !isSessionArtifact(r.path)).length;
   }
-  info.remotes = remoteStatesFor(gitFn, wtPath, branch, head);
+  const remotesList = remotesOf(gitFn, wtPath);
+  info.remoteUrls = remoteUrlsOf(gitFn, wtPath, remotesList);
+  info.remotePushUrls = pushUrlsOf(gitFn, wtPath, remotesList);
+  info.remotes = remoteStatesFor(gitFn, wtPath, branch, head, remotesList, info.remoteUrls);
   info.backedBy = backedByRemote(info.remotes);
   return info;
 }
@@ -1022,13 +1104,15 @@ function peeledTagSha(gitFn, cwd, tag) {
   return res.status === 0 ? String(res.stdout).trim() : null;
 }
 
-// Does {tag} exist on {remote} at exactly {commit}? Deliberately no
-// refspec pattern: a pattern filters out the peeled `^{}` line (the
-// tag object's sha is not the commit's), and the peeled line is exactly
-// what "at this commit" needs. An annotated tag answers via the peel; a
-// lightweight tag's only line already is the commit.
-function tagOnRemoteAt(gitFn, cwd, remote, tag, commit) {
-  const res = gitFn('git', ['-C', cwd, 'ls-remote', '--tags', remote], netOpts(LS_REMOTE_TIMEOUT_MS));
+// Does {tag} exist at exactly {commit} on one specific URL — the push
+// URL, which is where the push actually landed, not a remote name whose
+// fetch URL may point elsewhere? Deliberately no refspec pattern: a
+// pattern filters out the peeled `^{}` line (the tag object's sha is not
+// the commit's), and the peeled line is exactly what "at this commit"
+// needs. An annotated tag answers via the peel; a lightweight tag's only
+// line already is the commit.
+function tagHeldAtUrl(gitFn, cwd, url, tag, commit) {
+  const res = gitFn('git', ['-C', cwd, 'ls-remote', '--tags', url], netOpts(LS_REMOTE_TIMEOUT_MS));
   if (res.error || res.status !== 0) return false;
   const peeledRef = `refs/tags/${tag}^{}`;
   const plainRef = `refs/tags/${tag}`;
@@ -1041,15 +1125,20 @@ function tagOnRemoteAt(gitFn, cwd, remote, tag, commit) {
   return plainSha === commit;
 }
 
-// S4: where a backup tag is pushed — branch.<b>.pushRemote, then
-// remote.pushDefault, then branch.<b>.remote, then origin, then the
-// first configured remote. An explicit --remote overrides everything.
-function resolvePushRemote(gitFn, repoDir, branch, override, remotes) {
-  if (override) {
-    return remotes.includes(override)
-      ? { remote: override }
-      : { remote: null, reason: `--remote ${override} is not configured for this repo (has: ${remotes.join(', ') || 'none'})` };
-  }
+// A pushed tag counts as backed up only where the push really went: every
+// push URL of the remote must hold it at the commit (`git push` sends to
+// each pushurl).
+function tagOnPushUrls(gitFn, cwd, pushUrls, tag, commit) {
+  if (!pushUrls || pushUrls.length === 0) return false;
+  return pushUrls.every((u) => tagHeldAtUrl(gitFn, cwd, u, tag, commit));
+}
+
+// S4: where a backup tag would be pushed — branch.<b>.pushRemote, then
+// remote.pushDefault, then branch.<b>.remote, then origin, then the first
+// configured remote. What this resolves is only a CANDIDATE: push mode
+// acts on it solely where --remote-allow names it or --remote-allow-all
+// blesses every repo.
+function resolvePushRemote(gitFn, repoDir, branch, remotes) {
   const cfg = (key) => {
     const res = run(gitFn, repoDir, ['config', '--get', key]);
     return res.status === 0 ? String(res.stdout).trim() : null;
@@ -1069,16 +1158,40 @@ function resolvePushRemote(gitFn, repoDir, branch, override, remotes) {
 /**
  * Back up every tip the session holds that no qualifying remote already
  * has as a branch or tag: an annotated, session-scoped `drain/{session}/…`
- * tag at the tip, pushed to the resolved remote and verified there — an
- * off-machine copy of the session's commits before it is archived, and
- * the thing to check before the operator ever deletes an archive. With dryRun the
- * plan is reported per tip (remote, tag, already-safe) with no side
- * effects — backup is a decision, and the operator sees exactly what
- * would be pushed where before saying yes. Idempotent — an existing tag
- * at the same commit is fine; at a different commit (the branch moved)
- * the operator must decide, so it refuses.
+ * tag at the tip. Local tags only — a backup run never pushes on its own.
+ *
+ * Push mode (`remote: true`, CLI `--backup --remote`) adds pushing, and
+ * pushing is allowed nowhere by default: a `remoteAllow` entry
+ * (`repo=remote`, "." for the workspace repo) permits one repo at a time,
+ * `remoteAllowAll` permits every repo's resolved remote (it wins wherever
+ * both are given — an entry still pins which remote that one repo uses).
+ * With neither, the run lists the exact URL(s) every repo would push to
+ * and exits non-zero — nothing tagged, nothing pushed, a plan handed back
+ * for per-repo decisions. A resolved remote is only a candidate: "origin"
+ * can be a third-party upstream the operator must never push backup tags
+ * to, and the URL (not the name) is what tells them apart.
+ *
+ * Every push decision is made against the PUSH URL(s) — resolved by git
+ * via `remote get-url --push --all`, so pushurl and url.*.pushInsteadOf
+ * are included — because that is where `git push` sends. A remote whose
+ * push URL(s) differ from its fetch URL is refused under allow-all: only
+ * an explicit `--remote-allow <repo>=<remote>` blesses it, and the refusal
+ * prints the push targets, so the approval is always against where the
+ * push actually goes. After pushing, the tag is verified on every push
+ * URL. Where pushing is not allowed, the local tag IS the backup.
+ * Idempotent — an existing tag at the same commit is fine; at a different
+ * commit (the branch moved) the operator must decide, so it refuses. With
+ * dryRun the plan is reported per tip with no side effects.
  */
-function backupSession(root, { session, remote: remoteOverride = null, dryRun = false, gitFn = spawnSync, cwd = process.cwd() } = {}) {
+function backupSession(root, {
+  session,
+  remote = false,
+  remoteAllow = [],
+  remoteAllowAll = false,
+  dryRun = false,
+  gitFn = spawnSync,
+  cwd = process.cwd(),
+} = {}) {
   const rootDir = resolveRoot(root);
   if (!isSessionSegment(session)) {
     throw new Error(`session name must be a single path segment, got: ${session}`);
@@ -1086,6 +1199,20 @@ function backupSession(root, { session, remote: remoteOverride = null, dryRun = 
   const sessionsDir = sessionsDirOf(rootDir);
   const { folder, refusal } = sessionFolderGuards(rootDir, sessionsDir, session, cwd);
   if (refusal) return refusal;
+
+  // --remote-allow entries parse before anything else acts: repo ("." is
+  // the workspace repo) = remote name, both single clean segments.
+  const allowMap = new Map();
+  for (const entry of remoteAllow) {
+    const eq = entry.indexOf('=');
+    const repo = eq > 0 ? entry.slice(0, eq) : null;
+    const remoteName = eq >= 0 && eq < entry.length - 1 ? entry.slice(eq + 1) : null;
+    const shaped = repo && (repo === WORKSPACE_REPO || isRepoSegment(repo)) && remoteName && !/\s/.test(remoteName);
+    if (!shaped) {
+      return { refused: true, reasons: [`--remote-allow expects <repo>=<remote> ("." is the workspace repo), got: ${entry}`] };
+    }
+    allowMap.set(repo, remoteName);
+  }
 
   const del = sessionTips(gitFn, rootDir, folder);
   const reasons = [...validateTrackerShape(gitFn, rootDir, del)];
@@ -1097,81 +1224,198 @@ function backupSession(root, { session, remote: remoteOverride = null, dryRun = 
   const planned = [];
   if (reasons.length === 0 && existsSync(join(folder, 'workspace', '.git'))) {
     const safety = makeSafety(gitFn, rootDir);
-    for (const tip of del.tips) {
-      const verdict = tipSafety(safety, tip.repoDir, tip.sha);
-      if (verdict.safe) {
-        // Already provably on a qualifying remote — pushing a tag for it
-        // would only add noise (and possibly land in a public repo).
-        skipped.push({ repo: tip.repo, ref: tip.ref ?? 'HEAD', commit: tip.sha, safeOn: verdict.remote, safeRef: verdict.ref });
+
+    // An allow entry must name a repo this session holds and a remote
+    // that repo actually configures — both checked before anything is
+    // tagged, so a typo refuses the whole run instead of silently
+    // narrowing the push.
+    const knownRepos = [...new Set(del.tips.map((t) => t.repo))];
+    for (const [repo, remoteName] of allowMap) {
+      if (!knownRepos.includes(repo)) {
+        reasons.push(`--remote-allow names repo "${repo}", which this session does not hold (${knownRepos.join(', ') || 'none'})`);
         continue;
       }
-      const shortSha = tip.sha.slice(0, 10);
-      const tagName = tip.ref
-        ? `drain/${session}/${slugForBranch(tip.ref)}`
-        : `drain/${session}/${tip.kind === 'workspace' ? 'workspace' : tip.repo}-detached-${shortSha}`;
-      const tagDir = tip.repoDir;
-      const remotes = safety.remotes(tagDir);
-      if (remotes.length === 0) {
-        reasons.push(`${repoLabel(tip)} has no remote to push the backup tag ${tagName} to — decide manually where to back up ${tip.ref ?? shortSha}`);
-        continue;
+      const tip = del.tips.find((t) => t.repo === repo);
+      const remotes = safety.remotes(tip.repoDir);
+      if (!remotes.includes(remoteName)) {
+        reasons.push(`--remote-allow names remote "${remoteName}" for ${repoLabel(tip)}, which is not configured (has: ${remotes.join(', ') || 'none'})`);
       }
-      const { remote, reason } = resolvePushRemote(gitFn, tagDir, tip.ref, remoteOverride, remotes);
-      if (!remote) {
-        reasons.push(reason || `${repoLabel(tip)}: no push remote resolves — decide manually`);
-        continue;
-      }
-      const existing = peeledTagSha(gitFn, tagDir, tagName);
-      if (existing && existing !== tip.sha) {
-        reasons.push(`${repoLabel(tip)}: tag ${tagName} already points at ${existing.slice(0, 10)}…, not the current tip (${shortSha}…); the branch moved — decide manually`);
-        continue;
-      }
-      if (dryRun) {
-        planned.push({
-          repo: tip.repo,
-          branch: tip.ref,
-          detached: !tip.ref,
-          commit: tip.sha,
-          tag: tagName,
-          remote,
-          alreadySafe: false,
-          wouldCreate: !existing,
-        });
-        continue;
-      }
-      let createdThisRun = false;
-      if (!existing) {
-        const created = run(gitFn, tagDir, ['tag', '-a', tagName, '-m', `backup before draining session ${session}`, tip.sha]);
-        if (created.status !== 0) {
-          reasons.push(`${repoLabel(tip)}: git tag ${tagName} failed: ${String(created.stderr || '').trim()}`);
+    }
+
+    // Pass 1, no side effects: classify each tip, compute the tag it would
+    // get, and resolve where a push would land — the remote's PUSH URL(s)
+    // (where `git push` sends), alongside the fetch URL (what the operator
+    // reads as "the remote"). When they differ, only an explicit allow
+    // entry naming that remote may proceed: allow-all blesses fetch URLs
+    // it has shown, never a push target it has not.
+    const pending = [];
+    if (reasons.length === 0) {
+      for (const tip of del.tips) {
+        const verdict = tipSafety(safety, tip.repoDir, tip.sha);
+        if (verdict.safe) {
+          // Already provably on a qualifying remote — pushing a tag for it
+          // would only add noise (and possibly land in a public repo).
+          skipped.push({ repo: tip.repo, ref: tip.ref ?? 'HEAD', commit: tip.sha, safeOn: verdict.remote, safeRef: verdict.ref });
           continue;
         }
-        createdThisRun = true;
+        const shortSha = tip.sha.slice(0, 10);
+        const tagName = tip.ref
+          ? `drain/${session}/${slugForBranch(tip.ref)}`
+          : `drain/${session}/${tip.kind === 'workspace' ? 'workspace' : tip.repo}-detached-${shortSha}`;
+        const existing = peeledTagSha(gitFn, tip.repoDir, tagName);
+        if (existing && existing !== tip.sha) {
+          reasons.push(`${repoLabel(tip)}: tag ${tagName} already points at ${existing.slice(0, 10)}…, not the current tip (${shortSha}…); the branch moved — decide manually`);
+          continue;
+        }
+        const allowedRemote = allowMap.get(tip.repo) ?? null;
+        const remotes = safety.remotes(tip.repoDir);
+        // Precedence: an allow entry pins this repo's remote (and is the
+        // only thing that blesses a push/fetch URL divergence); allow-all
+        // covers every OTHER repo with its resolved candidate.
+        const explicitlyAllowed = allowedRemote != null && remotes.includes(allowedRemote);
+        const resolved = explicitlyAllowed
+          ? allowedRemote
+          : resolvePushRemote(gitFn, tip.repoDir, tip.ref, remotes).remote;
+        const fetchUrl = remoteUrlOf(gitFn, tip.repoDir, resolved);
+        const pushUrls = pushUrlsFor(gitFn, tip.repoDir, resolved);
+        const willPush = remote && (remoteAllowAll || explicitlyAllowed) && resolved != null;
+        if (willPush && pushUrls == null) {
+          // Fail closed: an approval that cannot name the destination is
+          // not an approval.
+          reasons.push(`${repoLabel(tip)}: could not resolve where a push to "${resolved}" would land (git remote get-url --push --all failed) — fix the remote config or push the tag manually`);
+          continue;
+        }
+        if (willPush && !pushMatchesFetch(fetchUrl, pushUrls) && !explicitlyAllowed) {
+          reasons.push(
+            `${repoLabel(tip)}: remote "${resolved}" fetches from ${fetchUrl ?? '(url unreadable)'} but pushes to ${pushUrls.join(', ')}`
+            + ` — allow-all blesses fetch URLs only; check those push targets and re-run with --remote-allow ${tip.repo}=${resolved}`,
+          );
+          continue;
+        }
+        pending.push({
+          tip,
+          tagName,
+          existing,
+          shortSha,
+          allowed: remoteAllowAll || explicitlyAllowed,
+          remote: resolved,
+          url: fetchUrl,
+          pushUrls,
+        });
       }
-      const pushed = gitFn('git', ['-C', tagDir, 'push', remote, `refs/tags/${tagName}`], netOpts(PUSH_TIMEOUT_MS));
-      if (pushed.error || pushed.status !== 0) {
-        // A local tag that never reached a remote masquerades as a
-        // backup (and local refs prove nothing) — remove the one we made.
-        if (createdThisRun) run(gitFn, tagDir, ['tag', '-d', tagName]);
-        const detail = pushed.error ? `timed out after ${PUSH_TIMEOUT_MS / 1000}s` : String(pushed.stderr || '').trim();
-        reasons.push(`${repoLabel(tip)}: pushing ${tagName} to ${remote} failed (${detail}) — treat ${tip.ref ?? shortSha} as unbacked`);
-        continue;
+    }
+
+    // Push mode with no allow at all is a plan, not a start: list every
+    // target's exact push URL(s) — and the fetch URL when they differ —
+    // and hand the per-repo decision back untouched. The plan exits
+    // non-zero wet or dry: pushing is still waiting on a decision.
+    if (reasons.length === 0 && remote && allowMap.size === 0 && !remoteAllowAll && pending.length > 0) {
+      const targets = pending.map((p) => ({
+        repo: p.tip.repo,
+        branch: p.tip.ref ?? null,
+        commit: p.tip.sha,
+        tag: p.tagName,
+        remote: p.remote,
+        url: p.url,
+        pushUrls: p.pushUrls,
+      }));
+      const reasonLines = [
+        'push mode pushes nothing without --remote-allow <repo>=<remote> (repeatable) or --remote-allow-all',
+        ...pending.map((p) => {
+          if (!p.remote) return `${repoLabel(p.tip)} has no remote — its backup stays a local tag`;
+          return pushMatchesFetch(p.url, p.pushUrls)
+            ? `${repoLabel(p.tip)} would push ${p.tagName} to ${p.remote} (${p.url ?? 'url unreadable'})`
+            : `${repoLabel(p.tip)} would push ${p.tagName} to ${p.remote}: pushes to ${(p.pushUrls ?? []).join(', ') || '(push url unreadable)'} (fetch URL ${p.url ?? 'unreadable'})`;
+        }),
+      ];
+      if (dryRun) return { session, dryRun: true, needsAllow: true, targets, reasons: reasonLines };
+      return { refused: true, needsAllow: true, targets, reasons: reasonLines };
+    }
+
+    // Pass 2: act. A pass-1 reason aborts before anything is tagged —
+    // every acting run creates the local tag first (the baseline backup),
+    // and pushing happens only where allowed; a refusal must not leave
+    // half the session tagged behind it.
+    if (reasons.length === 0) {
+      for (const p of pending) {
+        if (dryRun) {
+          // The plan never hides a destination: every tip names its
+          // candidate remote and push URL(s); willPush says whether this
+          // run would actually push there.
+          planned.push({
+            repo: p.tip.repo,
+            branch: p.tip.ref,
+            detached: !p.tip.ref,
+            commit: p.tip.sha,
+            tag: p.tagName,
+            remote: p.remote,
+            url: p.url,
+            pushUrls: p.pushUrls,
+            willPush: Boolean(p.allowed && p.remote),
+            wouldCreate: !p.existing,
+          });
+          continue;
+        }
+        let createdThisRun = false;
+        if (!p.existing) {
+          const created = run(gitFn, p.tip.repoDir, ['tag', '-a', p.tagName, '-m', `backup before draining session ${session}`, p.tip.sha]);
+          if (created.status !== 0) {
+            reasons.push(`${repoLabel(p.tip)}: git tag ${p.tagName} failed: ${String(created.stderr || '').trim()}`);
+            continue;
+          }
+          createdThisRun = true;
+        }
+        if (!remote || !p.allowed || !p.remote) {
+          const why = !remote
+            ? 'local backup only — push mode is off'
+            : p.remote ? 'not allowed here (no --remote-allow entry) — the local tag is the backup' : 'no remote configured — the local tag is the backup';
+          branches.push({
+            repo: p.tip.repo,
+            branch: p.tip.ref,
+            detached: !p.tip.ref,
+            tag: p.tagName,
+            commit: p.tip.sha,
+            pushed: false,
+            localOnly: true,
+            remote: null,
+            url: null,
+            wouldPushTo: p.remote ? { remote: p.remote, url: p.url, pushUrls: p.pushUrls } : null,
+            reason: why,
+          });
+          continue;
+        }
+        const pushTargets = (p.pushUrls && p.pushUrls.length > 0 ? p.pushUrls : [p.url]).filter(Boolean).join(', ');
+        const pushed = gitFn('git', ['-C', p.tip.repoDir, 'push', p.remote, `refs/tags/${p.tagName}`], netOpts(PUSH_TIMEOUT_MS));
+        if (pushed.error || pushed.status !== 0) {
+          // A local tag that never reached a remote masquerades as a
+          // backup (and local refs prove nothing) — remove the one we made.
+          if (createdThisRun) run(gitFn, p.tip.repoDir, ['tag', '-d', p.tagName]);
+          const detail = pushed.error ? `timed out after ${PUSH_TIMEOUT_MS / 1000}s` : String(pushed.stderr || '').trim();
+          reasons.push(`${repoLabel(p.tip)}: pushing ${p.tagName} to ${p.remote} (${pushTargets || 'url unreadable'}) failed (${detail}) — treat ${p.tip.ref ?? p.shortSha} as unbacked`);
+          continue;
+        }
+        // Verified where the push really went: every push URL must hold
+        // the tag at the commit. The fetch URL is irrelevant here — a
+        // decoy pushurl is exactly the case it would lie about.
+        const verified = tagOnPushUrls(gitFn, p.tip.repoDir, p.pushUrls, p.tagName, p.tip.sha);
+        if (!verified) {
+          if (createdThisRun) run(gitFn, p.tip.repoDir, ['tag', '-d', p.tagName]);
+          reasons.push(`${repoLabel(p.tip)}: tag ${p.tagName} not found at the push URL(s) ${pushTargets || '(unreadable)'} after pushing — treat ${p.tip.ref ?? p.shortSha} as unbacked`);
+          continue;
+        }
+        branches.push({
+          repo: p.tip.repo,
+          branch: p.tip.ref,
+          detached: !p.tip.ref,
+          tag: p.tagName,
+          commit: p.tip.sha,
+          pushed: true,
+          verified: true,
+          remote: p.remote,
+          url: p.url,
+          pushUrls: p.pushUrls,
+        });
       }
-      const verified = tagOnRemoteAt(gitFn, tagDir, remote, tagName, tip.sha);
-      if (!verified) {
-        if (createdThisRun) run(gitFn, tagDir, ['tag', '-d', tagName]);
-        reasons.push(`${repoLabel(tip)}: tag ${tagName} not found on ${remote} after pushing — treat ${tip.ref ?? shortSha} as unbacked`);
-        continue;
-      }
-      branches.push({
-        repo: tip.repo,
-        branch: tip.ref,
-        detached: !tip.ref,
-        tag: tagName,
-        commit: tip.sha,
-        remote,
-        pushed: true,
-        verified: true,
-      });
     }
   }
   if (reasons.length > 0) return { refused: true, reasons };
@@ -1315,11 +1559,15 @@ function repairAndVerify(gitFn, owned, worktreePaths, prunableBefore) {
  * outside this workspace; a submodule checkout is present (its link is
  * not a worktree link and `worktree repair` cannot fix it); git's own
  * list of worktrees names one under the folder that the walk did not
- * find; or the archive directory is a symlink or resolves outside the
- * workspace. If anything fails after the rename, the folder is renamed
- * back and repaired, and the result reports the verified state.
+ * find; a worktree holds uncommitted or untracked changes — an edited
+ * session.md counts (unless allowUncommitted: they would ride along
+ * fine, but they deserve a decision: commit them to the session branch,
+ * or explicitly accept archiving them mid-edit); or the archive
+ * directory is a symlink or resolves outside the workspace. If anything
+ * fails after the rename, the folder is renamed back and repaired, and
+ * the result reports the verified state.
  */
-function archiveSession(root, { session, gitFn = spawnSync, cwd = process.cwd(), now = Date.now() } = {}) {
+function archiveSession(root, { session, allowUncommitted = false, gitFn = spawnSync, cwd = process.cwd(), now = Date.now() } = {}) {
   const rootDir = resolveRoot(root);
   if (!isSessionSegment(session)) {
     throw new Error(`session name must be a single path segment not starting with ".", got: ${session}`);
@@ -1361,6 +1609,27 @@ function archiveSession(root, { session, gitFn = spawnSync, cwd = process.cwd(),
     for (const p of listed) {
       if ((p === folderReal || p.startsWith(folderReal + sep)) && !foundPaths.has(p)) {
         reasons.push(`${relative(rootDir, o.dir) || 'the workspace repo'} has a worktree at ${relative(rootDir, p)} that the folder scan could not see — reconcile it first`);
+      }
+    }
+  }
+  // Uncommitted work rides along safely, but silently archiving it buries
+  // it outside the lifecycle: notes committed to the session branch can
+  // still be read and merged, while edits sitting uncommitted in an
+  // archive effectively cannot. So an acting archive names every dirty
+  // worktree — an uncommitted session.md included — and leaves the
+  // decision to the operator.
+  if (!allowUncommitted) {
+    for (const f of found) {
+      const wtPath = f.rel === '.' ? folder : join(folder, f.rel);
+      const rel = relative(rootDir, wtPath);
+      const records = statusRecords(gitFn, wtPath);
+      if (!records) {
+        reasons.push(`could not read the status of ${rel} — refusing rather than guessing; check it yourself before re-running with --allow-uncommitted`);
+        continue;
+      }
+      if (records.length > 0) {
+        const sample = records.slice(0, 3).map((r) => r.path).join(', ');
+        reasons.push(`${rel} has ${records.length} uncommitted change(s) (${sample}${records.length > 3 ? ', …' : ''}) — commit them to the session branch, or re-run with --allow-uncommitted to archive them uncommitted`);
       }
     }
   }
@@ -1470,6 +1739,21 @@ function renderTable(result) {
         .join(' ') || 'no remotes';
       const extra = w.kind === 'workspace' ? `  content:${w.contentFiles}` : '';
       lines.push(`    ${w.kind === 'workspace' ? '(workspace)' : w.repo}  ${w.branch ?? 'detached'}  ahead:${w.ahead ?? '?'} dirty:${w.dirty}${extra}  [${remotes}]`);
+      // The state bracket alone is ambiguous — "origin:none" says the remote
+      // holds no copy of this branch, not that there is no origin. The URL
+      // line settles it: name = exact URL for every configured remote, plus
+      // the push URL(s) whenever a push would land somewhere else — the
+      // fetch URL is what the operator reads, the push URL is where their
+      // approval goes.
+      const urls = Object.entries(w.remoteUrls || {});
+      if (urls.length > 0) {
+        const pushUrls = w.remotePushUrls || {};
+        lines.push(`        remotes: ${urls.map(([n, u]) => {
+          const pushes = pushUrls[n];
+          const diverged = pushes != null && !(pushes.length === 1 && pushes[0] === u);
+          return `${n} = ${u ?? '(url unreadable)'}${diverged ? ` (pushes to: ${pushes.join(', ')})` : ''}`;
+        }).join(', ')}`);
+      }
     }
     for (const r of s.reasons || []) lines.push(`    · ${r}`);
     for (const w of s.warnings || []) lines.push(`    ! ${w.message}`);
@@ -1482,11 +1766,27 @@ const VALUE_FLAGS = new Map([
   ['--root', 'root'],
   ['--session', 'session'],
   ['--active-days', 'activeDays'],
+  ['--remote-allow', 'remoteAllow'], // repeatable: <repo>=<remote>
+]);
+const BOOL_FLAGS = new Map([
+  ['--dry-run', 'dryRun'],
   ['--remote', 'remote'],
+  ['--remote-allow-all', 'remoteAllowAll'],
+  ['--allow-uncommitted', 'allowUncommitted'],
 ]);
 
 function parseArgs(argv) {
-  const args = { root: '.', mode: null, session: null, activeDays: null, remote: null, dryRun: false };
+  const args = {
+    root: '.',
+    mode: null,
+    session: null,
+    activeDays: null,
+    remoteAllow: [],
+    dryRun: false,
+    remote: false,
+    remoteAllowAll: false,
+    allowUncommitted: false,
+  };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
@@ -1495,12 +1795,14 @@ function parseArgs(argv) {
       args.mode = a.slice(2);
       continue;
     }
-    if (a === '--dry-run') { args.dryRun = true; continue; }
+    const boolKey = BOOL_FLAGS.get(a);
+    if (boolKey) { args[boolKey] = true; continue; }
     const key = VALUE_FLAGS.get(a);
     if (key) {
       const v = rest[i + 1];
       if (v === undefined || v.startsWith('--')) throw new Error(`${a} requires a value`);
-      args[key] = v;
+      if (a === '--remote-allow') args.remoteAllow.push(v);
+      else args[key] = v;
       i += 1;
       continue;
     }
@@ -1522,8 +1824,18 @@ function parseArgs(argv) {
     if (!Number.isInteger(n) || n <= 0) throw new Error('--active-days must be a positive integer');
     args.activeDays = n;
   }
-  if (args.remote != null && args.mode !== 'backup') {
+  if (args.remote && args.mode !== 'backup') {
     throw new Error('--remote is only valid with --backup');
+  }
+  const hasAllow = args.remoteAllow.length > 0 || args.remoteAllowAll;
+  if (hasAllow && args.mode !== 'backup') {
+    throw new Error('--remote-allow/--remote-allow-all are only valid with --backup');
+  }
+  if (hasAllow && !args.remote) {
+    throw new Error('--remote-allow/--remote-allow-all require --remote (push mode)');
+  }
+  if (args.allowUncommitted && args.mode !== 'archive') {
+    throw new Error('--allow-uncommitted is only valid with --archive');
   }
   if (args.dryRun && args.mode !== 'backup') {
     throw new Error('--dry-run is only valid with --backup');
@@ -1545,15 +1857,26 @@ function main() {
     out = inventory(rootDir, { activeDays: args.activeDays ?? 14 });
     process.stderr.write(renderTable(out));
   } else if (args.mode === 'backup') {
-    out = backupSession(rootDir, { session: args.session, remote: args.remote, dryRun: args.dryRun });
+    out = backupSession(rootDir, {
+      session: args.session,
+      remote: args.remote,
+      remoteAllow: args.remoteAllow,
+      remoteAllowAll: args.remoteAllowAll,
+      dryRun: args.dryRun,
+    });
   } else if (args.mode === 'archive') {
-    out = archiveSession(rootDir, { session: args.session });
+    out = archiveSession(rootDir, { session: args.session, allowUncommitted: args.allowUncommitted });
   } else {
     out = enableTaskModel(rootDir);
   }
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   if (out && out.refused) {
     process.stderr.write(`migrate-sessions: refused — ${out.reasons.join('; ')}\n`);
+    code = 1;
+  } else if (out && out.needsAllow) {
+    // The dry-run push plan exits non-zero like its non-dry form: either
+    // way pushing is still waiting on an explicit allow.
+    process.stderr.write('migrate-sessions: push plan — pushing needs --remote-allow <repo>=<remote> or --remote-allow-all; nothing was pushed\n');
     code = 1;
   }
   return code;
