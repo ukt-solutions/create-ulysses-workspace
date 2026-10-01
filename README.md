@@ -62,7 +62,7 @@ cd my-workspace
 npx @ulysses-ai/create-workspace@beta --upgrade
 ```
 
-This stages the new template payload to `.workspace-update/` without changing anything yet. Open Claude Code and run `/workspace-update` — the skill applies each change interactively (asks how to resolve any file you've customized) and runs a maintenance audit before and after.
+This stages the new template payload to `.workspace-update/` without changing anything yet. Open Claude Code and run `/workspace-update` — the skill applies each change interactively (asks how to resolve any file you've customized) and verifies the result with a scripted maintenance audit.
 
 ## Why "Ulysses"?
 

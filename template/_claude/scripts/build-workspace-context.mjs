@@ -765,4 +765,6 @@ export {
   stripFrontmatter,
   gitIgnoredPaths,
   isLocalOnlyName,
+  readIgnorePrefixes,
+  isIgnored,
 };

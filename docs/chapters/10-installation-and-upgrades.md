@@ -145,17 +145,15 @@ After the CLI stages an upgrade, the workspace-update-check hook detects the `.w
 
 The `/workspace-update` skill applies the staged changes interactively:
 
-1. **Runs maintenance audit** before applying. This captures the workspace's state before the update so any issues can be attributed correctly.
+1. **Decides where the update lands.** The launcher root stays on its default branch — with one exception. A workspace repo with no remote applies the update in place and makes the single sanctioned launcher commit on the default branch; a workspace with a remote applies the update in a task worktree (`chore/template-update-{version}`) and lands it through a PR, like any other change to the workspace repo.
 
-2. **Decides where the update lands.** The launcher root stays on its default branch — with one exception. A workspace repo with no remote applies the update in place and makes the single sanctioned launcher commit on the default branch; a workspace with a remote applies the update in a task worktree (`chore/template-update-{version}`) and lands it through a PR, like any other change to the workspace repo.
+2. **Classifies the payload.** `classify-update.mjs` compares every verbatim-installed payload file against the workspace and prints five lists: `new` (no installed counterpart), `identical` (already current), `differs` (locally modified), `activated` (the template ships the rule as optional but this workspace keeps it active — nothing to install), and `removed` (files the template no longer ships, minus what the workspace owns: tests, gitignored paths, and `workspace.localFiles` entries).
 
-3. **Classifies the payload.** `classify-update.mjs` compares every verbatim-installed payload file against the workspace and prints three lists: `new` (no installed counterpart), `identical` (already current), and `differs` (locally modified). Files the template no longer ships are listed as removed.
+3. **Applies with confirmation.** New files are batched behind a single confirmation; only locally modified files are asked about one by one, with a diff on request. Settings, `.gitignore`, and `CLAUDE.md` are merged, never overwritten. New `workspace.json` keys are shown with their template defaults before being added — existing keys and deliberately activated rules are never removed or renamed.
 
-4. **Applies with confirmation.** New files are batched behind a single confirmation; only locally modified files are asked about one by one, with a diff on request. Settings, `.gitignore`, and `CLAUDE.md` are merged, never overwritten. New `workspace.json` keys are shown with their template defaults before being added — existing keys and deliberately activated rules are never removed or renamed.
+4. **Updates templateVersion and runs migrators.** Sets `workspace.json`'s `templateVersion` to the new version, then runs the two idempotent migrators that execute on every update (always with `--root .` — migrators resolve the workspace from `--root` or the cwd, never from their own location inside the payload). One-shot migrators run only when the workspace's previous version predates the layout step they migrate.
 
-5. **Updates templateVersion and runs migrators.** Sets `workspace.json`'s `templateVersion` to the new version, then runs any idempotent `migrate-*.mjs` scripts the payload carries (always with `--root .` — migrators resolve the workspace from `--root` or the cwd, never from their own location inside the payload).
-
-6. **Verifies.** A second maintenance audit, then the context catalogs are rebuilt (`build-workspace-context.mjs --write`) and `--check` must pass clean — otherwise `index.md`/`canonical.md` are left stale relative to the updated rules and skills.
+5. **Verifies.** The context catalogs are rebuilt (`build-workspace-context.mjs --write`) and `--check` must pass clean, then the scripted maintenance audit runs once with the list of files this update touched — findings on those files are labeled `(from this update)` so new drift is distinguishable from pre-existing state.
 
 The two-stage approach (CLI stages, skill applies) means upgrades are never automatic or silent. You see every change before it takes effect.
 
@@ -163,7 +161,7 @@ The two-stage approach (CLI stages, skill applies) means upgrades are never auto
 
 v0.10.0 moves session content — the tracker, specs, and plans — inside the workspace worktree. The files now live at the top of each session branch as `session.md`, `design-*.md`, and `plan-*.md`, alongside `CLAUDE.md`. They travel with the branch via `git push` and get removed by `/complete-work` before the final PR so main stays free of session artifacts. The `work-sessions/` folder itself is fully gitignored at the workspace root in v0.10.0 — no more exception pattern for tracked session files.
 
-The upgrade is automated end-to-end via `/workspace-update`. The migrator `migrate-session-layout.mjs` ships in the v0.10.0 payload. `/workspace-update` invokes it between the pre- and post-update maintenance passes.
+The upgrade is automated end-to-end via `/workspace-update`. The migrator `migrate-session-layout.mjs` ships in the v0.10.0 payload; `/workspace-update` invokes it when the workspace's previous version predates v0.10.0.
 
 ### What the migrator does
 
@@ -246,5 +244,5 @@ Custom rules, custom skills, and custom agents are not affected by upgrades. The
 - `npx @ulysses-ai/create-workspace --init` scaffolds a workspace with bootstrap skills, hooks, and scripts. The full template is staged for interactive installation.
 - `/workspace-init` handles first-time configuration — cloning repos, installing template components, extracting team knowledge, activating rules, formalizing worktrees, setting user identity.
 - Template versioning tracks which version of the template the workspace has.
-- `--upgrade` stages changes; `/workspace-update` applies them interactively with maintenance before and after.
+- `--upgrade` stages changes; `/workspace-update` applies them interactively and verifies with a scripted post-update audit.
 - Custom files are not affected by upgrades — the template manages only its own files.
