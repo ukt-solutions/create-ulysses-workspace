@@ -2,10 +2,16 @@
 // Idempotent migrator: ensures CLAUDE.md includes @local-only-template-freshness.md.
 // Appends one line at end if missing. Preserves the rest of the file byte-for-byte.
 //
-// Run standalone: node .claude/scripts/migrate-claude-md-freshness-include.mjs
+// Run standalone: node migrate-claude-md-freshness-include.mjs [--root <dir>]
 // Or import { runMigration } and call programmatically.
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+//
+// The root is --root when given, else the current working directory. It is
+// never derived from this script's location: the upgrade payload runs this
+// file from <workspace>/.workspace-update/.claude/scripts/, and a
+// script-relative root would point inside the payload instead of at the
+// workspace.
+import { existsSync, readFileSync, writeFileSync, realpathSync } from 'fs';
+import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 const INCLUDE_LINE = '@local-only-template-freshness.md';
@@ -20,11 +26,30 @@ export function runMigration({ workspaceRoot }) {
   return { action: 'appended' };
 }
 
-// CLI entry point — workspace root is two levels up from this file
-// (.claude/scripts/migrate-... → workspace root).
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const root = resolve(here, '..', '..');
-  const result = runMigration({ workspaceRoot: root });
-  console.log(JSON.stringify(result));
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
+
+function parseArgs(argv) {
+  const args = { root: process.cwd() };
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--root') args.root = argv[++i];
+    else throw new Error(`Unknown arg: ${a}`);
+  }
+  return args;
+}
+
+if (isMainModule(import.meta.url)) {
+  try {
+    const args = parseArgs(process.argv);
+    const result = runMigration({ workspaceRoot: resolve(args.root) });
+    console.log(JSON.stringify(result));
+  } catch (err) {
+    console.error(`migrate-claude-md-freshness-include: ${err.message}`);
+    process.exit(1);
+  }
 }

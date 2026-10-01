@@ -70,6 +70,7 @@ The skill creates a `chore/workspace-init` branch and walks you through a compre
 11. **Configure user identity.** Sets your name for user-scoped context.
 12. **Clean and verify.** Moves non-template items to unmigrated, cleans up the payload, checks for self-contradictions.
 13. **Set up workspace remote.** Creates a new repo or connects to an existing one (for team members joining a workspace that already exists).
+14. **Merge to the default branch.** Squash-merges `chore/workspace-init` into the default branch (pushing if a remote is configured), so initialization ends with every commit — including `initialized: true` — on the default branch. The init branch itself is kept for its granular history.
 
 For solo use, many steps are quick or skipped. For teams, the team lead runs the full init and commits the result. Team members then clone the workspace repo and run `/workspace-init` to connect — the skill detects the initialized workspace and handles onboarding (clone repos, set identity, rebase local changes onto the remote).
 
@@ -133,11 +134,10 @@ npx @ulysses-ai/create-workspace --upgrade
 
 The upgrade does not apply changes directly. Instead, it stages a payload:
 
-1. The CLI compares the workspace's current template version against the latest.
-2. It determines which files are new, modified, or removed.
-3. It writes the staged payload to `.workspace-update/` with a manifest of what changed.
+1. The CLI verifies the workspace is initialized and reads its current template version.
+2. It writes the full new template to `.workspace-update/` with a manifest recording `action`, `fromVersion`, and `templateVersion`.
 
-The `.workspace-update/` directory is a staging area. No files have been modified yet. The actual application happens interactively through the `/workspace-update` skill.
+The `.workspace-update/` directory is a staging area, gitignored since v0.19.0. No files have been modified yet. The actual application happens interactively through the `/workspace-update` skill. If the CLI finds `.workspace-update/` already tracked by git — a leftover from upgrading an older workspace — it warns and tells you to untrack it (`git rm -r --cached .workspace-update`) before continuing.
 
 ## Applying Updates
 
@@ -147,13 +147,15 @@ The `/workspace-update` skill applies the staged changes interactively:
 
 1. **Runs maintenance audit** before applying. This captures the workspace's state before the update so any issues can be attributed correctly.
 
-2. **Presents changes.** Shows what will be added, modified, and removed. For modified files, shows the diff.
+2. **Decides where the update lands.** The launcher root stays on its default branch — with one exception. A workspace repo with no remote applies the update in place and makes the single sanctioned launcher commit on the default branch; a workspace with a remote applies the update in a task worktree (`chore/template-update-{version}`) and lands it through a PR, like any other change to the workspace repo.
 
-3. **Applies with confirmation.** Each change is applied with your approval. If a file has local customizations, you are asked how to resolve — accept the update, keep your version, or merge.
+3. **Classifies the payload.** `classify-update.mjs` compares every verbatim-installed payload file against the workspace and prints three lists: `new` (no installed counterpart), `identical` (already current), and `differs` (locally modified). Files the template no longer ships are listed as removed.
 
-4. **Updates templateVersion.** Sets workspace.json's templateVersion to the new version.
+4. **Applies with confirmation.** New files are batched behind a single confirmation; only locally modified files are asked about one by one, with a diff on request. Settings, `.gitignore`, and `CLAUDE.md` are merged, never overwritten. New `workspace.json` keys are shown with their template defaults before being added — existing keys and deliberately activated rules are never removed or renamed.
 
-5. **Runs maintenance audit** after applying. This catches any drift or issues introduced by the update.
+5. **Updates templateVersion and runs migrators.** Sets `workspace.json`'s `templateVersion` to the new version, then runs any idempotent `migrate-*.mjs` scripts the payload carries (always with `--root .` — migrators resolve the workspace from `--root` or the cwd, never from their own location inside the payload).
+
+6. **Verifies.** A second maintenance audit, then the context catalogs are rebuilt (`build-workspace-context.mjs --write`) and `--check` must pass clean — otherwise `index.md`/`canonical.md` are left stale relative to the updated rules and skills.
 
 The two-stage approach (CLI stages, skill applies) means upgrades are never automatic or silent. You see every change before it takes effect.
 

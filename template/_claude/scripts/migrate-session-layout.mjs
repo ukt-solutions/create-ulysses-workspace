@@ -22,14 +22,25 @@ import {
   readdirSync,
   copyFileSync,
   statSync,
+  realpathSync,
 } from 'fs';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 import {
-  getWorkspaceRoot,
   getWorkspacePaths,
   getMainRoot,
   readJSON,
 } from '../hooks/_utils.mjs';
+
+// Compare real paths: macOS temp dirs are symlinked (/var → /private/var),
+// so a naive import.meta.url === `file://${process.argv[1]}` silently fails
+// to detect main-module runs from tmpdir fixtures.
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
 
 export function migrateSession(root, sessionName) {
   const { workSessionsDir } = getWorkspacePaths(root);
@@ -189,19 +200,19 @@ export function migrateMain(root) {
 }
 
 // CLI entry
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   const args = process.argv.slice(2);
   const getArg = (name) => {
     const i = args.indexOf(`--${name}`);
     return i >= 0 && args[i + 1] ? args[i + 1] : null;
   };
 
-  // The script lives in either the launcher's .claude/scripts/ or a session
-  // worktree's .claude/scripts/. getWorkspaceRoot returns the script's
-  // grandparent; when that's a worktree, promote it to the launcher via
-  // the .active-session.json pointer.
-  const inferred = getWorkspaceRoot(import.meta.url);
-  const root = getArg('root') || getMainRoot(inferred);
+  // The workspace root is --root when given, else the cwd — promoted to the
+  // launcher via the .active-session.json pointer when the cwd is a session
+  // worktree. It is never derived from this script's location: an upgrade
+  // payload runs this file from <workspace>/.workspace-update/.claude/scripts/,
+  // and a script-relative root would point inside the payload.
+  const root = getArg('root') || getMainRoot(process.cwd());
 
   const runAll = args.includes('--all');
   const runMain = args.includes('--main');

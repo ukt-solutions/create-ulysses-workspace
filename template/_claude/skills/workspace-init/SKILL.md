@@ -26,11 +26,11 @@ If `workspace.json` has `"initialized": true` and no `.workspace-update/` payloa
 
 ## Branching
 
-Workspace-init creates a branch for all its work:
+Workspace-init creates a branch for all its work. Record the default branch first (`git branch --show-current` before switching — usually `main`), then:
 ```bash
 git checkout -b chore/workspace-init
 ```
-All commits go on this branch. After completion, the user reviews and squash-merges to main.
+All commits go on this branch. Step 18 merges the branch back into the default branch at the end — init must finish with every commit on the default branch, never stranded on the init branch (an unmerged init branch leaves `workspace.json` without `initialized: true` on the default branch, which blocks later `/workspace-update` runs). The granular per-step history stays on `chore/workspace-init` for review.
 
 ## Flow
 
@@ -373,9 +373,9 @@ git remote -v
 - Detect the org from project repo remotes in workspace.json
 - Ask: "Create workspace repo as `{org}/workspace-{project}`? Or provide a different name/URL."
 - Create via `gh repo create {org}/{name} --private` and add as remote
-- Do NOT push yet — user merges the branch first
+- Do NOT push yet — Step 18 merges the init branch and pushes the default branch after the merge
 
-### Step 18: Mark initialized and report
+### Step 18: Mark initialized, merge to the default branch, report
 
 Update workspace.json:
 - Set `initialized: true`
@@ -383,12 +383,20 @@ Update workspace.json:
 
 **Commit:** `git commit -m "chore: mark workspace as initialized"`
 
+**Merge to the default branch.** Init is not finished while its commits live only on `chore/workspace-init` — an unmerged init branch leaves the default branch without `initialized: true`, which blocks later `/workspace-update` runs. Ask: "Merge chore/workspace-init into {default-branch} now? [Y/n]" and on yes:
+```bash
+git checkout {default-branch}
+git merge --squash chore/workspace-init
+git commit -m "chore: workspace initialization"
+```
+If a remote is configured, push the default branch (`git push origin {default-branch}`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 17 rebase). Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
+
 **Final report:**
 
 ```
 "Workspace initialized. Restart Claude Code for all rules and hooks to take effect. Then run /start-work to begin.
 
-Branch: chore/workspace-init
+Branch: chore/workspace-init (merged to {default-branch} as "chore: workspace initialization")
 
 Summary:
 - {N} repos cloned
@@ -402,6 +410,7 @@ Summary:
 - {V} self-contradictions found and fixed
 - Template version: {version}
 - Remote: {status}
+- All init commits are on {default-branch}
 
 Issues encountered:
 - {list every expected behavior that failed}
@@ -414,15 +423,12 @@ Active work sessions (formalized from existing worktrees):
 Items in workspace-scratchpad/unmigrated/:
 - {list each item with a one-line description}
 
-Review the branch:
-  git log --oneline chore/workspace-init
-  git diff main..chore/workspace-init
-
-Then merge:
-  git checkout main
-  git merge --squash chore/workspace-init
-  git commit -m 'chore: workspace initialization'
-  git push origin main
+If the merge was declined, replace the branch line with:
+  Not merged yet — finish with:
+    git checkout {default-branch}
+    git merge --squash chore/workspace-init
+    git commit -m 'chore: workspace initialization'
+    git push origin {default-branch}
 
 This session is done. Start a fresh Claude Code session and run /start-work to begin."
 ```

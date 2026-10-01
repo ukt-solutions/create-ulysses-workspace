@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // Tests for migrate-session-layout.mjs
 // Run: node .claude/scripts/migrate-session-layout.test.mjs
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, cpSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
-import { execSync } from 'child_process';
+import { join, dirname } from 'path';
+import { execSync, spawnSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import { migrateSession, migrateMain } from './migrate-session-layout.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 let failed = 0;
 let passed = 0;
@@ -135,6 +138,41 @@ function buildFixture() {
     const mainLog = execSync('git log --oneline main -1', { cwd: root }).toString();
     assertTrue(mainLog.includes('migrate workspace to in-worktree session layout'),
       'main has migration commit');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// CLI run from a payload-like nested location: --root must win over both the
+// script's location and the cwd. The upgrade payload executes this file from
+// <workspace>/.workspace-update/.claude/scripts/ — a script-relative root
+// would migrate the payload directory instead of the workspace.
+{
+  const root = buildFixture();
+  try {
+    // Stage a payload-shaped copy: the whole .claude/scripts+hooks+lib tree,
+    // as the real upgrade payload carries it.
+    const payloadClaude = join(root, '.workspace-update', '.claude');
+    mkdirSync(payloadClaude, { recursive: true });
+    cpSync(here, join(payloadClaude, 'scripts'), { recursive: true });
+    cpSync(join(here, '..', 'hooks'), join(payloadClaude, 'hooks'), { recursive: true });
+    cpSync(join(here, '..', 'lib'), join(payloadClaude, 'lib'), { recursive: true });
+    const nestedScript = join(payloadClaude, 'scripts', 'migrate-session-layout.mjs');
+
+    const r = spawnSync(
+      process.execPath,
+      [nestedScript, '--session-name', 'demo', '--root', root],
+      { cwd: tmpdir(), encoding: 'utf-8' },
+    );
+    assertEq(r.status, 0, `CLI exits 0 from nested payload location (stderr: ${r.stderr.trim().slice(0, 200)})`);
+    const parsed = JSON.parse(r.stdout);
+    assertEq(parsed.session.status, 'migrated', 'CLI migrated the --root workspace');
+
+    const worktree = join(root, 'work-sessions', 'demo', 'workspace');
+    assertTrue(existsSync(join(worktree, 'session.md')),
+      'tracker landed in the --root workspace, not beside the script');
+    assertTrue(!existsSync(join(root, '.workspace-update', 'work-sessions')),
+      'nothing was created inside the payload directory');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

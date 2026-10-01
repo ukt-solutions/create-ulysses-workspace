@@ -7,7 +7,9 @@
 //   node migrate-canonical-priority.mjs [--root <path>]
 //
 // Walks <root>/workspace-context/shared/locked/*.md. For each file:
-//   - Skip non-.md files and files without parseable frontmatter (warn to stderr).
+//   - Skip non-.md files, local-only-* files (machine-local drafts that
+//     happen to sit under shared/locked/ — never canonical), and files
+//     without parseable frontmatter (warn to stderr).
 //   - If `priority` is already set (any value), leave the file untouched.
 //   - Otherwise add `priority: critical` losslessly via updateSessionContent.
 //
@@ -62,6 +64,10 @@ export function migrateCanonicalPriority({ root }) {
 
   for (const name of entries) {
     if (!name.endsWith('.md')) continue;
+    // local-only-* files are machine-local and gitignored — they are never
+    // canonical, so back-filling a canonical priority field on them would be
+    // both wrong and a surprise on the next build-workspace-context run.
+    if (name.startsWith('local-only-')) continue;
     const full = join(lockedDir, name);
     let st;
     try { st = statSync(full); } catch { continue; }

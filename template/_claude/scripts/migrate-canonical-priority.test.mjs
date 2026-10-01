@@ -9,9 +9,12 @@ import {
   readFileSync,
   rmSync,
   existsSync,
+  cpSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { migrateCanonicalPriority } from './migrate-canonical-priority.mjs';
 
 let failed = 0;
@@ -306,6 +309,84 @@ console.log('# 8. missing locked dir: noop');
   assertEq(result.status, 'noop', 'status noop');
   assertEq(result.files, { applied: [], unchanged: [] }, 'empty file lists');
   assert(!existsSync(join(root, 'workspace-context')), 'no workspace-context created');
+  cleanup(root);
+}
+
+console.log('# 9. local-only-* files under shared/locked/ are skipped');
+{
+  const root = setupRoot();
+  const localOnly = writeLocked(
+    root,
+    'local-only-draft.md',
+    { state: 'locked', type: 'reference' },
+    '\n# Local Draft\n',
+  );
+  const before = readFileSync(localOnly, 'utf-8');
+  writeLocked(
+    root,
+    'canonical.md',
+    { state: 'locked', type: 'reference' },
+    '\n# Canonical\n',
+  );
+
+  const result = migrateCanonicalPriority({ root });
+
+  assertEq(result.files.applied, ['canonical.md'], 'only the canonical file is applied');
+  assert(
+    !result.files.unchanged.includes('local-only-draft.md'),
+    'local-only-draft.md not listed as unchanged',
+  );
+  assert(
+    !result.files.applied.includes('local-only-draft.md'),
+    'local-only-draft.md not listed as applied',
+  );
+  assertEq(readFileSync(localOnly, 'utf-8'), before, 'local-only-draft.md untouched byte-for-byte');
+  assert(
+    !readFileSync(localOnly, 'utf-8').includes('priority'),
+    'no priority field injected into the local-only file',
+  );
+  cleanup(root);
+}
+
+console.log('# 10. CLI from a payload-like nested location honors --root');
+{
+  const root = setupRoot();
+  // Stage the script where the upgrade payload puts it: nested inside the
+  // workspace at .workspace-update/.claude/scripts/. A script-relative root
+  // would look for workspace-context/ inside the payload and no-op.
+  const payloadScripts = join(root, '.workspace-update', '.claude', 'scripts');
+  const payloadLib = join(root, '.workspace-update', '.claude', 'lib');
+  mkdirSync(payloadScripts, { recursive: true });
+  cpSync(
+    join(dirname(fileURLToPath(import.meta.url)), 'migrate-canonical-priority.mjs'),
+    join(payloadScripts, 'migrate-canonical-priority.mjs'),
+  );
+  // The migrator imports ../lib/session-frontmatter.mjs — the payload carries lib/ too.
+  cpSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'lib'),
+    payloadLib,
+    { recursive: true },
+  );
+  writeLocked(root, 'from-cli.md', { state: 'locked', type: 'reference' }, '\n# From CLI\n');
+
+  const r = spawnSync(
+    process.execPath,
+    [join(payloadScripts, 'migrate-canonical-priority.mjs'), '--root', root],
+    { cwd: tmpdir(), encoding: 'utf-8' },
+  );
+
+  assertEq(r.status, 0, `CLI exits 0 (stderr: ${r.stderr.trim().slice(0, 200)})`);
+  const parsed = JSON.parse(r.stdout);
+  assertEq(parsed.status, 'applied', 'CLI applied to the --root workspace');
+  assertEq(parsed.files.applied, ['from-cli.md'], 'CLI names the --root workspace file');
+  assert(
+    readFileSync(lockedPath(root, 'from-cli.md'), 'utf-8').includes('priority: critical'),
+    'priority back-filled in the --root workspace',
+  );
+  assert(
+    !existsSync(join(root, '.workspace-update', 'workspace-context')),
+    'nothing created inside the payload directory',
+  );
   cleanup(root);
 }
 
