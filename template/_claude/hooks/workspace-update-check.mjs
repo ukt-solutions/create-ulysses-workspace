@@ -32,11 +32,11 @@ const skipAudit = stale
 
 if (action === 'init' || !initialized) {
   respond(`MANDATORY: ${urgency}A workspace init payload (template v${version}) is pending at .workspace-update/.
-Read .workspace-update/.claude/skills/workspace-init/SKILL.md and follow it before doing anything else.
+Read .workspace-update/_claude/skills/workspace-init/SKILL.md and follow it before doing anything else.
 ${skipAudit}Do not proceed with the user's request until initialization is complete.`);
 } else {
   const from = manifest?.fromVersion || 'unknown';
   respond(`MANDATORY: ${urgency}A workspace upgrade payload (v${from} → v${version}) is pending at .workspace-update/.
-Read .workspace-update/.claude/skills/workspace-update/SKILL.md and follow it before doing anything else.
+Read .workspace-update/_claude/skills/workspace-update/SKILL.md and follow it before doing anything else.
 ${skipAudit}Do not proceed with the user's request until the update is complete.`);
 }

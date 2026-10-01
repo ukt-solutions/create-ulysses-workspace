@@ -24,12 +24,12 @@ Run `/maintenance audit` (read-only) to surface existing issues. Report findings
 
 ### Step 2: Compare current vs payload
 
-For each component directory in `.workspace-update/.claude/` (skills, hooks, agents, rules, recipes), compare files against the corresponding `.claude/{component}/` directory locally:
+For each component directory in `.workspace-update/_claude/` (skills, hooks, agents, rules, recipes — the payload is a copy of `template/`, which stores the `.claude/` tree under the inert name `_claude/`, same idea as `_gitignore`), compare files against the corresponding `.claude/{component}/` directory locally:
 
-- **New files:** present in `.workspace-update/.claude/{component}/` but not in `.claude/{component}/`
+- **New files:** present in `.workspace-update/_claude/{component}/` but not in `.claude/{component}/`
 - **Updated files:** present in both but contents differ
 - **Unchanged files:** present in both with identical contents
-- **Removed files:** present in `.claude/{component}/` locally but not in `.workspace-update/.claude/{component}/`
+- **Removed files:** present in `.claude/{component}/` locally but not in `.workspace-update/_claude/{component}/`
 
 Report with version info from the manifest:
 ```
@@ -67,9 +67,9 @@ For each change, ask before applying:
 
 Also handle these non-component files from the payload:
 
-- **settings.json:** Merge payload values into existing `.claude/settings.json` — do not overwrite user customizations. Add new keys, update hook commands if hooks were migrated, preserve user-added entries.
+- **settings.json:** Merge values from the payload's `_claude/settings.json` into the existing `.claude/settings.json` — do not overwrite user customizations. Add new keys, update hook commands if hooks were migrated, preserve user-added entries.
 - **CLAUDE.md:** If `.workspace-update/CLAUDE.md.tmpl` exists, regenerate `CLAUDE.md` from the template. Preserve any user-added sections not present in the template.
-- **.gitignore:** Merge new entries from the payload into the existing `.gitignore` — do not remove user-added lines.
+- **.gitignore:** Merge new entries from the payload's `_gitignore` into the existing `.gitignore` — do not remove user-added lines.
 
 ### Step 4: Update version
 
@@ -77,10 +77,10 @@ Read `toVersion` from `.workspace-update/.manifest.json` and update `templateVer
 
 ### Step 4a: Run idempotent migrators
 
-The payload may include migrator scripts at `.workspace-update/.claude/scripts/migrate-*.mjs` that bring older workspaces forward in shape. They are idempotent — safe to re-run on already-migrated workspaces. Run each one in document order and surface its action in the upgrade summary.
+The payload may include migrator scripts at `.workspace-update/_claude/scripts/migrate-*.mjs` that bring older workspaces forward in shape. They are idempotent — safe to re-run on already-migrated workspaces. Run each one in document order and surface its action in the upgrade summary.
 
 ```bash
-node .workspace-update/.claude/scripts/migrate-claude-md-freshness-include.mjs
+node .workspace-update/_claude/scripts/migrate-claude-md-freshness-include.mjs
 ```
 
 Output is JSON: `{"action":"appended"|"unchanged"|"skipped"}`.
@@ -90,7 +90,7 @@ Output is JSON: `{"action":"appended"|"unchanged"|"skipped"}`.
 - `skipped` — no `CLAUDE.md` exists at the workspace root (rare; surface to the user).
 
 ```bash
-node .workspace-update/.claude/scripts/migrate-canonical-priority.mjs --root .
+node .workspace-update/_claude/scripts/migrate-canonical-priority.mjs --root .
 ```
 
 Output is JSON: `{"status":"applied"|"noop","files":[...]}`. Back-fills `priority: critical` on every `workspace-context/shared/locked/*.md` that lacks the field, preserving today's full-load behavior until the user explicitly demotes a file. Idempotent — safe to re-run on already-migrated workspaces.

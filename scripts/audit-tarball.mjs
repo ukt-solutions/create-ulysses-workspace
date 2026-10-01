@@ -175,7 +175,12 @@ function checkForbiddenFiles(files) {
     { name: '.env file', re: /\.env(\..+)?$/ },
     { name: '.DS_Store', re: /\.DS_Store$/ },
     { name: 'node_modules', re: /node_modules\// },
-    { name: 'settings.local.json', re: /template\/\.claude\/settings\.local\.json$/ },
+    { name: 'settings.local.json', re: /template\/_claude\/settings\.local\.json$/ },
+    // The template stores these under the inert names _claude/ and
+    // _mcp.json; the protected live names must never creep back in, or
+    // headless workers lose the ability to edit the template.
+    { name: 'protected .claude/ in template', re: /^template\/\.claude\// },
+    { name: 'protected .mcp.json in template', re: /^template\/\.mcp\.json$/ },
     { name: 'local-only path', re: /local-only-/ },
     { name: 'shared-context in template', re: /template\/shared-context\// },
     { name: 'work-sessions in template', re: /template\/work-sessions\// },
@@ -204,26 +209,26 @@ function checkRequiredFiles(files) {
     'template/repo-claude.md.tmpl',
     'template/_gitignore',
     'template/.claudeignore',
-    'template/.claude/settings.json',
-    'template/.claude/scripts/forges/interface.mjs',
-    'template/.claude/scripts/forges/github.mjs',
-    'template/.claude/scripts/forges/gitlab.mjs',
+    'template/_claude/settings.json',
+    'template/_claude/scripts/forges/interface.mjs',
+    'template/_claude/scripts/forges/github.mjs',
+    'template/_claude/scripts/forges/gitlab.mjs',
     // The context-placement skill and the memory-guidance rule both instruct
     // Claude to price a placement before writing it. If this script does not
     // ship, that instruction silently becomes advice nobody can follow.
-    'template/.claude/scripts/context-footprint.mjs',
+    'template/_claude/scripts/context-footprint.mjs',
     // The chat record is the durable per-chat state in the post-inversion
     // session model (gh:132). Without it the new lifecycle has nowhere to
     // record scope, concerns, or open tasks.
-    'template/.claude/scripts/chat-record.mjs',
+    'template/_claude/scripts/chat-record.mjs',
     // Task worktrees are the task lifecycle's on-disk half (gh:132 stage 2).
     // Without this script /start-work cannot create them and /complete-work
     // cannot tell the two lifecycles apart.
-    'template/.claude/scripts/task-worktree.mjs',
+    'template/_claude/scripts/task-worktree.mjs',
     // The per-workspace session→task migration (gh:147). Without it
     // /migrate-sessions cannot inventory, back up, or drain old sessions,
     // and existing workspaces have no path onto the task model.
-    'template/.claude/scripts/migrate-sessions.mjs',
+    'template/_claude/scripts/migrate-sessions.mjs',
     'LICENSE',
   ];
   const present = new Set(files.map((f) => f.path));
@@ -233,7 +238,7 @@ function checkRequiredFiles(files) {
 }
 
 function checkSettingsSanity() {
-  const settingsPath = join(REPO_ROOT, 'template/.claude/settings.json');
+  const settingsPath = join(REPO_ROOT, 'template/_claude/settings.json');
   const violations = [];
   let raw;
   try {
@@ -327,9 +332,9 @@ function checkReadmeCounts() {
     hooks: readme.match(/(\d+)\s+hooks/i),
   };
 
-  const skillsDir = join(REPO_ROOT, 'template/.claude/skills');
-  const rulesDir = join(REPO_ROOT, 'template/.claude/rules');
-  const hooksDir = join(REPO_ROOT, 'template/.claude/hooks');
+  const skillsDir = join(REPO_ROOT, 'template/_claude/skills');
+  const rulesDir = join(REPO_ROOT, 'template/_claude/rules');
+  const hooksDir = join(REPO_ROOT, 'template/_claude/hooks');
 
   const actual = {
     skills: countDirEntries(skillsDir, (_name, full) => {
@@ -396,13 +401,13 @@ function checkCLAUDEMdTmpl() {
 }
 
 function checkMcpJson() {
-  const mcpPath = join(REPO_ROOT, 'template/.mcp.json');
+  const mcpPath = join(REPO_ROOT, 'template/_mcp.json');
   try {
     const parsed = JSON.parse(readFileSync(mcpPath, 'utf8'));
     if (typeof parsed?.mcpServers !== 'object' || parsed.mcpServers === null)
-      return [{ kind: 'mcp-json', details: 'template/.mcp.json: missing or invalid mcpServers key' }];
+      return [{ kind: 'mcp-json', details: 'template/_mcp.json: missing or invalid mcpServers key' }];
   } catch (err) {
-    return [{ kind: 'mcp-json', details: `template/.mcp.json: ${err.message}` }];
+    return [{ kind: 'mcp-json', details: `template/_mcp.json: ${err.message}` }];
   }
   return [];
 }

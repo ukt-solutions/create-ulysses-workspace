@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for registry-check.mjs
-// Run: node template/.claude/lib/registry-check.test.mjs
+// Run: node template/_claude/lib/registry-check.test.mjs
 import { compareVersions } from './registry-check.mjs';
 
 let failed = 0;

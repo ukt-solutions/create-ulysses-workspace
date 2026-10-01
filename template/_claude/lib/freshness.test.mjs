@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for freshness.mjs
-// Run: node template/.claude/lib/freshness.test.mjs
+// Run: node template/_claude/lib/freshness.test.mjs
 import { refreshIfStale } from './freshness.mjs';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from 'fs';
 import { join } from 'path';

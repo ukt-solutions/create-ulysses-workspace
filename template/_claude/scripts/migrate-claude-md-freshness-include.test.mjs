@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for migrate-claude-md-freshness-include.mjs
-// Run: node template/.claude/scripts/migrate-claude-md-freshness-include.test.mjs
+// Run: node template/_claude/scripts/migrate-claude-md-freshness-include.test.mjs
 import { runMigration } from './migrate-claude-md-freshness-include.mjs';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';

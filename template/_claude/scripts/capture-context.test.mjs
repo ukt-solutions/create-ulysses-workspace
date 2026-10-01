@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for capture-context.mjs
-// Run: node template/.claude/scripts/capture-context.test.mjs
+// Run: node template/_claude/scripts/capture-context.test.mjs
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';

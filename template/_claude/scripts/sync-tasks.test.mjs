@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for sync-tasks.mjs
-// Run: node template/.claude/scripts/sync-tasks.test.mjs
+// Run: node template/_claude/scripts/sync-tasks.test.mjs
 import { toActiveForm } from './sync-tasks.mjs';
 
 let failed = 0;

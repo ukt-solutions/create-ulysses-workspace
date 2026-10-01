@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for migrate-to-workspace-context.mjs
-// Run: node template/.claude/scripts/migrate-to-workspace-context.test.mjs
+// Run: node template/_claude/scripts/migrate-to-workspace-context.test.mjs
 
 import {
   mkdtempSync,

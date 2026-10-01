@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for migrate-canonical-priority.mjs
-// Run: node template/.claude/scripts/migrate-canonical-priority.test.mjs
+// Run: node template/_claude/scripts/migrate-canonical-priority.test.mjs
 
 import {
   mkdtempSync,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for build-workspace-context.mjs
-// Run: node template/.claude/scripts/build-workspace-context.test.mjs
+// Run: node template/_claude/scripts/build-workspace-context.test.mjs
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -110,17 +110,17 @@ Adapt the plan to what was actually found. Only include relevant steps. Wait for
 
 Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 18 after the payload is deleted.
 
-Install components from `.workspace-update/.claude/` to `.claude/`. For each component directory — skills, hooks, agents, rules, scripts:
+Install components from `.workspace-update/_claude/` to `.claude/`. (The payload is a copy of `template/`, which stores the `.claude/` tree under the inert name `_claude/` — same idea as `_gitignore`.) For each component directory — skills, hooks, agents, rules, scripts:
 
-1. List files in `.workspace-update/.claude/{component}/`
+1. List files in `.workspace-update/_claude/{component}/`
 2. For each file:
    - If the file does not exist locally: "Install {file}? [Y/n]"
    - If the file exists locally and differs: "Template has {file} but you have a local version. Show diff? [y/N]" — let the user decide
    - If the file exists locally and matches: skip silently
 
 Also install these top-level files from the payload:
-- **`.claude/settings.json`** — Merge payload settings into existing file. Preserve user-added settings, add missing entries.
-- **`.gitignore`** — Merge: add lines from payload not already present.
+- **`.claude/settings.json`** — Merge `.workspace-update/_claude/settings.json` into the existing file. Preserve user-added settings, add missing entries.
+- **`.gitignore`** — Merge: add lines from the payload's `_gitignore` not already present.
 - **`CLAUDE.md`** — Generate from `.workspace-update/CLAUDE.md.tmpl`, substituting `{{project-name}}` with the workspace name. If the existing CLAUDE.md has user-added content beyond the bootstrap template, preserve it.
 - **`CODEBASE.md` (optional)** — Ask: "Generate CODEBASE.md? This produces a lightweight file-tree map that helps Claude navigate the codebase without exhaustive exploration. [Y/n]". If yes: scaffold `CODEBASE.md` from `.workspace-update/CODEBASE.md.tmpl`, substitute `{{project-name}}`, then pre-populate `## Top-level layout` by listing the top-level entries of each `repos/{repo}/` directory using `fs.readdirSync` (Node.js, no network calls). If no: skip — `CODEBASE.md` can always be created manually later by copying and filling the template.
 

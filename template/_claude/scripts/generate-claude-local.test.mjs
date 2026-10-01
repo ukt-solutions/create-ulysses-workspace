@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for generate-claude-local.mjs
-// Run: node template/.claude/scripts/generate-claude-local.test.mjs
+// Run: node template/_claude/scripts/generate-claude-local.test.mjs
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';

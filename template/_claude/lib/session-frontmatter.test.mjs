@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for session-frontmatter.mjs
-// Run: node template/.claude/lib/session-frontmatter.test.mjs
+// Run: node template/_claude/lib/session-frontmatter.test.mjs
 import {
   parseSessionContent,
   updateSessionContent,
