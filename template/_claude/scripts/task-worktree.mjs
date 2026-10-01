@@ -36,6 +36,7 @@ import { join, resolve, relative, sep, isAbsolute, basename, dirname } from 'nod
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readRecord } from './chat-record.mjs';
+import { WORKSPACE_REPO, repoDirFor, mergeModeFor } from './merge-mode.mjs';
 
 function isMainModule(metaUrl) {
   if (!process.argv[1]) return false;
@@ -45,9 +46,6 @@ function isMainModule(metaUrl) {
 }
 
 const WORKTREES_DIR = join('.claude', 'worktrees');
-// The workspace repo (the launcher) is addressed as "." — the one repo
-// name that is not a directory under repos/.
-const WORKSPACE_REPO = '.';
 // Exclude patterns are git syntax: forward slashes on every platform.
 const EXCLUDE_LINE = '.claude/worktrees/';
 
@@ -65,12 +63,22 @@ function readConfig(root) {
 
 // The workspace repo has no workspace.json entry naming its default branch
 // — origin's HEAD is the authority, with "main" as the fallback a fresh
-// clone would get. Project repos keep their configured branch.
+// clone would get. A launcher with no origin never gets an origin/HEAD at
+// all, and no push will ever name its default branch either, so it keeps
+// the branch it sits on when that is main/master rather than being told it
+// is on the wrong branch. Project repos keep their configured branch.
 function defaultBranchFor(root, repo, gitFn = spawnSync) {
   if (isWorkspaceRepo(repo)) {
-    const res = gitFn('git', ['-C', resolve(root), 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' });
-    const name = res && res.status === 0 ? String(res.stdout).trim().replace(/^origin\//, '') : '';
-    return name || 'main';
+    const rootDir = resolve(root);
+    const head = gitFn('git', ['-C', rootDir, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' });
+    const name = head && head.status === 0 ? String(head.stdout).trim().replace(/^origin\//, '') : '';
+    if (name) return name;
+    if (run(gitFn, rootDir, ['remote', 'get-url', 'origin']).status !== 0) {
+      const on = gitFn('git', ['-C', rootDir, 'branch', '--show-current'], { encoding: 'utf8' });
+      const current = on && on.status === 0 ? String(on.stdout).trim() : '';
+      if (current === 'main' || current === 'master') return current;
+    }
+    return 'main';
   }
   const branch = readConfig(root)?.repos?.[repo]?.branch;
   return typeof branch === 'string' && branch ? branch : 'main';
@@ -109,12 +117,6 @@ function slugForBranch(branch) {
 
 function taskWorktreePath(root, repo, branch) {
   return join(repoDirFor(resolve(root), repo), WORKTREES_DIR, slugForBranch(branch));
-}
-
-// "." is the workspace repo itself — the git repo at the root. Every other
-// name is a directory under repos/.
-function repoDirFor(rootDir, repo) {
-  return isWorkspaceRepo(repo) ? rootDir : join(rootDir, 'repos', repo);
 }
 
 // .native resolves Windows 8.3 short names; the plain fallback covers
@@ -233,10 +235,17 @@ function createTaskWorktree(root, { repo, branch, base = null, gitFn = spawnSync
   gitFn('git', ['-C', repoDir, 'fetch', 'origin'], { encoding: 'utf8', timeout: 10000 });
   run(gitFn, repoDir, ['worktree', 'prune']);
 
-  // The base is a starting point, not a freshness guarantee: it is
-  // origin's default branch as of the best-effort fetch above.
+  // The base is a starting point, not a freshness guarantee: origin's
+  // default branch as of the best-effort fetch above — unless the repo
+  // completes in local mode (gh:173: no origin, or merge: "local"), in
+  // which case the local default branch is the base. Local merges land
+  // there and never advance the origin ref, so preferring origin's would
+  // hand every task after the first local merge a stale, unmergeable base.
   const defaultBranch = defaultBranchFor(rootDir, repo, gitFn);
   const resolvedBase = base
+    || (mergeModeFor(rootDir, repo, { gitFn }) === 'local'
+      ? defaultBranch
+      : null)
     || (refExists(gitFn, repoDir, `refs/remotes/origin/${defaultBranch}`)
       ? `origin/${defaultBranch}`
       : defaultBranch);
@@ -520,6 +529,7 @@ if (isMainModule(import.meta.url)) {
 
 export {
   slugForBranch, taskWorktreePath, createTaskWorktree, removeTaskWorktree,
-  detectWorkModel, parseArgs, defaultBranchFor, WORKSPACE_REPO,
+  detectWorkModel, parseArgs, defaultBranchFor,
   WORKTREES_DIR, EXCLUDE_LINE,
 };
+export { WORKSPACE_REPO, repoDirFor } from './merge-mode.mjs';

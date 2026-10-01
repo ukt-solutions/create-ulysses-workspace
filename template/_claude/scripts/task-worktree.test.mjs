@@ -149,6 +149,52 @@ console.log('# base prefers origin/{defaultBranch} when the remote ref exists');
   } finally { clean(root); clean(bare); }
 }
 
+console.log('# a repo with no origin bases the worktree on the local default branch');
+{
+  const { root, app } = makeRoot(); // makeRoot wires no origin — local mode (gh:173)
+  try {
+    // Advance the local default branch itself: with no origin there is no
+    // fresher ref the base could be, so the worktree must land on this.
+    writeFileSync(join(app, 'later.txt'), 'local advance\n');
+    git(app, 'add -A');
+    git(app, 'commit -q -m local-advance');
+    const res = createTaskWorktree(root, { repo: 'app', branch: 'feature/no-remote' });
+    assertEq(git(res.path, 'log -1 --format=%s').trim(), 'local-advance', 'worktree started from the local default branch');
+    assertEq(git(res.path, 'rev-parse --abbrev-ref HEAD').trim(), 'feature/no-remote', 'worktree is on the task branch');
+    assert(!gitOk(app, 'rev-parse --abbrev-ref "feature/no-remote@{u}"'), 'no upstream without an origin');
+  } finally { clean(root); }
+}
+
+console.log('# a merge: "local" override bases the worktree on the local default branch, origin or not');
+{
+  const { root, app } = makeRoot();
+  const bare = makeOrigin(app); // origin exists — and never advances
+  try {
+    // The override case (gh:173): origin parses as a forge URL would, but
+    // merges land locally, so the local main is the line tasks build on.
+    const wsPath = join(root, 'workspace.json');
+    const ws = JSON.parse(readFileSync(wsPath, 'utf-8'));
+    ws.repos.app.merge = 'local';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+
+    // Task one merges locally into app's main — origin/main stays behind.
+    const one = createTaskWorktree(root, { repo: 'app', branch: 'feature/one' });
+    writeFileSync(join(one.path, 'work.txt'), 'one\n');
+    git(one.path, 'add -A');
+    git(one.path, 'commit -q -m one');
+    git(app, 'merge -q --ff-only feature/one');
+    removeTaskWorktree(root, { repo: 'app', branch: 'feature/one', deleteBranch: true });
+
+    // Task two starts from the locally-merged main, not the stale
+    // origin/main — the difference that keeps it fast-forwardable.
+    const two = createTaskWorktree(root, { repo: 'app', branch: 'feature/two' });
+    assertEq(git(two.path, 'log -1 --format=%s').trim(), 'one', 'worktree based on the local main tip, not stale origin/main');
+    git(two.path, 'commit -q --allow-empty -m two');
+    git(app, 'merge -q --ff-only feature/two');
+    assertEq(git(app, 'log -1 --format=%s').trim(), 'two', 'the second task fast-forwarded the local main');
+  } finally { clean(root); clean(bare); }
+}
+
 console.log('# new branches do not track the base');
 {
   const { root, app } = makeRoot();
@@ -413,6 +459,27 @@ console.log('# workspace repo: default branch from origin HEAD, main fallback');
     git(root, 'remote set-head origin -d');
     assertEq(defaultBranchFor(root, '.'), 'main', 'unset origin HEAD falls back to main');
   } finally { clean(root); clean(bare); }
+}
+
+console.log('# workspace repo: an origin-less launcher keeps its own main/master');
+{
+  const root = mkdtempSync(join(tmpdir(), 'task-worktree-'));
+  try {
+    // No origin means no origin/HEAD and no push that will ever name the
+    // default branch: a launcher sitting on master keeps master rather than
+    // being told it is on the wrong branch (gh:173 review follow-up).
+    writeFileSync(join(root, 'workspace.json'), JSON.stringify({
+      workspace: { name: 'fixture' },
+      repos: {},
+    }, null, 2));
+    git(root, 'init -q -b master');
+    writeFileSync(join(root, 'README.md'), '# launcher\n');
+    git(root, 'add -A');
+    git(root, 'commit -q -m init');
+    assertEq(defaultBranchFor(root, '.'), 'master', 'a no-origin launcher on master keeps master');
+    git(root, 'checkout -q -b trunk');
+    assertEq(defaultBranchFor(root, '.'), 'main', 'a no-origin launcher on any other branch falls back to main');
+  } finally { clean(root); }
 }
 
 console.log('# deleteBranch refuses the default branch, workspace and project alike');
