@@ -52,7 +52,7 @@ Push the branch and open a PR through the forge adapter — per-repo `createForg
 
 **Step 5: Tag and publish**
 
-Pull the merge, tag it, push the tag, and publish the forge release:
+Pull the merge, tag it, and push the tag:
 
 ```bash
 git -C repos/{repo} pull --ff-only
@@ -60,11 +60,15 @@ git -C repos/{repo} tag v{version}
 git -C repos/{repo} push origin v{version}
 ```
 
+Who creates the release depends on the repo. If `.github/workflows/publish.yml` exists and itself creates the release (it contains `gh release create`, `softprops/action-gh-release`, or `actions/create-release`), the workflow owns the release — do not call `releaseCreate`; racing it duplicates the release or fails. Instead find and watch its run with `workflowRunFind` / `workflowRunWatch` — retry the find up to 5 times with 3 s backoff (the run may not be registered the moment the tag lands); a failed run is reported to the operator, not thrown — then confirm the release exists with `forge.releaseView({ tag: 'v{version}', repo })`.
+
+Otherwise the skill creates the release itself:
+
 ```js
 await forge.releaseCreate({ tag: 'v{version}', repo, generateNotes: true });
 ```
 
-If the repo has `.github/workflows/publish.yml`, find and watch its run with `workflowRunFind` / `workflowRunWatch` — retry the find up to 5 times with 3 s backoff (the run may not be registered the moment the tag lands). A failed run is reported to the operator, not thrown.
+If a `publish.yml` without release creation exists, still find and watch its run the same way.
 
 **Step 6: Tear down and report**
 

@@ -56,17 +56,6 @@ jobs:
       - name: Publish to npm
         run: npm publish --tag ${{ steps.tag.outputs.dist }} --access public
 
-      - name: Extract CHANGELOG section for release notes
-        id: changelog
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          node scripts/extract-changelog-section.mjs "$version" --out /tmp/release-notes.md
-          if [ -s /tmp/release-notes.md ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -76,17 +65,10 @@ jobs:
           if [ "${{ steps.tag.outputs.is_prerelease }}" = "true" ]; then
             prerelease_flag="--prerelease"
           fi
-          if [ "${{ steps.changelog.outputs.found }}" = "true" ]; then
-            gh release create "${GITHUB_REF_NAME}" \
-              --notes-file /tmp/release-notes.md \
-              --title "v${version}" \
-              $prerelease_flag \
-              || gh release edit "${GITHUB_REF_NAME}" \
-                   --notes-file /tmp/release-notes.md
-          else
-            gh release create "${GITHUB_REF_NAME}" \
+          if ! gh release create "${GITHUB_REF_NAME}" \
               --generate-notes \
               --title "v${version}" \
-              $prerelease_flag \
-              || true
+              $prerelease_flag; then
+            echo "gh release create failed; verifying the release already exists"
+            gh release view "${GITHUB_REF_NAME}"
           fi
