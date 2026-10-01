@@ -107,6 +107,16 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     gh(['issue', 'comment', String(num), '--repo', repo, '--body-file', '-'], { input: body });
   }
 
+  // A closing reference for PR bodies: `#N` closes an issue in the PR's own
+  // repo, `owner/repo#N` reaches one living elsewhere. GitHub only honors a
+  // bare `#N` when the PR and the issue share a repo, so callers pass the
+  // PR's repo as fromRepo and this decides which shape closes the right
+  // issue. No `fromRepo` means the PR is in this adapter's own repo.
+  function issueRef(issueId, { fromRepo } = {}) {
+    const num = parseIssueNumber(issueId);
+    return fromRepo && fromRepo !== repo ? `${repo}#${num}` : `#${num}`;
+  }
+
   async function closeIssue(issueId, { comment: commentBody } = {}) {
     const num = parseIssueNumber(issueId);
     if (commentBody) {
@@ -142,6 +152,7 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     createIssue,
     comment,
     closeIssue,
+    issueRef,
     ensureLabels,
     ensureMilestone,
     get identity() { return `github-issues:${repo}`; },
