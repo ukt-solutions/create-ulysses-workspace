@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for sweep-references.mjs
-// Run: node template/.claude/scripts/sweep-references.test.mjs
+// Run: node template/_claude/scripts/sweep-references.test.mjs
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -14,6 +14,8 @@ npx @ulysses-ai/create-workspace --init my-workspace
 
 The CLI installs the bootstrap essentials: CLAUDE.md (generated from template), workspace.json, the workspace-init and workspace-update skills, all hooks, all scripts, the shared library helpers, shared-context directory structure, and gitignore. The remaining skills, rules, and agents are installed interactively by `/workspace-init`. The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created when they first need to hold something.
 
+One detail of the template's layout is invisible in the installed workspace: the package stores `_gitignore`, `_claude/`, and `_mcp.json` under these inert names because Claude Code treats `.claude/` directories and `.mcp.json` files as protected paths that headless workers cannot edit — the live names inside `template/` would block automated maintenance of the template itself. Both `--init` and `--upgrade` write the live names out: the scaffold installs `.gitignore`, `.claude/`, and `.mcp.json` directly, and the staged `.workspace-update/` payload also carries `.claude/` and `.mcp.json` under their live names, keeping the layout that older workspaces' already-installed skills expect.
+
 If you omit the directory name, the current directory is used — this supports initializing an existing project directory as a workspace:
 
 ```bash

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Unit tests for cleanup-work-session.mjs
-// Run: node template/.claude/scripts/cleanup-work-session.test.mjs
+// Run: node template/_claude/scripts/cleanup-work-session.test.mjs
 //
 // These tests build a minimal real workspace in a temp directory (two git
 // repos, two worktrees on a session branch, a session.md tracker), invoke

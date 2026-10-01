@@ -70,7 +70,7 @@ does not need to be in context while you are editing documentation.
 ---
 paths:
   - ".claude/scripts/**/*.mjs"
-  - "repos/*/template/.claude/scripts/**/*.mjs"
+  - "repos/*/template/_claude/scripts/**/*.mjs"
 ---
 ```
 
