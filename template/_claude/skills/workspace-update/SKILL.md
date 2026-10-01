@@ -10,7 +10,11 @@ Apply a staged template update to an initialized workspace. The CLI (`npx @ulyss
 ## Prerequisites
 
 - `workspace.json` must have `initialized: true`
-- If not initialized, report: "Workspace not initialized. Run /workspace-init first."
+- If not initialized, check whether initialization was committed but never merged — the workspace-init flow ends with its commits merged to the default branch, so an unmerged init branch explains a missing flag:
+  ```bash
+  git log --all --format=%H -S'"initialized": true' -- workspace.json
+  ```
+  If there are hits, name the branch holding the newest commit (`git branch --all --contains {sha}`) and report: "This workspace was initialized on branch `{branch}`, but that branch was never merged. Merge it first (`git merge {branch}`), then re-run /workspace-update." Only if there are no hits, report: "Workspace not initialized. Run /workspace-init first."
 - `.workspace-update/` payload directory must exist (staged by `npx @ulysses-ai/create-workspace --upgrade`)
 - If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx @ulysses-ai/create-workspace --upgrade` to stage the template."
 - Read `.workspace-update/.manifest.json` for `fromVersion`, `templateVersion` (the target version), and `action`

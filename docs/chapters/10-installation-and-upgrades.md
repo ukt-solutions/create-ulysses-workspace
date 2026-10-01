@@ -70,6 +70,7 @@ The skill creates a `chore/workspace-init` branch and walks you through a compre
 11. **Configure user identity.** Sets your name for user-scoped context.
 12. **Clean and verify.** Moves non-template items to unmigrated, cleans up the payload, checks for self-contradictions.
 13. **Set up workspace remote.** Creates a new repo or connects to an existing one (for team members joining a workspace that already exists).
+14. **Merge to the default branch.** Squash-merges `chore/workspace-init` into the default branch (pushing if a remote is configured), so initialization ends with every commit — including `initialized: true` — on the default branch. The init branch itself is kept for its granular history.
 
 For solo use, many steps are quick or skipped. For teams, the team lead runs the full init and commits the result. Team members then clone the workspace repo and run `/workspace-init` to connect — the skill detects the initialized workspace and handles onboarding (clone repos, set identity, rebase local changes onto the remote).
 
@@ -136,7 +137,7 @@ The upgrade does not apply changes directly. Instead, it stages a payload:
 1. The CLI verifies the workspace is initialized and reads its current template version.
 2. It writes the full new template to `.workspace-update/` with a manifest recording `action`, `fromVersion`, and `templateVersion`.
 
-The `.workspace-update/` directory is a staging area. No files have been modified yet. The actual application happens interactively through the `/workspace-update` skill.
+The `.workspace-update/` directory is a staging area, gitignored since v0.19.0. No files have been modified yet. The actual application happens interactively through the `/workspace-update` skill. If the CLI finds `.workspace-update/` already tracked by git — a leftover from upgrading an older workspace — it warns and tells you to untrack it (`git rm -r --cached .workspace-update`) before continuing.
 
 ## Applying Updates
 

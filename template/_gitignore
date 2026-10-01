@@ -12,6 +12,9 @@ work-sessions/
 # Disposable workspace-scoped scratchpad (session log, hook debug output)
 workspace-scratchpad/
 
+# Staged template payload — transient input for /workspace-update, never tracked
+.workspace-update/
+
 # Personal overrides
 .claude/settings.local.json
 .claude/.active-session.json
