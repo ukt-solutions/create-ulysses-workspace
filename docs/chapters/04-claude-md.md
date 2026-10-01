@@ -79,6 +79,8 @@ This is why locked context has a 10KB budget target. A 10KB locked directory add
 
 Locked context is one line item. The whole always-loaded set — CLAUDE.md, its @-imports, and the active rules — has its own ceiling in `workspace.json`: `workspace.alwaysLoadedBudgetBytes` (64KB from the template). `.claude/scripts/context-footprint.mjs --root .` measures the total against it, and `/maintenance` surfaces an over-budget total as a warning.
 
+`workspace.json` also carries `workspace.canonicalBudgetBytes`, a ceiling on `canonical.md` alone. It is off by default — absent or `null` means every locked file ships in full — because `alwaysLoadedBudgetBytes` already measures the total that matters. Setting a byte count opts in: when the canonical body exceeds it, the builder trims and then stubs `priority: reference` locked files (guided by their `<!-- canonical:trim -->` markers) to fit, and `/maintenance` reports the budget while it is set and offers triage when it is exceeded.
+
 The practical implication: do not put large documents in locked context. A 5,000-word design document does not belong in `shared-context/locked/` — it belongs in user-scoped context where it is read on demand. Locked is for concise, current team truths that Claude needs on every turn.
 
 ## Loading Order

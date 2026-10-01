@@ -489,7 +489,7 @@ console.log('# renderCanonical output');
   assert(out.includes('Use kebab-case.'), 'body included');
   assert(out.includes('type: canonical'), 'frontmatter type set');
   assert(!out.includes('budget:'), 'no budget frontmatter line when budgetBytes=null');
-  assert(!out.includes('Budget:'), 'no budget blockquote when budgetBytes=null');
+  assert(out.includes('> Budget: off; current: 0 bytes.'), 'off blockquote when budgetBytes=null');
 }
 
 {
@@ -901,17 +901,33 @@ Inner.
 console.log('# readWorkspaceBudget');
 
 {
-  // 12. workspace.json missing → default.
+  // 12. workspace.json missing → off (key absent).
   const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
-  assertEq(readWorkspaceBudget(root), DEFAULT_CANONICAL_BUDGET, 'missing workspace.json → default');
+  assertEq(readWorkspaceBudget(root), 0, 'missing workspace.json → off');
   cleanup(root);
 }
 
 {
-  // 13. Field absent → default.
+  // 13. Field absent → off.
   const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
   writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { name: 'x' } }));
-  assertEq(readWorkspaceBudget(root), DEFAULT_CANONICAL_BUDGET, 'absent field → default');
+  assertEq(readWorkspaceBudget(root), 0, 'absent field → off');
+  cleanup(root);
+}
+
+{
+  // 13b. Field explicitly null → off.
+  const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { canonicalBudgetBytes: null } }));
+  assertEq(readWorkspaceBudget(root), 0, 'null field → off');
+  cleanup(root);
+}
+
+{
+  // 13c. Field a non-number → rejected to the default, as before.
+  const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { canonicalBudgetBytes: '40960' } }));
+  assertEq(readWorkspaceBudget(root), DEFAULT_CANONICAL_BUDGET, 'string value rejected to default');
   cleanup(root);
 }
 
@@ -924,18 +940,18 @@ console.log('# readWorkspaceBudget');
 }
 
 {
-  // 15. Field is 0 → 0 (disabled).
+  // 15. Field is 0 → 0 (off).
   const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
   writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { canonicalBudgetBytes: 0 } }));
-  assertEq(readWorkspaceBudget(root), 0, 'zero treated as disabled');
+  assertEq(readWorkspaceBudget(root), 0, 'zero treated as off');
   cleanup(root);
 }
 
 {
-  // 16. Field is -1 → 0 (disabled).
+  // 16. Field is -1 → 0 (off).
   const root = mkdtempSync(join(tmpdir(), 'wc-budget-'));
   writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { canonicalBudgetBytes: -1 } }));
-  assertEq(readWorkspaceBudget(root), 0, 'negative treated as disabled');
+  assertEq(readWorkspaceBudget(root), 0, 'negative treated as off');
   cleanup(root);
 }
 
@@ -1103,10 +1119,10 @@ console.log('# renderCanonical with budget');
   assert(out.includes('Budget: 40960 bytes (body); current: 12 bytes; status: ok (full).'), 'header blockquote present');
   assert(out.includes('## a'), 'item rendered');
 
-  // Disabled budget: no budget frontmatter, no blockquote.
+  // Disabled budget: no budget frontmatter, off blockquote.
   const out2 = renderCanonical(resolved, NULL_SELECTION);
   assert(!out2.includes('budget:'), 'no budget frontmatter when disabled');
-  assert(!out2.includes('Budget:'), 'no header blockquote when disabled');
+  assert(out2.includes('> Budget: off; current: 0 bytes.'), 'off header blockquote when disabled');
 
   // Trimmed status summary.
   const sel3 = {
@@ -1193,6 +1209,88 @@ Short body.
   assert(!canonicalArt.content.includes('X'.repeat(2000)), 'trimmed block dropped');
   assert(canonicalArt.content.includes('## c-reference-no-markers'), 'no-markers reference still present');
   assert(canonicalArt.content.includes('Short body.'), 'no-markers reference body kept (trimmed === full)');
+
+  cleanup(root);
+}
+
+{
+  // 21b. Same fixture, no canonicalBudgetBytes in workspace.json (off by
+  // default): every locked file ships in full — no trimming, no stubs, no
+  // breadcrumbs — and the header says the budget is off.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'a-critical.md'),
+    `---
+priority: critical
+---
+
+# Critical
+
+` + 'C'.repeat(500) + '\n',
+  );
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'b-reference-trimmable.md'),
+    `---
+priority: reference
+---
+
+# Reference Trimmable
+
+Pre.
+
+<!-- canonical:trim -->
+` + 'X'.repeat(2000) + `
+<!-- canonical:end-trim -->
+
+Post.
+`,
+  );
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { name: 'x' } }));
+
+  const artifacts = regenerateAll(root);
+  const canonicalArt = artifacts.find((a) => a.label === 'canonical.md');
+  assert(canonicalArt, 'canonical artifact present');
+  const sel = canonicalArt.selection;
+  assertEq(sel.status, 'ok', 'status ok when budget off');
+  assertEq(sel.budgetBytes, null, 'budgetBytes null when budget off');
+  assert(sel.currentBytes > 2000, 'currentBytes counts the full body');
+  assert(canonicalArt.content.includes('> Budget: off; current: '), 'header says the budget is off');
+  assert(canonicalArt.content.includes('X'.repeat(2000)), 'trim-markered reference kept in full when off');
+  assert(!canonicalArt.content.includes('Trimmed for canonical budget'), 'no trim breadcrumb when off');
+  assert(!canonicalArt.content.includes('Dropped for canonical budget'), 'no stub breadcrumb when off');
+
+  cleanup(root);
+}
+
+{
+  // 21c. Explicit null behaves the same as absent: off, everything in full.
+  const root = setupFixture();
+  writeFileSync(
+    join(root, 'workspace-context', 'shared', 'locked', 'ref.md'),
+    `---
+priority: reference
+---
+
+Pre.
+
+<!-- canonical:trim -->
+Droppable.
+<!-- canonical:end-trim -->
+
+Post.
+`,
+  );
+  writeFileSync(
+    join(root, 'workspace.json'),
+    JSON.stringify({ workspace: { canonicalBudgetBytes: null } }),
+  );
+
+  const artifacts = regenerateAll(root);
+  const canonicalArt = artifacts.find((a) => a.label === 'canonical.md');
+  const sel = canonicalArt.selection;
+  assertEq(sel.budgetBytes, null, 'explicit null → budget off');
+  assert(canonicalArt.content.includes('Droppable.'), 'trim span kept in full under explicit null');
+  assert(canonicalArt.content.includes('> Budget: off; current: '), 'header says off under explicit null');
 
   cleanup(root);
 }

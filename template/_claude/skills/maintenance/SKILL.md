@@ -59,9 +59,9 @@ node .claude/scripts/build-workspace-context.mjs --check --root .
 
 The script reports per-artifact status as JSON and uses three exit codes to distinguish what's wrong:
 
-- `0` — all artifacts current and the rendered canonical fits inside `workspace.canonicalBudgetBytes`.
+- `0` — all artifacts current and, when a canonical budget is set, the rendered canonical fits inside `workspace.canonicalBudgetBytes`.
 - `1` — at least one artifact is `missing` or `stale`. Run `--write` to regenerate. `missing` means the artifact does not exist yet; `stale` means it exists but no longer matches its sources (a file was added or deleted, a `description:` changed, a `shared/locked/` file was edited, an `.indexignore` rule was added).
-- `2` — artifacts are current but canonical body bytes exceed the budget after the trim and stub stages have already run. Regeneration cannot fix this; the locked content itself needs triage. Stale wins over over-budget when both apply, so a `1` can hide an over-budget condition until you regen.
+- `2` — artifacts are current but canonical body bytes exceed the budget after the trim and stub stages have already run. Only reachable when a budget is set. Regeneration cannot fix this; the locked content itself needs triage. Stale wins over over-budget when both apply, so a `1` can hide an over-budget condition until you regen.
 
 The JSON payload always includes a `canonical` block summarizing the budget outcome:
 
@@ -83,7 +83,15 @@ The JSON payload always includes a `canonical` block summarizing the budget outc
 
 `selectionStatus` walks `ok` → `trimmed` → `stubbed` → `over-budget` as the script gives up progressively more reference content trying to fit the budget. `trimmedFiles` lists reference files whose `<!-- canonical:trim --> ... <!-- canonical:end-trim -->` spans were dropped; `stubbedFiles` lists reference files whose entire body was replaced with a one-line breadcrumb. `overBy` is present only when `selectionStatus === 'over-budget'` and reports the bytes still over after stubbing.
 
-Audit mode reports the status verbatim. When `selectionStatus` is `over-budget`, audit emits the budget violation and recommends `/maintenance cleanup` to triage — regeneration will not resolve it. Cleanup mode runs `--write` when `missing` or `stale`, re-checks, and then enters the budget triage flow described in cleanup step 11 if the post-regen check still reports `over-budget`.
+The canonical budget is opt-in. `workspace.canonicalBudgetBytes` is off unless workspace.json sets it — absent or `null` means no budget. When off, `canonical.md` ships every locked file in full, the `canonical` block reports `"budget": null` with `selectionStatus: "ok"`, exit `2` cannot occur, and the audit reports one informational line in place of the budget OK/warning line:
+
+```
+• Canonical budget: off (alwaysLoadedBudgetBytes covers the total)
+```
+
+No warning accompanies it. To turn the budget back on, set a byte count in workspace.json (e.g. `"canonicalBudgetBytes": 40960`) and regenerate.
+
+Audit mode reports the status verbatim. When a budget is set and `selectionStatus` is `over-budget`, audit emits the budget violation and recommends `/maintenance cleanup` to triage — regeneration will not resolve it. Cleanup mode runs `--write` when `missing` or `stale`, re-checks, and then enters the budget triage flow described in cleanup step 11 if the post-regen check still reports `over-budget`.
 
 While the indexes are being read, also flag entries with weak fallbacks: filename-slug-only descriptions (e.g., "project status" with no period) usually indicate the underlying file is missing a `description:` or has no usable opening sentence. Suggest adding `description:` to those source files — the index will pick it up on the next regeneration.
 
@@ -165,7 +173,7 @@ When stale candidates are found, surface them as warnings in the output format a
 
 ### 11. Canonical budget triage
 
-This step runs only when the post-regen `--check` from the cleanup regen pass (Flow step 9) still reports `selectionStatus: 'over-budget'`. If the regular regen pass cleared the budget — or if `--check` was already `ok`, `trimmed`, or `stubbed` after that pass — skip this step entirely.
+This step runs only when a canonical budget is set (`workspace.canonicalBudgetBytes` holds a number) and the post-regen `--check` from the cleanup regen pass (Flow step 9) still reports `selectionStatus: 'over-budget'`. With the budget off — absent or `null` in workspace.json — `--check` can never report over-budget, so this step is unreachable. Skip it too if the regular regen pass cleared the budget, or if `--check` was already `ok`, `trimmed`, or `stubbed` after that pass.
 
 The rest of cleanup is suggestion-list-with-confirmation: surface a candidate, ask before applying, move on. Triage is the one meaningfully more interactive surface in `/maintenance`. It runs as a small REPL: present the budget state and a triage menu, take one action, re-run `--check`, present the menu again with the new state. No suggestion is auto-applied; every action is the user's choice.
 
@@ -223,7 +231,7 @@ Read `workspace.json`. If `workspace.tracker?.type === 'github-issues'` and `wor
 This is migration guidance for workspaces created before the `forge` field landed — the field is back-compat with a sensible default, so the unset case is not a bug, just an opportunity to make the implicit explicit. If `workspace.forge.type` is set to a value with no adapter at `.claude/scripts/forges/{type}.mjs`, that IS an error and goes in the Issues section.
 
 ### 13. Health metrics
-- Canonical budget — read from the same `--check` invocation as step 5. Reported as `current / budget` bytes with the selection status (e.g., `full`, `2 reference files trimmed`). Over-budget cases are deferred to the cleanup triage flow rather than re-reported here.
+- Canonical budget — read from the same `--check` invocation as step 5. When a budget is set, reported as `current / budget` bytes with the selection status (e.g., `full`, `2 reference files trimmed`); over-budget cases are deferred to the cleanup triage flow rather than re-reported here. When off, report the step 5 one-liner: `• Canonical budget: off (alwaysLoadedBudgetBytes covers the total)`.
 - Always-loaded context — read from the same `context-footprint.mjs` invocation as audit step 6, reported the same way (`current / budget` bytes); over-budget is already surfaced as a warning there.
 - Number of ephemeral files — flag if accumulating without resolution
 - Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
@@ -269,7 +277,7 @@ OK (6):
 3. Read workspace.json — extract repo manifest
 4. Check `.claude/rules/`, `.claude/skills/`, `.claude/agents/` against references
 5. Check git state (worktrees, branches, remotes)
-6. Run `node .claude/scripts/build-workspace-context.mjs --check --root .` — capture status. Exit `0` = clean and within budget, `1` = artifact missing or stale, `2` = artifacts current but canonical body over budget. The `canonical` block in the JSON output drives both the audit budget line and the cleanup triage decision.
+6. Run `node .claude/scripts/build-workspace-context.mjs --check --root .` — capture status. Exit `0` = clean (and within budget when one is set), `1` = artifact missing or stale, `2` = artifacts current but canonical body over budget — only possible with a budget set. The `canonical` block in the JSON output drives both the audit budget line and the cleanup triage decision; `"budget": null` means the canonical budget is off.
 7. Run `node .claude/scripts/context-footprint.mjs --root .` — capture the total and the `BUDGET` line. Exit `0` = within budget or no budget set; exit `1` = over budget, reported as a warning with the top contributors (audit step 6).
 8. Read session-log.jsonl if it exists
 9. If cleanup mode: regenerate the workspace-context auto-files if stale (index.md, canonical.md, per-user team-member indexes); compare files pairwise for overlap; scan for stale cross-references. If post-regen `--check` reports `over-budget`, enter the canonical-budget triage flow described in cleanup step 11.
