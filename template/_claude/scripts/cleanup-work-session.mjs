@@ -146,9 +146,11 @@ if (repos.length === 0) {
       if (found.length > 0) {
         repos = found;
         discovered = true;
+        // Informational wording: discovery is a normal success path here
+        // (gh:172) — not a warning about the tracker.
         skipped.push({
           step: 'discovery',
-          reason: `Tracker missing repos; discovered ${found.length} from ${nestedReposDir}: ${found.join(', ')}`,
+          reason: `repos discovered from disk: ${found.length} (${found.join(', ')})`,
         });
       }
     } catch (err) {
@@ -209,7 +211,7 @@ if (!branch && existsSync(wsWorktree)) {
   const res = git(wsWorktree, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (res.ok && res.out.trim() !== '' && res.out.trim() !== 'HEAD') {
     branch = res.out.trim();
-    skipped.push({ step: 'discovery', reason: `Tracker missing branch; discovered from worktree: ${branch}` });
+    skipped.push({ step: 'discovery', reason: `branch discovered from the worktree: ${branch}` });
   }
 }
 

@@ -268,8 +268,8 @@ await (async () => {
     'project worktree was actually removed (not silently skipped)');
   assert(result.removed.includes('workspace worktree'),
     'workspace worktree was removed');
-  assert((result.skipped || []).some(s => s.step === 'discovery'),
-    'discovery step logged a skip explaining the fallback');
+  assert((result.skipped || []).some(s => s.step === 'discovery' && s.reason.startsWith('repos discovered from disk:')),
+    'discovery is logged as normal information, not a tracker warning (gh:172)');
   assert(!post.wsList.includes('prunable'),
     'no prunable orphan in workspace repo');
   assert(!post.projLists.proj.includes('prunable'),

@@ -193,14 +193,19 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's', '--inventory', '--active-days']), 'dangling value flag rejected');
   throws(() => parseArgs(['node', 's', '--archive', '--session', 'x', '--discard-uncommitted']), 'there is no discard flag — archive keeps everything');
   throws(() => parseArgs(['node', 's', '--teardown', '--session', 'x']), 'there is no teardown mode');
-  throws(() => parseArgs(['node', 's', '--archive', '--session', 'x', '--remote', 'origin']), '--remote only with --backup');
+  throws(() => parseArgs(['node', 's', '--archive', '--session', 'x', '--remote']), '--remote only with --backup');
+  throws(() => parseArgs(['node', 's', '--remote-allow', 'app=origin', '--backup', '--session', 'x']), '--remote-allow is gated behind --remote --backup');
+  throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--remote-allow-all']), '--remote-allow-all requires --remote');
+  throws(() => parseArgs(['node', 's', '--inventory', '--remote', '--remote-allow', 'app=origin']), '--remote-allow only with --backup');
+  throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--allow-uncommitted']), '--allow-uncommitted only with --archive');
+  throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--remote', '--remote-allow']), 'a dangling --remote-allow value is rejected');
   throws(() => parseArgs(['node', 's', '--inventory', '--bogus']), 'unknown flag rejected');
   const inv = parseArgs(['node', 's', '--root', '/w', '--inventory']);
   assertEq([inv.mode, inv.root, inv.activeDays], ['inventory', '/w', null], 'inventory defaults parse');
-  const ar = parseArgs(['node', 's', '--archive', '--session', 'x']);
-  assertEq([ar.mode, ar.session], ['archive', 'x'], '--archive --session parses');
-  const bk = parseArgs(['node', 's', '--backup', '--session', 'x', '--remote', 'upstream']);
-  assertEq([bk.mode, bk.remote], ['backup', 'upstream'], '--backup with --remote parses');
+  const ar = parseArgs(['node', 's', '--archive', '--session', 'x', '--allow-uncommitted']);
+  assertEq([ar.mode, ar.session, ar.allowUncommitted], ['archive', 'x', true], '--archive --session --allow-uncommitted parses');
+  const bk = parseArgs(['node', 's', '--backup', '--session', 'x', '--remote', '--remote-allow', 'app=origin', '--remote-allow', '.=upstream']);
+  assertEq([bk.mode, bk.remote, bk.remoteAllow], ['backup', true, ['app=origin', '.=upstream']], '--remote-allow is repeatable and "." names the workspace repo');
   const days = parseArgs(['node', 's', '--inventory', '--active-days', '7']);
   assertEq(days.activeDays, 7, '--active-days parses as an integer');
 }
@@ -445,7 +450,7 @@ console.log('# S1: remote states — same, ahead, not-fetched, behind, diverged'
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, otherClone); }
 }
 
-console.log('# S1: table renders remote states');
+console.log('# S1: table renders remote states, and every remote shows its URL');
 {
   const fx = makeWorkspace();
   try {
@@ -453,8 +458,28 @@ console.log('# S1: table renders remote states');
     const inv = inventory(fx.root);
     const app = byName(inv, 'tbl').worktrees.find((w) => w.repo === 'app');
     assertEq(app.remotes.origin.state, 'none', 'unpushed branch is none');
+    assertEq(app.remoteUrls.origin, fx.appOrigin, 'the configured remote URL is reported alongside');
     const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
     assert(r.stderr.includes('[origin:none]'), 'table renders [origin:none]');
+    assert(r.stderr.includes(fx.appOrigin), 'table lists the remote URL — "origin:none" never means "no origin"');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# inventory: a repo whose origin is unreachable still reports the remote and its URL');
+{
+  const fx = makeWorkspace();
+  try {
+    makeSession(fx, { name: 'ghost', branch: 'bugfix/ghost', tracker: { status: 'active', branch: 'bugfix/ghost', repos: ['app'], updated: daysAgoIso(40) } });
+    // Origin configured but pointing nowhere: ls-remote cannot answer,
+    // local config still can. The URL is the fact that keeps "origin"
+    // from being an anonymous label — it may be a third-party upstream.
+    git(fx.app, 'remote set-url origin /nonexistent/remote.git');
+    const app = byName(inventory(fx.root), 'ghost').worktrees.find((w) => w.repo === 'app');
+    assertEq(app.remoteUrls.origin, '/nonexistent/remote.git', 'the URL comes from local config, not the network');
+    assertEq(app.remotes.origin.url, '/nonexistent/remote.git', 'the remote state entry carries the URL too');
+    assertEq(app.remotes.origin.state, 'unknown', 'the state is honestly unknown');
+    const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
+    assert(r.stderr.includes('/nonexistent/remote.git'), 'the table shows the URL even though the remote is unreachable');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -481,7 +506,7 @@ console.log('# ls-remote timeout degrades to unknown (S3, injected gitFn)');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
-console.log('# backup: creates, pushes, and verifies session-scoped drain tags (idempotent)');
+console.log('# backup: local tags by default; push mode needs an explicit allow (idempotent)');
 {
   const fx = makeWorkspace();
   try {
@@ -491,33 +516,89 @@ console.log('# backup: creates, pushes, and verifies session-scoped drain tags (
     writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
     commitAll(projWts.app, 'project fix', daysAgoIso(40));
 
+    // Push mode with no allow is a plan, not a start: exit non-zero,
+    // every target's exact URL listed, nothing tagged, nothing pushed.
+    const cli = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--backup', '--session', 'drain', '--remote'], { encoding: 'utf8' });
+    assertEq(cli.status, 1, 'no allow → non-zero exit');
+    const plan = JSON.parse(cli.stdout);
+    assertEq(plan.refused, true, 'the plan reports as a refusal');
+    assertEq(plan.needsAllow, true, 'the plan says what is missing');
+    assertEq(plan.targets.length, 2, 'one target per unsafe tip');
+    assert(plan.targets.every((t) => t.remote === 'origin' && typeof t.url === 'string' && t.url.includes('origin.git')), 'every target names the remote and its exact URL');
+    assert(plan.reasons.some((r) => r.includes('--remote-allow')), 'the reasons say which flag to add');
+    assertEq(git(fx.root, 'tag -l "drain/drain/*"').trim(), '', 'the plan created no tag');
+    assertEq(git(fx.wsOrigin, 'tag -l "drain/drain/*"').trim(), '', 'the plan pushed nothing');
+
+    // Plain --backup: local tags only, both repos, no pushes at all.
     const out = backupSession(fx.root, { session: 'drain' });
-    assertEq(out.refused, undefined, 'backup is not refused');
+    assertEq(out.refused, undefined, 'local backup is not refused');
     assertEq(out.branches.length, 2, 'one backup entry per unsafe tip');
     const wsEntry = out.branches.find((b) => b.repo === '.');
     const appEntry = out.branches.find((b) => b.repo === 'app');
-    assert(wsEntry && wsEntry.tag === 'drain/drain/bugfix-drain' && wsEntry.pushed === true && wsEntry.verified === true, 'workspace tip backed up under a session-scoped tag');
-    assert(wsEntry.remote === 'origin', 'the remote used is reported');
-    assert(appEntry && appEntry.tag === 'drain/drain/bugfix-drain' && appEntry.verified === true, 'project tip backed up');
+    assert(wsEntry && wsEntry.tag === 'drain/drain/bugfix-drain', 'workspace tip tagged under a session-scoped tag');
+    assert(appEntry && appEntry.tag === 'drain/drain/bugfix-drain', 'project tip tagged');
+    assert(out.branches.every((b) => b.pushed === false && b.localOnly === true), 'local backup entries are local-only');
     assertEq(wsEntry.commit, git(wsWt, 'rev-parse HEAD').trim(), 'tag commit is the branch tip');
-
     assert(git(fx.root, 'tag -l drain/drain/bugfix-drain').trim() !== '', 'tag exists in the workspace repo');
     assert(git(fx.app, 'tag -l drain/drain/bugfix-drain').trim() !== '', 'tag exists in the project repo');
-    assert(git(fx.wsOrigin, 'tag -l drain/drain/bugfix-drain').trim() !== '', 'tag pushed to the workspace origin');
-    assert(git(fx.appOrigin, 'tag -l drain/drain/bugfix-drain').trim() !== '', 'tag pushed to the project origin');
+    assertEq(git(fx.wsOrigin, 'tag -l "drain/drain/*"').trim(), '', 'nothing pushed to the workspace origin');
+    assertEq(git(fx.appOrigin, 'tag -l "drain/drain/*"').trim(), '', 'nothing pushed to the project origin');
     assert(
       git(fx.root, "for-each-ref refs/tags/drain/drain/bugfix-drain --format='%(contents:subject)'").trim()
         === 'backup before draining session drain',
       'annotated tag carries the backup message',
     );
 
-    // The second run finds both tips provably on origin via the drain
+    // Allow-all: both existing tags pushed, verified, and reported with URLs.
+    const pushed = backupSession(fx.root, { session: 'drain', remote: true, remoteAllowAll: true });
+    assertEq(pushed.refused, undefined, 'the allow-all run is not refused');
+    assertEq(pushed.branches.length, 2, 'both tips pushed');
+    assert(pushed.branches.every((b) => b.pushed === true && b.verified === true), 'pushes are verified');
+    assert(pushed.branches.every((b) => b.remote === 'origin' && typeof b.url === 'string'), 'each pushed entry reports remote and URL');
+    assert(git(fx.wsOrigin, 'tag -l drain/drain/bugfix-drain').trim() !== '', 'tag pushed to the workspace origin');
+    assert(git(fx.appOrigin, 'tag -l drain/drain/bugfix-drain').trim() !== '', 'tag pushed to the project origin');
+
+    // The next run finds both tips provably on origin via the drain
     // tags it just pushed — remote-safe tips are never re-tagged.
-    const again = backupSession(fx.root, { session: 'drain' });
+    const again = backupSession(fx.root, { session: 'drain', remote: true, remoteAllowAll: true });
     assertEq(again.refused, undefined, 'second backup run is not refused');
     assertEq(again.branches.length, 0, 'already-remote tips are not tagged again');
     assertEq(again.skipped.length, 2, 'both tips report as already safe');
     assert(again.skipped.every((s2) => s2.safeOn === 'origin'), 'the safety is attributed to origin');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# backup: --remote-allow scopes the push to the repos the operator named');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt, projWts } = makeSession(fx, { name: 'scoped', branch: 'bugfix/scoped', tracker: { status: 'active', branch: 'bugfix/scoped', repos: ['app'], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
+    commitAll(projWts.app, 'project fix', daysAgoIso(40));
+
+    const out = backupSession(fx.root, { session: 'scoped', remote: true, remoteAllow: ['app=origin'] });
+    assertEq(out.refused, undefined, 'the allow-one run is not refused');
+    const appEntry = out.branches.find((b) => b.repo === 'app');
+    const wsEntry = out.branches.find((b) => b.repo === '.');
+    assert(appEntry && appEntry.pushed === true && appEntry.verified === true, 'the allowed repo is pushed');
+    assert(wsEntry && wsEntry.pushed === false && wsEntry.localOnly === true, 'the un-named repo keeps a local tag');
+    assert(wsEntry.wouldPushTo && wsEntry.wouldPushTo.remote === 'origin' && typeof wsEntry.wouldPushTo.url === 'string', 'the un-pushed entry still names where it would have pushed');
+    assert(git(fx.appOrigin, 'tag -l drain/scoped/bugfix-scoped').trim() !== '', 'the allowed repo’s tag landed');
+    assertEq(git(fx.wsOrigin, 'tag -l "drain/scoped/*"').trim(), '', 'the un-named repo was not pushed');
+    assert(git(fx.root, 'tag -l drain/scoped/bugfix-scoped').trim() !== '', 'the un-named repo keeps its local tag');
+
+    // Bad allows refuse before anything is tagged — unknown repo, unknown
+    // remote, malformed entry.
+    const badRepo = backupSession(fx.root, { session: 'scoped', remote: true, remoteAllow: ['nosuch=origin'] });
+    assertEq(badRepo.refused, true, 'an unknown repo in --remote-allow refuses');
+    assert(badRepo.reasons.some((r) => r.includes('nosuch') && r.includes('does not hold')), 'the refusal names the unknown repo');
+    const badRemote = backupSession(fx.root, { session: 'scoped', remote: true, remoteAllow: ['app=nosuch'] });
+    assertEq(badRemote.refused, true, 'an unknown remote in --remote-allow refuses');
+    assert(badRemote.reasons.some((r) => r.includes('nosuch') && r.includes('not configured')), 'the refusal names the unknown remote');
+    const malformed = backupSession(fx.root, { session: 'scoped', remote: true, remoteAllow: ['app'] });
+    assertEq(malformed.refused, true, 'a malformed --remote-allow entry refuses');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -533,7 +614,7 @@ console.log('# backup: only an exact remote branch/tag counts as already held');
     // walk and no fetch — it tags. (Archive never depends on this.)
     git(fx.root, 'merge -q --no-ff -m merge bugfix/merged');
     git(fx.root, 'push -q origin main');
-    const out = backupSession(fx.root, { session: 'merged' });
+    const out = backupSession(fx.root, { session: 'merged', remote: true, remoteAllowAll: true });
     assertEq(out.refused, undefined, 'backup is not refused');
     assertEq(out.branches.length, 1, 'an ancestor-only tip still gets a tag');
     // Once the branch itself is on the remote, it is held exactly.
@@ -552,7 +633,7 @@ console.log('# backup: only an exact remote branch/tag counts as already held');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
-console.log('# backup: refuses a moved tag, a repo with no remote, and a failed push');
+console.log('# backup: refuses a moved tag and a failed push; a repo with no remote keeps a local tag');
 {
   const fx = makeWorkspace();
   const solo = join(fx.root, 'repos', 'solo');
@@ -572,26 +653,31 @@ console.log('# backup: refuses a moved tag, a repo with no remote, and a failed 
     assertEq(moved.refused, true, 'a branch that moved past its tag refuses');
     assert(moved.reasons.some((r) => r.includes('already points at')), 'the refusal explains the moved tag');
 
+    // A repo with no remote is not a refusal: its backup is the local
+    // tag, and push mode says so per entry instead of failing the run.
     makeSession(fx, { name: 'offline', branch: 'bugfix/offline', repos: ['solo'], tracker: { branch: 'bugfix/offline', repos: ['solo'], updated: daysAgoIso(40) } });
     writeFileSync(join(fx.root, 'work-sessions', 'offline', 'workspace', 'repos', 'solo', 'fix.txt'), 'fix\n');
     commitAll(join(fx.root, 'work-sessions', 'offline', 'workspace', 'repos', 'solo'), 'solo work', daysAgoIso(40));
-    const offline = backupSession(fx.root, { session: 'offline' });
-    assertEq(offline.refused, true, 'a repo with no remote refuses');
-    assert(offline.reasons.some((r) => r.includes('no remote')), 'the refusal names the missing remote');
+    const offline = backupSession(fx.root, { session: 'offline', remote: true, remoteAllowAll: true });
+    assertEq(offline.refused, undefined, 'a repo with no remote does not fail the run');
+    const soloEntry = offline.branches.find((b) => b.repo === 'solo');
+    assert(soloEntry && soloEntry.pushed === false && soloEntry.localOnly === true, 'the no-remote repo keeps a local tag');
+    assert(soloEntry.reason.includes('no remote'), 'the entry says why it was not pushed');
+    assert(git(solo, 'tag -l drain/offline/bugfix-offline').trim() !== '', 'the local tag exists');
 
-    // A broken origin URL makes the push itself fail — refusal, never a
+    // A broken origin URL makes an ALLOWED push fail — refusal, never a
     // silent "probably fine".
     const { projWts: brokenWts } = makeSession(fx, { name: 'brokenpush', branch: 'bugfix/brokenpush', tracker: { branch: 'bugfix/brokenpush', repos: ['app'], updated: daysAgoIso(40) } });
     writeFileSync(join(brokenWts.app, 'fix.txt'), 'fix\n');
     commitAll(brokenWts.app, 'fix', daysAgoIso(40));
     git(fx.app, 'remote set-url origin /nonexistent/repo.git');
-    const broken = backupSession(fx.root, { session: 'brokenpush' });
+    const broken = backupSession(fx.root, { session: 'brokenpush', remote: true, remoteAllowAll: true });
     assertEq(broken.refused, true, 'a failed push refuses');
     assert(broken.reasons.some((r) => r.includes('failed') || r.includes('timed out')), 'the refusal names the push failure');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
-console.log('# S4: push-remote resolution — first remote without origin, and --remote override');
+console.log('# S4: push-remote resolution — first remote without origin, allow entries name the remote');
 {
   const fx = makeWorkspace();
   const upstream = join(mkdtempSync(join(tmpdir(), 'mig-upstream-')), 'upstream.git');
@@ -602,13 +688,14 @@ console.log('# S4: push-remote resolution — first remote without origin, and -
     const { projWts } = makeSession(fx, { name: 'nomigin', branch: 'bugfix/nomigin', tracker: { branch: 'bugfix/nomigin', repos: ['app'], updated: daysAgoIso(40) } });
     writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
     commitAll(projWts.app, 'fix', daysAgoIso(40));
-    // The override is validated before anything is tagged or pushed.
-    const badOverride = backupSession(fx.root, { session: 'nomigin', remote: 'nosuch' });
-    assertEq(badOverride.refused, true, 'an unknown --remote refuses');
-    assert(badOverride.reasons.some((r) => r.includes('nosuch')), 'the refusal names the override');
-
-    const out = backupSession(fx.root, { session: 'nomigin' });
-    assertEq(out.refused, undefined, 'backup resolves without origin');
+    // An allow naming a remote the repo does not configure is refused
+    // before anything is tagged.
+    const badAllow = backupSession(fx.root, { session: 'nomigin', remote: true, remoteAllow: ['app=origin'] });
+    assertEq(badAllow.refused, true, 'an allow naming an unconfigured remote refuses');
+    assert(badAllow.reasons.some((r) => r.includes('origin')), 'the refusal names the remote');
+    // allow-all resolves the first configured remote when there is no origin.
+    const out = backupSession(fx.root, { session: 'nomigin', remote: true, remoteAllowAll: true });
+    assertEq(out.refused, undefined, 'allow-all resolves without origin');
     const appEntry = out.branches.find((b) => b.repo === 'app');
     assert(appEntry && appEntry.remote === 'upstream', 'the first configured remote is used and reported');
     assert(git(upstream, 'tag -l drain/nomigin/bugfix-nomigin').trim() !== '', 'the tag landed on upstream');
@@ -649,7 +736,7 @@ console.log('# archive: moves the session and keeps every kind of state intact')
     // Something beside workspace/ in the session folder.
     writeFileSync(join(fx.root, 'work-sessions', 'keep', 'notes.md'), 'beside workspace\n');
 
-    const out = archiveSession(fx.root, { session: 'keep', cwd: fx.root, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
+    const out = archiveSession(fx.root, { session: 'keep', cwd: fx.root, allowUncommitted: true, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
     assertEq(out.refused, undefined, 'archive is not refused');
     assertEq(out.to, join('work-sessions', '.archived', 'keep--20260927T120000'), 'archived under .archived/ with a stamp');
     assert(!existsSync(join(fx.root, 'work-sessions', 'keep')), 'the session left the active lifecycle');
@@ -682,6 +769,29 @@ console.log('# archive: moves the session and keeps every kind of state intact')
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
+console.log('# archive: uncommitted changes refuse by default; --allow-uncommitted proceeds');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt, projWts } = makeSession(fx, { name: 'notes', branch: 'bugfix/notes', tracker: { branch: 'bugfix/notes', repos: ['app'], updated: daysAgoIso(40) } });
+    commitAll(wsWt, 'tracker', daysAgoIso(40)); // session.md committed clean
+    writeFileSync(join(projWts.app, 'untracked.txt'), 'scratch\n'); // untracked project file
+    writeFileSync(join(wsWt, 'session.md'), '---\ntype: session-tracker\nstatus: paused\n---\n\nedited, not committed\n'); // dirty session.md
+    const out = archiveSession(fx.root, { session: 'notes', cwd: fx.root });
+    assertEq(out.refused, true, 'uncommitted changes refuse the archive');
+    assert(out.reasons.some((r) => r.includes('workspace') && r.includes('session.md')), 'the refusal names the uncommitted session.md');
+    assert(out.reasons.some((r) => r.includes('untracked.txt')), 'the refusal names the project worktree’s untracked file');
+    assert(out.reasons.some((r) => r.includes('--allow-uncommitted')), 'the refusal names the explicit way out');
+    assert(existsSync(join(fx.root, 'work-sessions', 'notes', 'workspace')), 'nothing moved');
+
+    // The operator’s explicit choice: proceed — the edits ride along.
+    const ok = archiveSession(fx.root, { session: 'notes', cwd: fx.root, allowUncommitted: true, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
+    assertEq(ok.refused, undefined, '--allow-uncommitted archives');
+    assert(readFileSync(join(fx.root, ok.to, 'workspace', 'session.md'), 'utf8').includes('edited, not committed'), 'the uncommitted session.md edit survives uncommitted');
+    assertEq(readFileSync(join(fx.root, ok.to, 'workspace', 'repos', 'app', 'untracked.txt'), 'utf8'), 'scratch\n', 'the untracked file survives');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
 console.log('# archive: a failed repair moves the session back, nothing lost');
 {
   const fx = makeWorkspace();
@@ -711,6 +821,9 @@ console.log('# archive: a thrown git error during repair still rolls back consis
   const fx = makeWorkspace();
   try {
     const { wsWt } = makeSession(fx, { name: 'thr', branch: 'bugfix/thr', tracker: { branch: 'bugfix/thr', repos: ['app'], updated: daysAgoIso(40) } });
+    // Clean worktrees, so the uncommitted-changes gate stays out of the
+    // way — this case is about the repair throwing, not the dirty check.
+    commitAll(wsWt, 'tracker', daysAgoIso(40));
     let fired = false;
     const throwing = (cmd, args, opts) => {
       if (!fired && args.includes('worktree') && args.includes('repair')) { fired = true; throw new Error('spawn exploded'); }
@@ -966,13 +1079,17 @@ console.log('# R3: --backup --dry-run reports the plan with no side effects');
     assertEq(plan.dryRun, true, 'the output says it was a dry run');
     assertEq(plan.tips.length, 1, 'only the unproven tip is planned');
     const t = plan.tips[0];
-    assert(t.repo === '.' && t.tag === 'drain/dry/bugfix-dry' && t.remote === 'origin' && t.alreadySafe === false && t.wouldCreate === true, 'the plan names tag, remote, and safety');
+    assert(t.repo === '.' && t.tag === 'drain/dry/bugfix-dry' && t.remote === null && t.willPush === false && t.wouldCreate === true, 'the local plan names the tag and says nothing is pushed');
     assertEq(plan.skipped.length, 1, 'the remote-safe tip is reported as skipped');
     assertEq(git(fx.root, 'tag -l "drain/dry/*"').trim(), '', 'no tag was created');
     assertEq(git(fx.wsOrigin, 'tag -l "drain/dry/*"').trim(), '', 'nothing was pushed');
-    // The real run then performs exactly the plan.
+    // The real local run performs exactly the plan; the allow-all push run
+    // then takes the same tag to the remote.
     const real = backupSession(fx.root, { session: 'dry' });
     assertEq(real.branches.length, 1, 'the real run tags the planned tip');
+    assertEq(git(fx.wsOrigin, 'tag -l "drain/dry/*"').trim(), '', 'the local run still pushed nothing');
+    const pushRun = backupSession(fx.root, { session: 'dry', remote: true, remoteAllowAll: true });
+    assertEq(pushRun.refused, undefined, 'the push run is not refused');
     assert(git(fx.wsOrigin, 'tag -l drain/dry/bugfix-dry').trim() !== '', 'the tag landed');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
@@ -994,8 +1111,8 @@ console.log('# R3/S2c: a fresh worktree on an old commit reads as recent');
 console.log('# R3: parseArgs --dry-run validation');
 {
   throws(() => parseArgs(['node', 's', '--inventory', '--dry-run']), '--dry-run only with --backup');
-  const ok = parseArgs(['node', 's', '--backup', '--session', 'x', '--dry-run', '--remote', 'upstream']);
-  assertEq([ok.mode, ok.dryRun, ok.remote], ['backup', true, 'upstream'], '--backup --dry-run --remote parses');
+  const ok = parseArgs(['node', 's', '--backup', '--session', 'x', '--dry-run', '--remote', '--remote-allow-all']);
+  assertEq([ok.mode, ok.dryRun, ok.remote, ok.remoteAllowAll], ['backup', true, true, true], '--backup --dry-run --remote --remote-allow-all parses');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
