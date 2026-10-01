@@ -51,45 +51,111 @@ export function compareVersions(a, b) {
   return 0;
 }
 
-const REGISTRY_URL = 'https://registry.npmjs.org/@ulysses-ai/create-workspace/latest';
+const DIST_TAGS_URL = 'https://registry.npmjs.org/-/package/@ulysses-ai/create-workspace/dist-tags';
 const DEFAULT_TIMEOUT_MS = 3000;
 
 /**
- * Fetch the latest version of the scaffolder from the npm registry.
- * Returns { version, error } — exactly one of them is non-null.
+ * Which release channel an installed version rides: `stable` for a plain
+ * `x.y.z`, otherwise the first pre-release identifier (`0.19.0-beta.3` →
+ * `beta`). Returns null when the string isn't a version this scaffolder
+ * publishes.
+ */
+export function channelOf(version) {
+  if (typeof version !== 'string') return null;
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(version);
+  if (!match) return null;
+  return match[4] ? match[4].split('.')[0] : 'stable';
+}
+
+/**
+ * Pick the registry version an installed version should compare against,
+ * given the package's dist-tags.
+ *
+ * A pre-release install tracks the highest semver among `latest` and its
+ * own channel's tag, so a lagging `latest` (which has sat behind `beta`
+ * for whole release cycles) never masks a newer build on the channel the
+ * workspace actually rides. A stable install compares against `latest`
+ * alone; when the `beta` tag outruns `latest`, that version is returned
+ * separately as an available pre-release, so callers can surface it
+ * without calling the install stale.
+ *
+ * Returns { version, channel, prerelease } — `version` is null when no
+ * usable tag is present.
+ */
+export function pickComparisonVersion(current, tags) {
+  const channel = channelOf(current) || 'stable';
+  const candidates = [];
+  if (typeof tags?.latest === 'string') candidates.push(tags.latest);
+  if (channel !== 'stable' && typeof tags?.[channel] === 'string') candidates.push(tags[channel]);
+  let version = null;
+  for (const candidate of candidates) {
+    if (version === null || compareVersions(candidate, version) > 0) version = candidate;
+  }
+  let prerelease = null;
+  if (
+    channel === 'stable' &&
+    typeof tags?.latest === 'string' &&
+    typeof tags?.beta === 'string' &&
+    compareVersions(tags.beta, tags.latest) > 0
+  ) {
+    prerelease = tags.beta;
+  }
+  return { version, channel, prerelease };
+}
+
+/**
+ * Fetch the scaffolder's dist-tags from the npm registry and pick the
+ * version to compare the installed `current` version against.
+ * Returns { version, channel, tags, prerelease, error } — `error` is null
+ * exactly when `version` is non-null, and the other fields are null on
+ * failure. `tags` is the dist-tag map as published, `channel` is the
+ * installed version's channel, and `prerelease` is the `beta` build when
+ * one outruns `latest` from a stable install.
  *
  * Caller injects fetchFn for testing. Default uses global fetch (Node 18+).
  */
-export async function getLatestVersion({ fetchFn = fetch, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export async function getLatestVersion({ current = null, fetchFn = fetch, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const empty = { version: null, channel: null, tags: null, prerelease: null };
   try {
-    const res = await fetchFn(REGISTRY_URL, { signal: controller.signal });
+    const res = await fetchFn(DIST_TAGS_URL, { signal: controller.signal });
     if (!res.ok) {
-      return { version: null, error: `registry returned ${res.status} ${res.statusText || ''}`.trim() };
+      return { ...empty, error: `registry returned ${res.status} ${res.statusText || ''}`.trim() };
     }
     const body = await res.json();
-    if (typeof body?.version !== 'string') {
-      return { version: null, error: 'registry response missing version field' };
+    const tags = {};
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      for (const [tag, value] of Object.entries(body)) {
+        if (typeof value === 'string') tags[tag] = value;
+      }
     }
-    return { version: body.version, error: null };
+    const picked = pickComparisonVersion(current, tags);
+    if (!picked.version) {
+      return { ...empty, error: 'registry response missing dist-tags' };
+    }
+    return { version: picked.version, channel: picked.channel, tags, prerelease: picked.prerelease, error: null };
   } catch (err) {
-    return { version: null, error: err?.message || String(err) };
+    return { ...empty, error: err?.message || String(err) };
   } finally {
     clearTimeout(timer);
   }
 }
 
 /**
- * Read the version cache file. Returns the parsed object if it has a string
- * `latestVersion` field; otherwise null. Treats missing file, malformed JSON,
- * and shape mismatches all as "no cache".
+ * Read the version cache file. Returns the parsed object if it has a
+ * `tags` object holding at least one string dist-tag; otherwise null.
+ * Treats missing file, malformed JSON, and shape mismatches (including
+ * caches written before dist-tag support, which had a bare `latestVersion`)
+ * all as "no cache" — the next fetch rewrites the file in the new shape.
  */
 export function readCache(path) {
   if (!existsSync(path)) return null;
   try {
     const data = JSON.parse(readFileSync(path, 'utf-8'));
-    if (typeof data?.latestVersion !== 'string') return null;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    if (!data.tags || typeof data.tags !== 'object' || Array.isArray(data.tags)) return null;
+    if (!Object.values(data.tags).some((v) => typeof v === 'string')) return null;
     return data;
   } catch {
     return null;

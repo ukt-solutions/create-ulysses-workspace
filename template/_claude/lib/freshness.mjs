@@ -1,20 +1,28 @@
 import './require-node.mjs';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { compareVersions, getLatestVersion, readCache, writeCache } from './registry-check.mjs';
+import { compareVersions, getLatestVersion, pickComparisonVersion, readCache, writeCache } from './registry-check.mjs';
 
 const BANNER_FILENAME = 'local-only-template-freshness.md';
 const CACHE_FILENAME = '.version-check.json';
 
 /**
  * Refresh the version cache if stale, then write or delete the banner file
- * based on a comparison of workspace.templateVersion to the latest npm version.
+ * based on a comparison of workspace.templateVersion to the npm dist-tag
+ * matching its release channel (see pickComparisonVersion).
+ *
+ * The cache stores the raw dist-tags rather than the chosen version, so a
+ * channel switch between cache write and read (e.g. an upgrade from a beta
+ * to a stable release inside the TTL) still picks the right tag.
  *
  * Returns:
  *   { status: 'outdated', current, latest, checkedAt }
- *   { status: 'current',  current, latest, checkedAt }
+ *   { status: 'current',  current, latest, prerelease, checkedAt }
  *   { status: 'unknown',  current, latest: null, checkedAt: null }
  *   { skipped: 'uninitialized' }
+ *
+ * `prerelease` on a current workspace is a newer `beta` dist-tag, offered
+ * as information only — it never marks the install stale.
  *
  * Pure I/O is parameterized via fetchFn / nowFn for testability.
  */
@@ -46,9 +54,9 @@ export async function refreshIfStale({
   const stale = cacheAgeMs > ttlMs;
 
   if (stale) {
-    const fresh = await getLatestVersion({ fetchFn });
+    const fresh = await getLatestVersion({ current, fetchFn });
     if (fresh.version) {
-      cache = { latestVersion: fresh.version, checkedAt: now.toISOString() };
+      cache = { tags: fresh.tags, checkedAt: now.toISOString() };
       writeCache(cachePath, cache);
     }
     // On fetch error, keep whatever cache we already had (could be null).
@@ -60,7 +68,12 @@ export async function refreshIfStale({
     return { status: 'unknown', current, latest: null, checkedAt: null };
   }
 
-  const latest = cache.latestVersion;
+  const { version: latest, prerelease } = pickComparisonVersion(current, cache.tags);
+  if (!latest) {
+    // Cached tags carry nothing comparable for this channel. Refuse to
+    // guess rather than compare against the wrong tag.
+    return { status: 'unknown', current, latest: null, checkedAt: cache.checkedAt };
+  }
   const cmp = compareVersions(current, latest);
   if (cmp < 0) {
     writeFileSync(
@@ -70,6 +83,6 @@ export async function refreshIfStale({
     return { status: 'outdated', current, latest, checkedAt: cache.checkedAt };
   } else {
     if (existsSync(bannerPath)) unlinkSync(bannerPath);
-    return { status: 'current', current, latest, checkedAt: cache.checkedAt };
+    return { status: 'current', current, latest, prerelease, checkedAt: cache.checkedAt };
   }
 }
