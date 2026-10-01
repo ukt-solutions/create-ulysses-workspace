@@ -104,7 +104,7 @@ Cuts a versioned release of one project repo: bumps the version, merges the bump
 
 ### /maintenance
 
-Audits workspace health and recommends cleanup. Checks cross-reference consistency, frontmatter integrity, workspace structure, and git state. Identifies stale context, orphaned worktrees, and contradictions between files. Run periodically or before a release to catch drift.
+Audits workspace health and recommends cleanup. Checks cross-reference consistency, frontmatter integrity, workspace structure, git state, and the always-loaded context budget (`workspace.alwaysLoadedBudgetBytes` — over-budget surfaces as a warning naming the largest contributors). Identifies stale context, orphaned worktrees, and contradictions between files. Run periodically or before a release to catch drift.
 
 ### /workspace-init
 

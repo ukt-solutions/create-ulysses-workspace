@@ -77,6 +77,8 @@ The default workspace template costs approximately 1,500 tokens always-loaded �
 
 This is why locked context has a 10KB budget target. A 10KB locked directory adds approximately 2,500 tokens to the always-loaded cost, bringing the total to around 4,000 tokens — still well under 1% of the context window, but enough that discipline matters.
 
+Locked context is one line item. The whole always-loaded set — CLAUDE.md, its @-imports, and the active rules — has its own ceiling in `workspace.json`: `workspace.alwaysLoadedBudgetBytes` (64KB from the template). `.claude/scripts/context-footprint.mjs --root .` measures the total against it, and `/maintenance` surfaces an over-budget total as a warning.
+
 The practical implication: do not put large documents in locked context. A 5,000-word design document does not belong in `shared-context/locked/` — it belongs in user-scoped context where it is read on demand. Locked is for concise, current team truths that Claude needs on every turn.
 
 ## Loading Order
