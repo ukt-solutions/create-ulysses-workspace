@@ -104,7 +104,7 @@ Cuts a versioned release of one project repo: bumps the version, merges the bump
 
 ### /maintenance
 
-Audits workspace health and recommends cleanup. Checks cross-reference consistency, frontmatter integrity, workspace structure, git state, and the always-loaded context budget (`workspace.alwaysLoadedBudgetBytes` — over-budget surfaces as a warning naming the largest contributors). Identifies stale context, orphaned worktrees, and contradictions between files. Run periodically or before a release to catch drift.
+Audits workspace health and recommends cleanup. The audit is scripted — `maintenance-audit.mjs` checks cross-reference consistency, frontmatter integrity, workspace structure, git state, context-catalog currency, template freshness, and the always-loaded context budget (`workspace.alwaysLoadedBudgetBytes` — over-budget surfaces as a warning naming the largest contributors) — leaving the judgment calls (orphaned worktrees, stale context, contradictions between files) to the interactive cleanup pass. Run periodically or before a release to catch drift.
 
 ### /workspace-init
 
@@ -112,7 +112,7 @@ First-time workspace initialization — the single post-scaffold skill. Handles 
 
 ### /workspace-update
 
-Applies a staged template update. When the CLI's `--upgrade` command stages new files to `.workspace-update/`, this skill applies them interactively. Runs maintenance before and after to catch any drift the update introduces. See [Chapter 10](10-installation-and-upgrades.md) for the upgrade flow.
+Applies a staged template update. When the CLI's `--upgrade` command stages new files to `.workspace-update/`, this skill classifies them (new, locally modified, activated rules, removed) and applies them interactively, then verifies the result once with the scripted maintenance audit — findings on files the update touched are labeled so new drift is distinguishable from pre-existing state. See [Chapter 10](10-installation-and-upgrades.md) for the upgrade flow.
 
 ## How Skills Chain Together
 

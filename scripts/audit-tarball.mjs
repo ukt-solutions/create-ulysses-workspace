@@ -72,12 +72,15 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // lib/upgrade.test.mjs) and the gh:172 review round (push-URL resolution,
 // the divergent-push gate, verification at the push URL) together outgrow
 // the 240 kB each needed alone (246,937 bytes combined); 245 kB is the
-// smallest passing multiple.
+// smallest passing multiple → 250 kB after the /workspace-update dogfood
+// round (gh:180) added maintenance-audit.mjs + its suite (~38 kB) and grew
+// classify-update.mjs for the activated/removed lists: 255,435 bytes —
+// 245 kB fails and 250 kB is the smallest passing multiple.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 245 * 1024;
+const SIZE_LIMIT_BYTES = 250 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -235,6 +238,10 @@ function checkRequiredFiles(files) {
     // completion falls back to hand-written adapter blocks.
     'template/_claude/scripts/task-pr.mjs',
     'template/_claude/scripts/classify-update.mjs',
+    // The scripted audit behind /maintenance audit and the post-update
+    // verification in /workspace-update (gh:180). Without it both skills fall
+    // back to hand-walking seven sections of prose checks per run.
+    'template/_claude/scripts/maintenance-audit.mjs',
     // The per-workspace session→task migration (gh:147). Without it
     // /migrate-sessions cannot inventory, back up, or drain old sessions,
     // and existing workspaces have no path onto the task model.

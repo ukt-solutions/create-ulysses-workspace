@@ -10,10 +10,21 @@
 //           this file from <workspace>/.workspace-update/.claude/scripts/)
 // --payload the staged payload; defaults to <root>/.workspace-update
 //
-// Prints JSON: { "new": [...], "identical": [...], "differs": [...] }
+// Prints JSON with five lists:
 //   new       — no installed counterpart; safe to batch-apply after one confirm
 //   identical — installed file already equals the payload byte-for-byte
 //   differs   — installed file differs; needs a per-file decision
+//   activated — the payload ships rules/{name}.md.skip while the workspace
+//               deliberately keeps {name}.md active; nothing to install, the
+//               active rule stays (gh:180)
+//   removed   — installed file with no payload counterpart: the template
+//               stopped shipping it. Excludes what the workspace owns:
+//               *.test.mjs (the npm tarball does not ship tests, dev-checkout
+//               installs do — every test file would otherwise read as
+//               removed), anything gitignored (machine-local), paths under
+//               .claude/worktrees/, and entries of workspace.json →
+//               workspace.localFiles (array of .claude/-relative paths or
+//               globs for files this workspace owns) (gh:180)
 //
 // Only verbatim-installed files are classified: everything under .claude/,
 // plus .mcp.json and .claudeignore. The payload's templates (*.tmpl, which
@@ -30,6 +41,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gitIgnoredPaths } from './build-workspace-context.mjs';
 
 function isMainModule(metaUrl) {
   if (!process.argv[1]) return false;
@@ -58,7 +70,12 @@ function isClassified(payloadRelPath) {
   return VERBATIM_ROOTS.includes(first);
 }
 
-function* walkFiles(dir, prefix = '') {
+// Directories never walked when looking for removed files. .claude/worktrees/
+// holds entire nested worktrees — walking them is slow and every file inside
+// is unmanaged by the template.
+const SKIPPED_DIRS = new Set(['worktrees']);
+
+function* walkFiles(dir, prefix = '', skipDirs = null) {
   let entries;
   try {
     entries = readdirSync(dir).sort();
@@ -66,13 +83,65 @@ function* walkFiles(dir, prefix = '') {
     return;
   }
   for (const name of entries) {
+    if (skipDirs && skipDirs.has(name)) continue;
     const rel = prefix ? `${prefix}/${name}` : name;
     const full = join(dir, name);
     let st;
     try { st = statSync(full); } catch { continue; }
-    if (st.isDirectory()) yield* walkFiles(full, rel);
+    if (st.isDirectory()) yield* walkFiles(full, rel, skipDirs);
     else if (st.isFile()) yield rel;
   }
+}
+
+// Installed files under the verbatim-managed roots: the .claude/ tree (minus
+// skipped directories) plus the two standalone files. Nothing else in the
+// workspace root is walked — repos/ and work-sessions/ hold entire worktrees
+// the template never manages.
+function* walkInstalledFiles(absRoot) {
+  yield* walkFiles(join(absRoot, '.claude'), '.claude', SKIPPED_DIRS);
+  for (const name of ['.mcp.json', '.claudeignore']) {
+    if (existsSync(join(absRoot, name))) yield name;
+  }
+}
+
+/** workspace.json → workspace.localFiles, normalized to .claude/-relative globs. */
+function readLocalFiles(absRoot) {
+  const configPath = join(absRoot, 'workspace.json');
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    const entries = config?.workspace?.localFiles;
+    if (!Array.isArray(entries)) return [];
+    return entries
+      .filter((e) => typeof e === 'string' && e.length > 0)
+      .map((e) => e.replace(/^(\.claude\/)+/, ''));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Match `rel` (a .claude/-relative posix path) against a localFiles entry —
+ * an exact path or a glob where `**` spans separators and `*` does not.
+ * No glob library: the shapes localFiles needs are these two stars.
+ */
+function globMatches(pattern, rel) {
+  if (pattern === rel) return true;
+  if (!pattern.includes('*')) return false;
+  const re = new RegExp(
+    `^${pattern.split('**').map(
+      (part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*'),
+    ).join('.*')}$`,
+  );
+  return re.test(rel);
+}
+
+function isOwnedByWorkspace(rel, localFiles) {
+  if (rel.endsWith('.test.mjs')) return true;
+  // The template's own .gitignore declares these machine-local.
+  if (rel === '.claude/settings.local.json' || rel === '.claude/.active-session.json') return true;
+  if (!rel.startsWith('.claude/')) return false;
+  const claudeRel = rel.slice('.claude/'.length);
+  return localFiles.some((pattern) => globMatches(pattern, claudeRel));
 }
 
 export function classifyUpdate({ root, payload }) {
@@ -82,9 +151,20 @@ export function classifyUpdate({ root, payload }) {
     throw new Error(`No payload found at ${absPayload} — run npx @ulysses-ai/create-workspace --upgrade first`);
   }
 
-  const result = { new: [], identical: [], differs: [] };
-  for (const rel of walkFiles(absPayload)) {
-    if (!isClassified(rel)) continue;
+  const payloadFiles = [...walkFiles(absPayload)].filter(isClassified);
+  const payloadSet = new Set(payloadFiles);
+
+  const result = { new: [], identical: [], differs: [], activated: [], removed: [] };
+  for (const rel of payloadFiles) {
+    // A .skip rule whose active counterpart is installed was deliberately
+    // activated by this workspace: report it as activated, not new.
+    if (rel.startsWith('.claude/rules/') && rel.endsWith('.md.skip')) {
+      const active = rel.replace(/\.skip$/, '');
+      if (existsSync(join(absRoot, active)) && !existsSync(join(absRoot, rel))) {
+        result.activated.push({ skip: rel, active });
+        continue;
+      }
+    }
     const installed = join(absRoot, rel);
     if (!existsSync(installed)) {
       result.new.push(rel);
@@ -97,6 +177,21 @@ export function classifyUpdate({ root, payload }) {
     } else {
       result.differs.push(rel);
     }
+  }
+
+  // Removed: installed verbatim-managed files with no payload counterpart.
+  const skipSet = new Set(payloadFiles);
+  const localFiles = readLocalFiles(absRoot);
+  const installedFiles = [...walkInstalledFiles(absRoot)];
+  const gitignored = gitIgnoredPaths(absRoot, installedFiles);
+  for (const rel of installedFiles) {
+    if (skipSet.has(rel)) continue;
+    // An active rule whose .skip twin is in the payload is an activated rule,
+    // not a removed one.
+    if (rel.startsWith('.claude/rules/') && rel.endsWith('.md') && skipSet.has(`${rel}.skip`)) continue;
+    if (gitignored.has(rel)) continue;
+    if (isOwnedByWorkspace(rel, localFiles)) continue;
+    result.removed.push(rel);
   }
   return result;
 }
