@@ -9,12 +9,14 @@
 // Source of truth: the filesystem. Hand edits are overwritten on regeneration.
 // Gitignored files are excluded automatically. .indexignore adds prefix excludes.
 //
-// Canonical files honor a configurable byte budget. Each locked file declares
+// Canonical files honor an opt-in byte budget. Each locked file declares
 // `priority: critical | reference` in its frontmatter (default: critical).
 // Section-level `<!-- canonical:trim --> ... <!-- canonical:end-trim -->` markers
-// fence droppable spans inside reference files. When canonical body bytes exceed
-// the budget, the builder trims reference files first, then stubs them, in that
-// deterministic order. Critical files are never modified.
+// fence droppable spans inside reference files. When a budget is set and the
+// canonical body exceeds it, the builder trims reference files first, then
+// stubs them, in that deterministic order. Critical files are never modified.
+// `workspace.canonicalBudgetBytes` is off unless it holds a number: absent or
+// null means every locked file ships in full and nothing is trimmed.
 //
 // Usage:
 //   node build-workspace-context.mjs --write [--root <workspace-root>]
@@ -25,6 +27,7 @@
 //   0 — all artifacts current and canonical within budget
 //   1 — at least one artifact missing or stale (regenerate via --write)
 //   2 — artifacts current, but canonical body exceeds budget after trimming and stubbing
+//       (only reachable when a budget is set; off means nothing can exceed it)
 // Stale wins over over-budget when both apply.
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
@@ -301,16 +304,19 @@ export function extractCanonicalVariants({ name, rawContent }) {
 }
 
 /**
- * Read `workspace.canonicalBudgetBytes` from `workspace.json`.
+ * Read `workspace.canonicalBudgetBytes` from `workspace.json`. The budget is
+ * opt-in — the whole always-loaded set is measured by `alwaysLoadedBudgetBytes`
+ * instead, so a canonical-only ceiling is something a workspace opts into.
  * Returns:
- *   - The integer value when set to a non-negative integer.
- *   - 0 when set to 0 or a negative number (treated as disabled).
- *   - DEFAULT_CANONICAL_BUDGET when the field is absent or workspace.json is missing.
+ *   - 0 when the field is absent or `null`, or workspace.json is missing (off).
+ *   - 0 when set to 0 or a negative number (treated as off).
+ *   - The integer value when set to a positive number.
+ *   - DEFAULT_CANONICAL_BUDGET when set to a non-number (invalid, rejected as before).
  *   - DEFAULT_CANONICAL_BUDGET (with a stderr warning) when workspace.json fails to parse.
  */
 export function readWorkspaceBudget(workspaceRoot) {
   const path = join(workspaceRoot, 'workspace.json');
-  if (!existsSync(path)) return DEFAULT_CANONICAL_BUDGET;
+  if (!existsSync(path)) return 0;
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf-8'));
@@ -319,9 +325,10 @@ export function readWorkspaceBudget(workspaceRoot) {
     return DEFAULT_CANONICAL_BUDGET;
   }
   const ws = parsed && typeof parsed === 'object' ? parsed.workspace : null;
-  if (!ws || typeof ws !== 'object') return DEFAULT_CANONICAL_BUDGET;
-  if (!('canonicalBudgetBytes' in ws)) return DEFAULT_CANONICAL_BUDGET;
+  if (!ws || typeof ws !== 'object') return 0;
+  if (!('canonicalBudgetBytes' in ws)) return 0;
   const v = ws.canonicalBudgetBytes;
+  if (v === null) return 0;
   if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_CANONICAL_BUDGET;
   if (v <= 0) return 0;
   return Math.floor(v);
@@ -359,7 +366,8 @@ export function renderCanonicalBody(resolvedItems) {
  *   4. Keep stage-3 resolution; status `over-budget`, overBy populated.
  *
  * Special cases:
- *   - budgetBytes <= 0: stage 1 always wins, selection.budgetBytes = null.
+ *   - budgetBytes <= 0 (off — absent, null, 0, or negative): stage 1 always
+ *     wins, selection.budgetBytes = null.
  *   - No reference items present and stage 1 fails: status `over-budget`,
  *     no transformation possible. Stderr warning is emitted.
  */
@@ -380,7 +388,7 @@ export function selectCanonicalContent(items, budgetBytes, opts) {
     return { name: item.name, priority: item.priority, content: item.full };
   });
 
-  // Disabled-budget path.
+  // No-budget path (off because unset, or explicitly disabled).
   if (!Number.isFinite(budgetBytes) || budgetBytes <= 0) {
     const resolved = resolveAt(1);
     return {
@@ -537,6 +545,8 @@ function renderCanonical(resolvedItems, selection) {
     lines.push(
       `> Budget: ${selection.budgetBytes} bytes (body); current: ${selection.currentBytes} bytes; status: ${selection.status} (${summarizeSelection(selection)}).`,
     );
+  } else if (selection) {
+    lines.push(`> Budget: off; current: ${selection.currentBytes} bytes.`);
   }
   lines.push('');
 
@@ -673,7 +683,8 @@ function regenerateAll(workspaceRoot) {
  *   0 — all artifacts current and canonical body is within budget.
  *   1 — at least one artifact is missing or stale on disk. Run `--write`.
  *   2 — artifacts are current but canonical body exceeds budget after
- *       trimming and stubbing eligible reference files. Triage via
+ *       trimming and stubbing eligible reference files (only reachable when
+ *       a budget is set — off means nothing can exceed it). Triage via
  *       `/maintenance cleanup`. If both stale and over-budget, exit 1.
  *
  * `--write` always exits 0 on successful regeneration; over-budget is

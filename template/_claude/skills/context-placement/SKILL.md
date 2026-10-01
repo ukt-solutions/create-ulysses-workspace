@@ -189,11 +189,14 @@ Gitignored files (anything matching `local-only-*`) are excluded automatically, 
 `workspace-context/.indexignore` adds path-prefix excludes for tracked files that should
 not appear in the shared index.
 
-When `canonical.md` exceeds `workspace.canonicalBudgetBytes` (default 40960), the builder
-honours per-file `priority` and section-level `<!-- canonical:trim --> ... <!-- canonical:end-trim -->`
+The canonical byte budget is opt-in: `workspace.canonicalBudgetBytes` is off by default
+(absent or `null`), and the whole always-loaded set is measured by
+`workspace.alwaysLoadedBudgetBytes` instead. When a byte count is set and `canonical.md`
+exceeds it, the builder honours per-file `priority` and section-level
+`<!-- canonical:trim --> ... <!-- canonical:end-trim -->`
 markers to fit: `priority: reference` files are trimmed, then stubbed; `priority: critical`
-files are always included in full. `/maintenance` audits the budget and offers triage when
-over.
+files are always included in full. `/maintenance` audits the budget when on and offers
+triage when over.
 
 Hand edits to `index.md`, `canonical.md`, or any per-user index are overwritten. Change the
 source file or its `description:` instead.
