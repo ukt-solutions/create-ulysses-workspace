@@ -31,19 +31,21 @@
 //
 // --create resolves the task's repos from the chat record's entries for
 // the branch (--chat) or from repeated --repo flags, skips repos whose
-// branch has no commits over the base (reported as empty), pushes each
-// remaining forge branch, and opens one PR per forge repo through a
-// per-repo forge — a local repo is neither pushed nor PR'd, only recorded
-// as a local entry for --merge (a body file is required per forge repo
-// alone; one given for a local repo is ignored). The PR title is the
-// linked issue's title when --work-item is given, else the branch's first
-// commit subject; the body is the repo's body file with `Closes <ref>`
-// appended. Prints `{ prs, empty, pushed }` — prs holds forge entries
-// (mode "forge") and local entries (mode "local") alike — and, with
-// --out, writes the same JSON to a file — a mid-run failure still writes
-// what has landed so far, so the state survives the error. A repo that
-// already has an open PR for the branch gets it reused, so a re-run never
-// opens a duplicate.
+// branch has no commits over the base — origin/{default} for a forge
+// repo, the local {default} for a local repo, whose origin ref never
+// advances — (reported as empty), pushes each remaining forge branch, and
+// opens one PR per forge repo through a per-repo forge — a local repo is
+// neither pushed nor PR'd, only recorded as a local entry for --merge (a
+// body file is required per forge repo alone; one given for a local repo
+// is ignored). The PR title is the linked issue's title when --work-item
+// is given, else the branch's first commit subject; the body is the
+// repo's body file with `Closes <ref>` appended. Prints
+// `{ prs, empty, pushed }` — prs holds forge entries (mode "forge") and
+// local entries (mode "local") alike, every entry carrying its commit
+// count — and, with --out, writes the same JSON to a file — a mid-run
+// failure still writes what has landed so far, so the state survives the
+// error. A repo that already has an open PR for the branch gets it
+// reused, so a re-run never opens a duplicate.
 //
 // --merge finishes every entry in the file: forge PRs first (squash,
 // delete branch) and local branches as a `git merge --ff-only` in the
@@ -53,24 +55,29 @@
 // workspace repo only when every project merge succeeded; a PR the forge
 // reports as already MERGED and a local branch already contained in the
 // default branch both count as done, which is what makes re-running after
-// a partial failure safe. An empty or malformed PRs file is refused
-// outright: no entries means nothing to merge and nothing to close. Once
-// everything is merged the launcher is pulled --ff-only — only when it
-// sits on the workspace default branch (else pullSkipped), never when
-// "." was itself merged locally (the launcher already has that work), and
-// a failed pull is reported as pullFailed in the JSON rather than an
-// error, because the merges stand and the issue still closes — and then
-// the linked issue closes with a Merged: comment, but only when
-// --work-item is given AND a tracker is configured; with no tracker the
-// JSON reports closed: null and closeSkipped. On a merge failure it stops
-// and names what is still open.
+// a partial failure safe. An empty or malformed PRs file — or one naming
+// a repo other than "." or a plain repo name, since a local entry's repo
+// becomes a path — is refused outright: no entries means nothing to merge
+// and nothing to close. Once everything is merged the launcher is pulled
+// --ff-only — only when it sits on the workspace default branch (else
+// pullSkipped), never when "." was itself merged locally (the launcher
+// already has that work), when the workspace repo is local (no forge
+// merge happened that a pull could fetch), or when the launcher branch
+// has no upstream to pull from — pullSkipped names which — and a failed
+// pull is reported as pullFailed in the JSON rather than an error,
+// because the merges stand and the issue still closes — and then the
+// linked issue closes with a Merged: comment, but only when --work-item
+// is given AND a tracker is configured; with no tracker the JSON reports
+// closed: null and closeSkipped. On a merge failure it stops and names
+// what is still open.
 
 import '../lib/require-node.mjs';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { taskWorktreePath, repoDirFor, defaultBranchFor, WORKSPACE_REPO } from './task-worktree.mjs';
+import { taskWorktreePath, defaultBranchFor } from './task-worktree.mjs';
+import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, mergeModeFor } from './merge-mode.mjs';
 import { readRecord } from './chat-record.mjs';
 import { createForge } from './forges/interface.mjs';
 import { createTracker } from './trackers/interface.mjs';
@@ -82,52 +89,12 @@ function isMainModule(metaUrl) {
   } catch { return false; }
 }
 
-// Same remote shapes the forge adapters resolve a repo from. A URL that
-// does not match is not forge-hosted, and this path supports forge-hosted
-// repos only — a local/bare remote has no PR concept to aim at.
-const FORGE_REMOTE_RE = /github\.com[:/]([^/]+)\/([^/.]+?)(?:\.git)?$/;
-
-function parseForgeRemote(url) {
-  const m = String(url).trim().match(FORGE_REMOTE_RE);
-  return m ? { owner: m[1], name: m[2] } : null;
-}
-
-function readWorkspace(rootDir) {
-  try {
-    return JSON.parse(readFileSync(join(rootDir, 'workspace.json'), 'utf-8'));
-  } catch {
-    throw new Error(`cannot read ${join(rootDir, 'workspace.json')} — is --root the launcher?`);
-  }
-}
-
 // `workspace.forge: false` is an explicit opt-out; spreading it into a
 // per-repo config would silently produce a default GitHub forge instead.
 function assertForgeEnabled(ws) {
   if (ws?.workspace?.forge === false) {
     throw new Error('workspace.forge is false — forge operations are disabled here. Nothing was pushed; open the PR by hand.');
   }
-}
-
-/**
- * Resolve how a task repo merges: "local" — nothing pushed, merged in the
- * repo's own source clone — when workspace.json asks for it
- * (repos.{repo}.merge, or workspace.merge for the workspace repo; the
- * right call for a clone whose origin is a third-party upstream nobody
- * here may push to) or when the repo has no origin remote at all;
- * "forge" — pushed and PR'd — when its origin parses as a forge-hosted
- * owner/name. An origin that is neither (say a local bare mirror with no
- * override) resolves to null: the caller stops with the override spelled
- * out rather than pushing somewhere that cannot host a PR.
- */
-function mergeModeFor(root, repo, deps = {}) {
-  const gitFn = deps.gitFn ?? spawnSync;
-  const rootDir = resolve(root);
-  const ws = readWorkspace(rootDir);
-  const override = repo === WORKSPACE_REPO ? ws?.workspace?.merge : ws?.repos?.[repo]?.merge;
-  if (override === 'local') return 'local';
-  const res = gitFn('git', ['-C', repoDirFor(rootDir, repo), 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
-  if (res.error || res.status !== 0) return 'local'; // no origin — nowhere to push
-  return parseForgeRemote(String(res.stdout || '').trim()) ? 'forge' : null;
 }
 
 // Branch names become refs, refspecs, and (via the slug) paths; git's own
@@ -165,29 +132,37 @@ function gitOut(gitFn, cwd, args) {
 }
 
 // The merge base for "is this branch empty" and for the fallback PR title.
-// origin/{default} is the truth the PR will merge against; the local branch
-// covers a repo whose remote-tracking ref is missing.
-function baseRefFor(gitFn, worktree, defaultBranch) {
-  for (const ref of [`origin/${defaultBranch}`, defaultBranch]) {
+// A forge repo counts against origin/{default} — the truth the PR will
+// merge against — with the local branch as the fallback for a repo whose
+// remote-tracking ref is missing. A local-mode repo counts against the
+// local {default}, where its merges actually land: its origin ref never
+// advances, so counting against it would re-count every already-merged
+// commit (and misjudge every follow-up task as non-empty).
+function baseRefFor(gitFn, target, branch) {
+  const { worktree, defaultBranch, mode } = target;
+  const refs = mode === 'local'
+    ? [defaultBranch, `origin/${defaultBranch}`]
+    : [`origin/${defaultBranch}`, defaultBranch];
+  for (const ref of refs) {
     if (gitCheck(gitFn, worktree, ['rev-parse', '--verify', '--quiet', ref]).status === 0) return ref;
   }
   return null;
 }
 
-function commitsOverBase(gitFn, worktree, branch, defaultBranch) {
-  const base = baseRefFor(gitFn, worktree, defaultBranch);
+function commitsOverBase(gitFn, target, branch) {
+  const base = baseRefFor(gitFn, target, branch);
   // No base ref at all: the branch cannot be proven empty, so it proceeds.
   if (!base) return null;
-  return parseInt(gitOut(gitFn, worktree, ['rev-list', '--count', `${base}..${branch}`]), 10) || 0;
+  return parseInt(gitOut(gitFn, target.worktree, ['rev-list', '--count', `${base}..${branch}`]), 10) || 0;
 }
 
-function firstCommitSubject(gitFn, worktree, branch, defaultBranch) {
-  const base = baseRefFor(gitFn, worktree, defaultBranch);
+function firstCommitSubject(gitFn, target, branch) {
+  const base = baseRefFor(gitFn, target, branch);
   const range = base ? `${base}..${branch}` : branch;
-  const subjects = gitOut(gitFn, worktree, ['log', '--reverse', '--format=%s', range])
+  const subjects = gitOut(gitFn, target.worktree, ['log', '--reverse', '--format=%s', range])
     .split(/\r?\n/).filter((l) => l.trim() !== '');
   if (subjects.length > 0) return subjects[0].trim();
-  return gitOut(gitFn, worktree, ['log', '-1', '--format=%s', branch]);
+  return gitOut(gitFn, target.worktree, ['log', '-1', '--format=%s', branch]);
 }
 
 function pushBranch(gitFn, worktree, repo, branch, { forceWithLease = false } = {}) {
@@ -236,7 +211,11 @@ async function createPrs(args, deps) {
     };
   });
 
-  for (const t of targets) t.commits = commitsOverBase(deps.gitFn, t.worktree, args.branch, t.defaultBranch);
+  // Mode first, because the commit count itself depends on it: a local
+  // repo counts against its local default branch, not the origin ref that
+  // never advances (gh:173).
+  for (const t of targets) t.mode = mergeModeFor(rootDir, t.repo, { gitFn: deps.gitFn });
+  for (const t of targets) t.commits = commitsOverBase(deps.gitFn, t, args.branch);
   const empty = targets.filter((t) => t.commits === 0).map((t) => t.repo);
   const active = targets.filter((t) => t.commits !== 0);
 
@@ -244,9 +223,9 @@ async function createPrs(args, deps) {
   // host a PR nor opt out with "local", or whose body file is missing, must
   // stop the whole task with nothing pushed and nothing half-opened. The
   // same pass splits the task: local repos are recorded for --merge instead
-  // of being pushed.
+  // of being pushed. An empty repo is exempt from the origin check — there
+  // is nothing to merge however its remote is shaped.
   for (const t of active) {
-    t.mode = mergeModeFor(rootDir, t.repo, { gitFn: deps.gitFn });
     if (t.mode !== null) continue;
     const url = gitOut(deps.gitFn, t.worktree, ['remote', 'get-url', 'origin']);
     const setting = t.isWorkspace ? 'workspace.merge' : `repos.${t.repo}.merge`;
@@ -301,13 +280,13 @@ async function createPrs(args, deps) {
       // default, and the one already open is the one reviewers watch.
       const existing = (await forge.prList({ state: 'open', head: args.branch, base: t.defaultBranch }))
         .find((p) => p.headRefName === args.branch && p.baseRefName === t.defaultBranch);
-      const title = issueTitle ?? firstCommitSubject(deps.gitFn, t.worktree, args.branch, t.defaultBranch);
+      const title = issueTitle ?? firstCommitSubject(deps.gitFn, t, args.branch);
       let body = readFileSync(args.bodyFiles.get(t.repo), 'utf8').replace(/\s*$/, '');
       if (issueRefs) body = `${body}\n\nCloses ${issueRefs.get(t.repo)}\n`;
       const pr = existing ?? await forge.prCreate({ title, body, head: args.branch, base: t.defaultBranch });
       prs.push({
         repo: t.repo, mode: 'forge', owner: t.owner, name: t.name,
-        number: pr.number, id: pr.id, url: pr.url, isWorkspace: t.isWorkspace,
+        number: pr.number, id: pr.id, url: pr.url, isWorkspace: t.isWorkspace, commits: t.commits,
       });
     }
   } catch (err) {
@@ -378,12 +357,19 @@ async function mergePrs(args, deps) {
     throw new Error(`PRs file ${args.prs} lists no PRs — nothing to merge and nothing to close; --merge refuses to close an issue on an empty merge`);
   }
   // Entries written before modes existed carry no `mode`; they are forge
-  // PRs, the only kind --create used to emit.
+  // PRs, the only kind --create used to emit. A local entry's repo becomes
+  // a path under repos/, so the file cannot be allowed to name anything
+  // but "." or a plain single segment.
   const modeOf = (p) => p?.mode ?? 'forge';
+  const REPO_NAME_RE = /^[A-Za-z0-9._-]+$/;
   for (const p of prs) {
     if (!p) throw new Error(`PRs file entry is missing owner/name/id: ${JSON.stringify(p)}`);
+    if (p.repo !== WORKSPACE_REPO
+      && (typeof p.repo !== 'string' || p.repo === '..' || !REPO_NAME_RE.test(p.repo))) {
+      throw new Error(`PRs file entry has an invalid repo name: ${JSON.stringify(p.repo)} — expected "." or a plain repo name`);
+    }
     if (modeOf(p) === 'local') {
-      if (!p.repo || !p.branch) throw new Error(`PRs file entry is missing repo/branch: ${JSON.stringify(p)}`);
+      if (!p.branch) throw new Error(`PRs file entry is missing branch: ${JSON.stringify(p)}`);
     } else if (!p.owner || !p.name || !p.id) {
       throw new Error(`PRs file entry is missing owner/name/id: ${JSON.stringify(p)}`);
     }
@@ -451,6 +437,13 @@ async function mergePrs(args, deps) {
     const launcherBranch = gitOut(deps.gitFn, rootDir, ['branch', '--show-current']) || '(detached HEAD)';
     if (launcherBranch !== defaultBranchFor(rootDir, WORKSPACE_REPO, deps.gitFn)) {
       result.pullSkipped = `launcher on ${launcherBranch}`;
+    } else if (mergeModeFor(rootDir, WORKSPACE_REPO, { gitFn: deps.gitFn }) === 'local') {
+      // The workspace repo merges into the launcher itself — or was not part
+      // of this task at all; either way no forge merge happened that a pull
+      // could fetch.
+      result.pullSkipped = 'workspace repo is local';
+    } else if (gitCheck(deps.gitFn, rootDir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).status !== 0) {
+      result.pullSkipped = 'launcher has no upstream';
     } else {
       const pull = gitCheck(deps.gitFn, rootDir, ['pull', '--ff-only']);
       if (pull.status !== 0) result.pullFailed = true;
@@ -558,4 +551,5 @@ if (isMainModule(import.meta.url)) {
   });
 }
 
-export { run, parseArgs, parseForgeRemote, mergeModeFor };
+export { run, parseArgs };
+export { parseForgeRemote, mergeModeFor } from './merge-mode.mjs';

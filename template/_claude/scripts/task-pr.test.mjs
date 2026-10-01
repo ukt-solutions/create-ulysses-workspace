@@ -59,8 +59,13 @@ const clean = (r) => rmSync(r, { recursive: true, force: true });
 // main with a bare local origin; `github` maps repo → the forge-shaped URL
 // its origin is rewritten to, `'none'` gives the repo no origin at all
 // (local mode, gh:173), and null keeps the local bare URL (a non-forge
-// origin). The launcher itself gets no origin unless a test adds one.
-function makeLauncher(repos, { forge = { type: 'github' }, tracker = { type: 'github-issues', repo: 'acme/tracker' } } = {}) {
+// origin). The launcher itself gets no origin unless `launcherOrigin` is
+// passed: `true` wires a bare remote that main tracks (the post-merge pull
+// runs), `'forge'` a forge-shaped origin that main has no upstream for
+// (the pull is skipped for having nothing to pull from).
+function makeLauncher(repos, {
+  forge = { type: 'github' }, tracker = { type: 'github-issues', repo: 'acme/tracker' }, launcherOrigin = null,
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'task-pr-'));
   const config = { workspace: { name: 'fixture', forge, ...(tracker ? { tracker } : {}) }, repos: {} };
   const bares = [];
@@ -87,6 +92,14 @@ function makeLauncher(repos, { forge = { type: 'github' }, tracker = { type: 'gi
   git(root, ['init', '-q', '-b', 'main']);
   git(root, ['add', '-A']);
   git(root, ['commit', '-q', '-m', 'init']);
+  if (launcherOrigin) {
+    const bare = mkdtempSync(join(tmpdir(), 'task-pr-launcher-origin-'));
+    git(root, ['init', '-q', '--bare', join(bare, 'origin.git')]);
+    git(root, ['remote', 'add', 'origin', join(bare, 'origin.git')]);
+    git(root, ['push', '-q', ...(launcherOrigin === true ? ['-u'] : []), 'origin', 'main']);
+    if (launcherOrigin === 'forge') git(root, ['remote', 'set-url', 'origin', 'git@github.com:acme/workspace.git']);
+    bares.push(bare);
+  }
   return { root, bares };
 }
 
@@ -208,6 +221,41 @@ console.log('# mergeModeFor: override, no origin, forge, non-forge origin');
   } finally { clean(root); bares.forEach(clean); }
 }
 
+console.log('# a merge: "local" override repo counts commits against its local default branch');
+{
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git' });
+  try {
+    // The override case: origin parses as a forge, but merges land locally —
+    // so the local main, never the origin ref, is what a task builds on.
+    const wsPath = join(root, 'workspace.json');
+    const ws = JSON.parse(readFileSync(wsPath, 'utf-8'));
+    ws.repos.app.merge = 'local';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+
+    // Task one merges locally, advancing repos/app's main; origin/main
+    // stays where it was pushed at setup.
+    const one = createTaskWorktree(root, { repo: 'app', branch: 'feature/one' });
+    writeFileSync(join(one.path, 'one.txt'), 'one\n');
+    git(one.path, ['add', '-A']);
+    git(one.path, ['commit', '-q', '-m', 'feat: one']);
+    git(join(root, 'repos', 'app'), ['merge', '-q', '--ff-only', 'feature/one']);
+
+    // Task two: one commit over the locally-advanced main — two over the
+    // stale origin/main, if the count used the wrong base.
+    const two = createTaskWorktree(root, { repo: 'app', branch: 'feature/two' });
+    assertEq(git(two.path, ['log', '-1', '--format=%s']).trim(), 'feat: one', 'the second task started from the locally-merged main');
+    git(two.path, ['commit', '-q', '--allow-empty', '-m', 'feat: two']);
+
+    const log = [];
+    const out = await run(argvCreate(['--root', root, '--branch', 'feature/two', '--repo', 'app']),
+      { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.prs, [{
+      repo: 'app', mode: 'local', branch: 'feature/two', base: 'main',
+      worktree: taskWorktreePath(root, 'app', 'feature/two'), commits: 1,
+    }], 'the count is against the local main, not the stale origin ref');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
 console.log('# parseArgs validation');
 {
   await rejects(() => run(['node', 'task-pr.mjs']), 'a mode is required');
@@ -249,6 +297,7 @@ console.log('# --create with a work item: push, PR, closing line (same-repo ref)
     assertEq([out.prs[0].repo, out.prs[0].owner, out.prs[0].name, out.prs[0].isWorkspace],
       ['app', 'acme', 'app', false], 'PR entry carries repo identity');
     assert(typeof out.prs[0].number === 'number' && out.prs[0].url.startsWith('https://'), 'PR entry carries number and url');
+    assertEq(out.prs[0].commits, 1, 'the forge entry carries its commit count');
     const create = log.find((e) => e.op === 'prCreate');
     assertEq(create.title, 'The issue title', 'title comes from the linked issue');
     assertEq(create.head, 'feature/x', 'PR head is the task branch');
@@ -456,6 +505,42 @@ console.log('# the workspace repo (".") rides the same path as a project repo');
       ['.', 'acme', 'workspace', true], 'workspace PR entry is flagged isWorkspace');
     assert(log.find((e) => e.op === 'prCreate').repo === 'acme/workspace', 'the forge aimed at the workspace worktree own origin');
   } finally { clean(root); clean(bare); }
+}
+
+console.log('# a no-origin launcher on master merges "." against master, not a phantom main');
+{
+  const root = mkdtempSync(join(tmpdir(), 'task-pr-ws-'));
+  // The workspace repo merges in the launcher itself, which must sit clean —
+  // so the PRs file lives outside it.
+  const scratch = mkdtempSync(join(tmpdir(), 'task-pr-ws-scratch-'));
+  try {
+    writeFileSync(join(root, 'workspace.json'), JSON.stringify({
+      workspace: { name: 'fixture', forge: { type: 'github' }, tracker: { type: 'github-issues', repo: 'acme/tracker' } },
+      repos: {},
+    }, null, 2));
+    writeFileSync(join(root, '.gitignore'), '.claude/worktrees/\nrepos\n');
+    git(root, ['init', '-q', '-b', 'master']);
+    writeFileSync(join(root, 'README.md'), '# launcher\n');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'init']);
+
+    const wt = createTaskWorktree(root, { repo: '.', branch: 'feature/x' });
+    writeFileSync(join(wt.path, 'ctx.md'), 'context\n');
+    git(wt.path, ['add', '-A']);
+    git(wt.path, ['commit', '-q', '-m', 'context: promote thinking']);
+
+    const log = [];
+    const out = await run(argvCreate(['--root', root, '--branch', 'feature/x', '--repo', '.']),
+      { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.prs[0].base, 'master', "the local entry's base is the launcher's own master");
+
+    const gitFn = gitWith();
+    const merged = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(scratch, out.prs), '--work-item', 'gh:173'],
+      { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(merged.merged, [{ repo: '.', mode: 'local', branch: 'feature/x', base: 'master' }], 'merged against master');
+    assertEq(git(root, ['log', '-1', '--format=%s']).trim(), 'context: promote thinking', 'the launcher master fast-forwarded');
+    assertEq(merged.pullSkipped, 'workspace merged locally', 'the pull is skipped — the work is already in the launcher');
+  } finally { clean(root); clean(scratch); }
 }
 
 console.log('# an all-local task: create records local entries, merge fast-forwards the source clones');
@@ -667,7 +752,9 @@ function prsFile(dir, prs) {
 
 console.log('# --merge: projects first, workspace last, then pull and close');
 {
-  const { root, bares } = makeLauncher({});
+  // launcherOrigin: true — the launcher tracks its origin, so the post-merge
+  // pull has an upstream to pull from.
+  const { root, bares } = makeLauncher({}, { launcherOrigin: true });
   try {
     const log = [];
     const gitFn = gitWith([pullOk]);
@@ -851,6 +938,27 @@ console.log('# a mid-create failure still writes what landed to --out, and a re-
   } finally { clean(root); bares.forEach(clean); }
 }
 
+console.log('# --merge refuses a PRs file entry whose repo is not "." or a plain name');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const gitFn = gitWith([pullOk]);
+    const deps = { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
+    // A local entry's repo becomes a path under repos/ — anything but "." or
+    // a plain single segment must never reach git.
+    for (const bad of ['../evil', '..', 'a/b', '']) {
+      const file = prsFile(root, [{ repo: bad, mode: 'local', branch: 'feature/x', base: 'main' }]);
+      await rejects(
+        () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file], deps),
+        `repo "${bad}" is rejected`,
+        'invalid repo name',
+      );
+    }
+    assertEq(gitFn.calls.filter((c) => c.args.includes('merge')).length, 0, 'nothing was merged from an invalid entry');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
 console.log('# --merge refuses an empty or malformed PRs file and closes nothing');
 {
   const { root, bares } = makeLauncher({});
@@ -916,7 +1024,7 @@ console.log('# --merge re-run: PRs already merged count as done, and the complet
 
 console.log('# a failed launcher pull is a reported flag, not a failed merge');
 {
-  const { root, bares } = makeLauncher({});
+  const { root, bares } = makeLauncher({}, { launcherOrigin: true });
   try {
     const log = [];
     const prs = [{ repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false }];
@@ -941,6 +1049,42 @@ console.log('# the pull is skipped when the launcher is not on its default branc
     assertEq(gitFn.calls.filter((c) => c.args.includes('pull')).length, 0, 'no pull was attempted');
     assertEq(out.closed, 'gh:163', 'the issue still closes');
   } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# the pull is skipped for a local workspace repo or a launcher with no upstream');
+{
+  // A project-only task whose workspace repo is local: no forge merge of
+  // "." happened, so there is nothing for a launcher pull to fetch.
+  const local = makeLauncher({ app: 'git@github.com:acme/app.git' });
+  try {
+    const wsPath = join(local.root, 'workspace.json');
+    const ws = JSON.parse(readFileSync(wsPath, 'utf-8'));
+    ws.workspace.merge = 'local';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+    const log = [];
+    const gitFn = gitWith([pullOk]);
+    const prs = [{ repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false }];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', local.root, '--prs', prsFile(local.root, prs), '--work-item', 'gh:163'],
+      { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.pullSkipped, 'workspace repo is local', 'the skip names the local workspace repo');
+    assertEq(out.pullFailed, undefined, 'no false pullFailed');
+    assertEq(gitFn.calls.filter((c) => c.args.includes('pull')).length, 0, 'no pull was attempted');
+  } finally { clean(local.root); local.bares.forEach(clean); }
+
+  // A launcher with an origin but no upstream for its default branch: the
+  // pull would fail with "no tracking information", which is a skip, not a
+  // failure of anything that mattered.
+  const untracked = makeLauncher({ app: 'git@github.com:acme/app.git' }, { launcherOrigin: 'forge' });
+  try {
+    const log = [];
+    const gitFn = gitWith([pullOk]);
+    const prs = [{ repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false }];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', untracked.root, '--prs', prsFile(untracked.root, prs), '--work-item', 'gh:163'],
+      { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.pullSkipped, 'launcher has no upstream', 'the skip names the missing upstream');
+    assertEq(out.pullFailed, undefined, 'no false pullFailed');
+    assertEq(gitFn.calls.filter((c) => c.args.includes('pull')).length, 0, 'no pull was attempted');
+  } finally { clean(untracked.root); untracked.bares.forEach(clean); }
 }
 
 console.log('# --merge tolerates a UTF-8 BOM in the PRs file');
