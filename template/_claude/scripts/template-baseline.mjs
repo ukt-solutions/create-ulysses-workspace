@@ -22,10 +22,21 @@
 // The rule every entry follows: record the hash of the payload's content —
 // what the template last shipped — never the workspace's on-disk bytes. A
 // file the user kept despite a template change therefore keeps the PAYLOAD
-// hash: the next update still sees workspace ≠ baseline and asks about the
-// file, so a deliberate divergence is never silently adopted as the new
-// baseline. The invariant that matters is the converse — a file the user
-// never touched (workspace == baseline) is never reported as a local edit.
+// hash: the next update sees workspace ≠ baseline with payload == baseline
+// and reports the file as a purely local edit (informational, not re-asked
+// per file) until the template touches it again, and a deliberate divergence
+// is never silently adopted as the new baseline. One exception: an unapplied
+// update — the workspace still holds the OLD baseline content while the
+// payload ships something new (the user declined the `updated` batch) — keeps
+// the old entry, so the file re-presents as `updated` next time instead of
+// being filed away as a local edit. The invariant that matters either way: a
+// file the user never touched (workspace == baseline) is never reported as a
+// local edit.
+//
+// All hashes are CRLF-normalized for text files (see hashBytes): a Windows
+// autocrlf checkout stores CRLF where the payload carries LF, and byte-exact
+// hashing would read every such file as locally modified. Files containing
+// NUL bytes hash byte-exact.
 //
 // Not covered: *.test.mjs (the tarball never ships them; a workspace's test
 // files came from a dev checkout and age independently — classify-update
@@ -71,8 +82,21 @@ const OWNED_PATHS = new Set([
 // Entire nested worktrees live under .claude/worktrees/ — never walked.
 const SKIP_DIRS = new Set(['worktrees']);
 
-function sha256(bytes) {
-  return createHash('sha256').update(bytes).digest('hex');
+/**
+ * The content hash used by the baseline and by classification: sha256 with
+ * CRLF normalized to LF for text files, byte-exact for binary (anything
+ * containing a NUL byte — git's own text/binary heuristic). Both the payload
+ * and the workspace side hash through this, so a git autocrlf checkout that
+ * stores CRLF where the payload ships LF classifies as identical instead of
+ * reading every file as locally modified.
+ */
+export function hashBytes(bytes) {
+  let body = bytes;
+  if (!bytes.includes(0)) {
+    // latin1 round-trips bytes 1:1 — safe on text that isn't valid UTF-8 too.
+    body = Buffer.from(bytes.toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
+  }
+  return createHash('sha256').update(body).digest('hex');
 }
 
 function* walkFiles(dir, prefix = '') {
@@ -129,13 +153,13 @@ export function buildBaseline(sourceDir, { pairs = LIVE_PAIRS, version = null } 
     try { st = statSync(src); } catch { continue; }
     if (st.isFile()) {
       if (!OWNED_PATHS.has(installedName) && !installedName.endsWith('.test.mjs')) {
-        files[installedName] = sha256(readFileSync(src));
+        files[installedName] = hashBytes(readFileSync(src));
       }
       continue;
     }
     for (const rel of walkFiles(src, installedName)) {
       if (OWNED_PATHS.has(rel) || rel.endsWith('.test.mjs')) continue;
-      files[rel] = sha256(readFileSync(join(absSource, sourceName, rel.slice(installedName.length + 1))));
+      files[rel] = hashBytes(readFileSync(join(absSource, sourceName, rel.slice(installedName.length + 1))));
     }
   }
   let templateVersion = version;
@@ -152,10 +176,39 @@ export function buildBaseline(sourceDir, { pairs = LIVE_PAIRS, version = null } 
 
 /**
  * Write the baseline for the workspace at `root`. Returns the written object.
+ *
+ * Refuses to write an empty baseline: a missing source directory or one that
+ * yields zero verbatim files throws rather than clobbering an existing good
+ * baseline with `{files:{}}` (which would make the next update classify every
+ * template change as a local edit).
+ *
+ * Before writing, entries carried over from the previous baseline are kept as
+ * they were for unapplied updates: a file whose workspace content still
+ * matches the old baseline while the payload ships something new (a declined
+ * `updated` batch) keeps the OLD entry, so the next update still offers the
+ * change instead of filing the file away as a local edit.
  */
 export function writeBaseline(root, sourceDir, opts = {}) {
+  const absRoot = resolve(root);
   const baseline = buildBaseline(sourceDir, opts);
-  const dest = join(resolve(root), BASELINE_PATH);
+  if (Object.keys(baseline.files).length === 0) {
+    throw new Error(
+      `No verbatim template files found under ${resolve(sourceDir)} — refusing to write an empty baseline`,
+    );
+  }
+  const previous = readBaseline(absRoot);
+  if (previous) {
+    for (const rel of Object.keys(baseline.files)) {
+      const oldHash = previous.files[rel];
+      if (typeof oldHash !== 'string' || oldHash === baseline.files[rel]) continue;
+      const installed = join(absRoot, rel);
+      if (existsSync(installed) && hashBytes(readFileSync(installed)) === oldHash) {
+        // Unapplied update: the workspace never took the payload's change.
+        baseline.files[rel] = oldHash;
+      }
+    }
+  }
+  const dest = join(absRoot, BASELINE_PATH);
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, JSON.stringify(baseline, null, 2) + '\n');
   return baseline;

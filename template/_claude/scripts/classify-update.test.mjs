@@ -318,6 +318,101 @@ console.log('# classify-update');
   rmSync(root, { recursive: true, force: true });
 }
 
+// 8d. localOnly: the workspace holds a local edit to a file the template did
+//     NOT change since the baseline (payload == baseline ≠ workspace). Listed
+//     for information only — never differs, never asked about, never applied.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  // locally edited, template unchanged: payload and baseline agree
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v1\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// my take\n');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.21.0',
+    files: { '.claude/hooks/session-start.mjs': sha('// template v1\n') },
+  }) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.localOnly, ['.claude/hooks/session-start.mjs'], 'local edit on an unchanged template file is localOnly');
+  assertEq(result.differs, [], 'localOnly files are never differs');
+  assertEq(result.updated, [], 'localOnly files are never updated');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8e. deletedLocally: the baseline records a file, the payload still ships it,
+//     but it is missing from the workspace — deleted locally (or never
+//     installed). Reported for a restore offer, not batch-installed as new.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v2\n');
+  // a genuinely new file for contrast: payload ships it, baseline never did
+  writeFileSync(join(payload, '.claude', 'skills', 'new-skill', 'SKILL.md'), '# New\n');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.20.0',
+    files: { '.claude/hooks/session-start.mjs': sha('// template v1\n') },
+  }) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.deletedLocally, ['.claude/hooks/session-start.mjs'], 'baseline-recorded missing file is deletedLocally');
+  assertTrue(!result.new.includes('.claude/hooks/session-start.mjs'), 'deletedLocally files are never new');
+  assertEq(result.new, ['.claude/skills/new-skill/SKILL.md'], 'a file the baseline never recorded stays new');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8f. CRLF: an autocrlf checkout stores CRLF where the payload ships LF. All
+//     sides hash with CRLF normalized, so the file classifies as identical —
+//     not as locally modified on every update.
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template\n// v2\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// template\r\n// v2\r\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.identical, ['.claude/hooks/session-start.mjs'], 'a CRLF checkout of an LF payload classifies as identical');
+  assertEq(result.differs, [], 'line endings alone never read as local edits');
+  assertEq(result.localOnly, [], 'line endings alone never read as local-only edits either');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8g. a declined `updated` batch stays `updated`: writing the baseline keeps
+//     the OLD entry when the workspace still holds the baseline content and
+//     the payload ships something new, so the change is offered again next
+//     update instead of being filed away.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v2\n');
+  // the user declined the update: the workspace keeps the baseline content
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// template v1\n');
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.20.0',
+    files: { '.claude/hooks/session-start.mjs': sha('// template v1\n') },
+  }) + '\n');
+
+  const before = classifyUpdate({ root });
+  assertEq(before.updated, ['.claude/hooks/session-start.mjs'], 'the change presents as updated before the baseline rewrite');
+
+  const r = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', root, '--payload', payload, '--write-baseline'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r.status, 0, `--write-baseline exits 0 (stderr: ${r.stderr.trim().slice(0, 200)})`);
+
+  const after = classifyUpdate({ root });
+  assertEq(after.updated, ['.claude/hooks/session-start.mjs'], 'an unapplied update still presents as updated after the baseline rewrite');
+  assertEq(after.differs, [], 'an unapplied update never demotes to differs');
+  assertEq(after.localOnly, [], 'an unapplied update never demotes to localOnly');
+  rmSync(root, { recursive: true, force: true });
+}
+
 // 8c. staleTests: *.test.mjs under .claude/ with no payload counterpart are
 //     listed for removal, never counted as template removals.
 {
@@ -371,9 +466,11 @@ console.log('# classify-update');
   assertTrue(Object.keys(baseline.files).every((k) => !k.endsWith('.test.mjs')), 'tests are never baselined');
 
   // with the fresh baseline, the same workspace classifies the kept file as
-  // differs (deliberate divergence) and nothing as updated
+  // localOnly — the divergence is visible but the template didn't change the
+  // file since, so it is listed for information, never re-asked per file
   const result = classifyUpdate({ root });
-  assertEq(result.differs, ['.claude/hooks/session-start.mjs'], 'kept local edit reads as differs against the payload-hash baseline');
+  assertEq(result.localOnly, ['.claude/hooks/session-start.mjs'], 'kept local edit reads as localOnly against the payload-hash baseline');
+  assertEq(result.differs, [], 'nothing reads as differs');
   assertEq(result.updated, [], 'nothing reads as updated');
   rmSync(root, { recursive: true, force: true });
 }
@@ -429,6 +526,64 @@ console.log('# classify-update');
     .replace(/\{\{project-name\}\}/g, 'demo');
   assertEq(mergeClaudeMd(text, text), text, 'merging a file with itself changes nothing');
   assertEq(mergeClaudeMd('', text), text, 'an empty current file takes the template as-is');
+}
+
+// 10c. mergeClaudeMd — any `## Workspace:` heading is the same section: a
+//      renamed workspace merges its intro with the template's instead of
+//      keeping two intro sections side by side.
+{
+  const current = '## Workspace: old-name\n\nIntro prose.\n\n## Skills\n- `/a` — one\n';
+  const next = '## Workspace: new-name\n\nIntro prose, reworded.\n\n## Skills\n- `/a` — one\n';
+  const merged = mergeClaudeMd(current, next);
+
+  const introHeadings = merged.split('\n').filter((l) => l.startsWith('## Workspace:'));
+  assertEq(introHeadings, ['## Workspace: new-name'], 'one intro heading survives, the template\'s wording wins');
+  assertTrue(merged.includes('Intro prose, reworded.'), 'the template intro body lands');
+  assertTrue(
+    merged.indexOf('Intro prose, reworded.') < merged.indexOf('Intro prose.'),
+    'the workspace\'s old intro line is kept only as a trailing line of the merged section, never as a second intro section',
+  );
+}
+
+// 10d. mergeClaudeMd — `## ` lines inside fenced code blocks are content, not
+//      section headings.
+{
+  const current = [
+    '## Skills',
+    'Example config:',
+    '',
+    '```markdown',
+    '## Workspace: fake',
+    'not a heading',
+    '```',
+    '',
+    '## Notes',
+    'Real section.',
+  ].join('\n') + '\n';
+  const next = '## Skills\n- `/a` — one\n';
+  const merged = mergeClaudeMd(current, next);
+
+  assertTrue(merged.includes('## Workspace: fake') && merged.includes('not a heading'),
+    'the fenced pseudo-heading stays inside its section');
+  assertTrue(merged.indexOf('## Workspace: fake') < merged.indexOf('## Notes'),
+    'content after a fenced pseudo-heading stays in the enclosing section');
+  const fakeIdx = merged.split('\n').indexOf('## Workspace: fake');
+  assertTrue(
+    fakeIdx > 0 && merged.split('\n')[fakeIdx - 1] === '```markdown',
+    'the pseudo-heading stays fenced content (the line before it is the fence opener)',
+  );
+}
+
+// 10e. mergeClaudeMd — line endings follow the current file: CRLF in, CRLF out
+{
+  const current = '## Skills\r\n- `/a` — ours\r\n- `/b` — mine\r\n';
+  const next = '## Skills\n- `/a` — theirs\n';
+  const merged = mergeClaudeMd(current, next);
+
+  assertTrue(merged.includes('\r\n'), 'a CRLF workspace file merges to CRLF');
+  assertTrue(!/[^\r]\n/.test(merged), 'no bare LF sneaks into a CRLF result');
+  assertTrue(merged.includes('- `/a` — theirs\r\n'), 'template lines arrive, re-wrapped in CRLF');
+  assertTrue(merged.includes('- `/b` — mine\r\n'), 'workspace lines keep their CRLF');
 }
 
 // 11. CLI --merge-claude-md — substitutes {{project-name}}, merges with the

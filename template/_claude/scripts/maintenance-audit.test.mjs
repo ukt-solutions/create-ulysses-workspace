@@ -689,10 +689,11 @@ console.log('# maintenance-audit');
 }
 
 // 18. auditing from a linked worktree (a task worktree of the workspace repo):
-//     launcher-level checks — manifest repos cloned, the launcher's branch —
-//     resolve against the launcher; the worktree's own feature branch and
-//     dirty tree are in-flight work, reported as info, never false warnings
-//     (gh:183). Uses a real repo with a real worktree.
+//     launcher-level checks — manifest repos cloned, the launcher's branch,
+//     the launcher's dirty tracked tree — resolve against the launcher; the
+//     worktree's own feature branch and dirty tree are in-flight work,
+//     reported as info, never false warnings (gh:183). Uses a real repo with
+//     a real worktree.
 {
   const root = makeWorkspace({}, (r) => {
     const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
@@ -736,6 +737,17 @@ console.log('# maintenance-audit');
   assertTrue(
     bySection(result2, 'git').some((f) => f.severity === 'warning' && f.message.includes("launcher is on branch 'feature/oops'")),
     'a launcher off its default branch warns even when audited from a worktree',
+  );
+
+  // a dirty launcher tracked tree warns too — the worktree's own dirty files
+  // above raised nothing, the launcher's are drift
+  writeFileSync(join(root, 'CLAUDE.md'), '## Workspace: fixture (uncommitted edit)\n');
+  const result2b = await audit(wt);
+  assertTrue(
+    bySection(result2b, 'git').some(
+      (f) => f.severity === 'warning' && f.message.includes('launcher has 1 tracked file(s) with uncommitted changes: CLAUDE.md'),
+    ),
+    'a dirty launcher tree warns even when audited from a worktree',
   );
 
   // a repo missing at the launcher still warns too

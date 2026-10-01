@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Unit tests for template-baseline.mjs
 // Run: node template/_claude/scripts/template-baseline.test.mjs
-import { buildBaseline, writeBaseline, readBaseline, LIVE_PAIRS, INERT_PAIRS, BASELINE_PATH } from './template-baseline.mjs';
+import { buildBaseline, writeBaseline, readBaseline, hashBytes, LIVE_PAIRS, INERT_PAIRS, BASELINE_PATH } from './template-baseline.mjs';
 import { createHash } from 'node:crypto';
 import {
   mkdtempSync,
@@ -127,6 +127,91 @@ console.log('# template-baseline');
 {
   assertEq(BASELINE_PATH, '.claude/.template-baseline.json', 'baseline lives under .claude/');
   assertEq(LIVE_PAIRS.map((p) => p[0]), ['.claude', '.mcp.json', '.claudeignore'], 'live pairs cover the verbatim roots');
+}
+
+// 6. hashBytes: text hashes with CRLF normalized (an autocrlf checkout reads
+//    identical to the LF payload), binary files hash byte-exact
+{
+  const lf = Buffer.from('line\nline\n', 'utf8');
+  const crlf = Buffer.from('line\r\nline\r\n', 'utf8');
+  const binary = Buffer.from([0x00, 0x0d, 0x0a, 0x01, 0x0d, 0x0a, 0x00]);
+
+  assertEq(hashBytes(lf), hashBytes(crlf), 'text content hashes equal across line endings');
+  assertEq(hashBytes(lf), sha('line\nline\n'), 'LF text hashes as plain sha256');
+  assertEq(hashBytes(binary), createHash('sha256').update(binary).digest('hex'),
+    'a NUL-containing buffer hashes byte-exact — its CRLFs are NOT normalized');
+}
+
+// 7. writeBaseline refuses empty sources: a missing payload dir or one that
+//    yields zero verbatim files throws instead of writing {files:{}}
+{
+  const root = mkdtempSync(join(tmpdir(), 'baseline-test-'));
+  const missing = join(root, 'no-such-payload');
+  let threw = null;
+  try { writeBaseline(root, missing); } catch (e) { threw = e; }
+  assertTrue(threw !== null, 'missing payload dir throws');
+  assertTrue(threw.message.includes('refusing to write an empty baseline'), 'error explains the refusal');
+
+  const empty = mkdtempSync(join(tmpdir(), 'baseline-test-'));
+  mkdirSync(join(empty, 'unrelated'), { recursive: true });
+  writeFileSync(join(empty, 'unrelated', 'notes.md'), 'not a verbatim root\n');
+  threw = null;
+  try { writeBaseline(root, empty); } catch (e) { threw = e; }
+  assertTrue(threw !== null, 'a payload with zero verbatim files throws');
+  rmSync(root, { recursive: true, force: true });
+  rmSync(empty, { recursive: true, force: true });
+}
+
+// 8. the refusal also protects an existing baseline: a good baseline survives
+//    a failed rewrite untouched
+{
+  const root = mkdtempSync(join(tmpdir(), 'baseline-test-'));
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.manifest.json'), JSON.stringify({ templateVersion: '3.0.0' }) + '\n');
+  writeBaseline(root, payload);
+  const good = readFileSync(join(root, BASELINE_PATH), 'utf8');
+
+  const empty = mkdtempSync(join(tmpdir(), 'baseline-test-'));
+  let threw = null;
+  try { writeBaseline(root, empty); } catch (e) { threw = e; }
+  assertTrue(threw !== null, 'empty rewrite throws');
+  assertEq(readFileSync(join(root, BASELINE_PATH), 'utf8'), good, 'the existing baseline is not clobbered');
+  rmSync(root, { recursive: true, force: true });
+  rmSync(empty, { recursive: true, force: true });
+}
+
+// 9. unapplied updates keep the old entry: a file the workspace still holds at
+//    the old baseline content while the payload ships new bytes stays marked
+//    as `updated` for the next run; an actually-kept local edit records the
+//    payload hash as before
+{
+  const root = mkdtempSync(join(tmpdir(), 'baseline-test-'));
+  const payload = join(root, '.workspace-update');
+  mkdirSync(join(payload, '.claude', 'hooks'), { recursive: true });
+  mkdirSync(join(root, '.claude', 'hooks'), { recursive: true });
+  writeFileSync(join(payload, '.claude', 'hooks', 'a.mjs'), '// v2\n'); // declined: ws keeps v1
+  writeFileSync(join(payload, '.claude', 'hooks', 'b.mjs'), '// v2\n'); // kept local edit: ws is neither
+  writeFileSync(join(payload, '.claude', 'hooks', 'c.mjs'), '// v2\n'); // applied: ws == payload
+  writeFileSync(join(root, '.claude', 'hooks', 'a.mjs'), '// v1\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'b.mjs'), '// mine\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'c.mjs'), '// v2\n');
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.20.0',
+    files: {
+      '.claude/hooks/a.mjs': sha('// v1\n'),
+      '.claude/hooks/b.mjs': sha('// v1\n'),
+      '.claude/hooks/c.mjs': sha('// v1\n'),
+    },
+  }) + '\n');
+
+  const written = writeBaseline(root, payload, { version: '0.21.0' });
+  assertEq(written.files['.claude/hooks/a.mjs'], sha('// v1\n'),
+    'an unapplied update keeps the OLD hash so it re-presents as updated');
+  assertEq(written.files['.claude/hooks/b.mjs'], sha('// v2\n'),
+    'a kept local edit records the payload hash');
+  assertEq(written.files['.claude/hooks/c.mjs'], sha('// v2\n'),
+    'an applied file records the payload hash');
+  rmSync(root, { recursive: true, force: true });
 }
 
 console.log('');
