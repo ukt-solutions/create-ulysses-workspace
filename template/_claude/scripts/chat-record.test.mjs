@@ -8,10 +8,12 @@
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
   listRecords, reconcile, parseArgs, resolveChatName,
-  addTask, removeTask, setScope,
+  addTask, removeTask, setScope, whoami,
 } from './chat-record.mjs';
 
 let passed = 0;
@@ -148,14 +150,17 @@ console.log('# task lifecycle');
   try {
     reconcile(r, { sessionId: 'sid-t', name: 'worker' });
 
-    addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a', repo: 'app' });
+    const added = addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a', repo: 'app' });
+    assertEq(added.action, 'added', 'a new task reports action "added"');
+    assertEq(added.updated, false, 'the legacy updated flag stays false for a new task');
     addTask(r, 'worker', { workItem: 'gh:2', branch: 'feature/b', repo: 'app' });
     assertEq(readRecord(r, 'worker').tasks.length, 2, 'two tasks recorded');
 
     // Re-recording the same work item must update, not duplicate — /start-work
     // is not guaranteed to run exactly once per task.
     const again = addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a-v2', repo: 'app' });
-    assert(again.updated === true, 're-adding reports an update');
+    assertEq(again.action, 'updated', 're-adding reports action "updated"');
+    assert(again.updated === true, 'the legacy updated flag still means "an entry was replaced"');
     assertEq(readRecord(r, 'worker').tasks.length, 2, 'no duplicate created');
     assertEq(
       readRecord(r, 'worker').tasks.find((t) => t.workItem === 'gh:1').branch,
@@ -168,6 +173,7 @@ console.log('# task lifecycle');
     assertEq(readRecord(r, 'worker').tasks.length, 3, 'same issue in a second repo is a separate task');
 
     const rm = removeTask(r, 'worker', { workItem: 'gh:1', repo: 'app' });
+    assertEq(rm.action, 'removed', 'a real removal reports action "removed"');
     assertEq(rm.removed, 1, 'one task removed');
     assertEq(readRecord(r, 'worker').tasks.length, 2, 'only the matching repo removed');
     assert(
@@ -175,7 +181,9 @@ console.log('# task lifecycle');
       'the other repo\'s task survives',
     );
 
-    assertEq(removeTask(r, 'worker', { workItem: 'nope' }).removed, 0, 'removing an absent task is a no-op');
+    const noop = removeTask(r, 'worker', { workItem: 'nope' });
+    assertEq(noop.action, 'unchanged', 'removing an absent task reports action "unchanged"');
+    assertEq(noop.removed, 0, 'removing an absent task is a no-op');
   } finally { clean(r); }
 }
 
@@ -249,6 +257,45 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's', '--remove-task']), '--remove-task needs chat and work-item');
   const ok = parseArgs(['node', 's', '--root', '/tmp/x', '--reconcile', '--session-id', 'i', '--name', 'n']);
   assertEq([ok.root, ok.mode, ok.sessionId, ok.name], ['/tmp/x', 'reconcile', 'i', 'n'], 'valid args parse');
+  assertEq(parseArgs(['node', 's', '--root', '/tmp/x', '--whoami']).mode, 'whoami', '--whoami parses as a mode');
+}
+
+console.log('# whoami resolves this chat\'s record from the session id');
+{
+  const r = root();
+  try {
+    writeRecord(r, emptyRecord('alpha', 'sid-live'));
+    writeRecord(r, emptyRecord('beta', 'sid-other'));
+    assertEq(whoami(r, { env: { CLAUDE_CODE_SESSION_ID: 'sid-live' } }), 'alpha', 'a sessionId match resolves the record name');
+    assertEq(whoami(r, { env: { CLAUDE_CODE_SESSION_ID: 'sid-none' } }), null, 'no matching record is null');
+    assertEq(whoami(r, { env: {} }), null, 'an unset env var is null, not a guess');
+  } finally { clean(r); }
+}
+
+console.log('# whoami CLI: bare name on stdout, silence and exit 1 without a match');
+{
+  const r = root();
+  try {
+    writeRecord(r, emptyRecord('alpha', 'sid-live'));
+    const script = fileURLToPath(new URL('./chat-record.mjs', import.meta.url));
+    const out = execFileSync(process.execPath, [script, '--root', r, '--whoami'], {
+      encoding: 'utf-8', env: { ...process.env, CLAUDE_CODE_SESSION_ID: 'sid-live' },
+    });
+    assertEq(out.trim(), 'alpha', 'CLI prints the bare record name');
+
+    let exit = null;
+    let silent = '';
+    try {
+      silent = execFileSync(process.execPath, [script, '--root', r, '--whoami'], {
+        encoding: 'utf-8', env: { ...process.env, CLAUDE_CODE_SESSION_ID: 'sid-none' },
+      });
+    } catch (err) {
+      exit = err.status;
+      silent = err.stdout;
+    }
+    assertEq(exit, 1, 'no match exits 1');
+    assertEq(String(silent), '', 'no match prints nothing');
+  } finally { clean(r); }
 }
 
 console.log('# nothing is written outside the given root (gh:142 regression)');
