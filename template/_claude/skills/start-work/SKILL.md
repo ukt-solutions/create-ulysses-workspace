@@ -21,7 +21,7 @@ New work as a task: one tracker issue, one branch, one worktree per repo the wor
 
 If `workspace.tracker` is absent, say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. Tell the user plainly what that costs: without a tracker there is no `workItem`, the task is not recorded on the chat record, and `/complete-work` cannot find it from the launcher. It is completed either by running `/complete-work` from inside the worktree (cwd detection) or by opening the PR by hand.
 
-1. **Identify or create the tracker issue and claim it** — the same adapter calls as Flow: Blank steps 3–6:
+1. **Identify or create the tracker issue and claim it.** If the invocation's arguments already name an issue — `gh:N`, `#N`, or an issue URL — normalize it to the adapter's id (`#42` and a `.../issues/42` URL both mean `gh:42`), fetch it with `tracker.getIssue(id)`, claim it when it is not yet assigned to you (with the same `ALREADY_ASSIGNED` handling as the fallback pick below), and skip the candidate list entirely. Otherwise, list the candidates — the same adapter calls as Flow: Blank steps 3–6:
 
    ```javascript
    import { createTracker } from './.claude/scripts/trackers/interface.mjs';
@@ -60,7 +60,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
    ```bash
    node .claude/scripts/chat-record.mjs --root . --add-task --chat "{chat}" --work-item "{workItem}" --branch "{branch}" --repo "{repo}"
    ```
-   `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, say so and skip recording rather than guessing a name.
+   `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, run `node .claude/scripts/chat-record.mjs --whoami --root .` first — compaction can drop the hook line, and this recovers the name by matching the chat's session id. When that too prints nothing, say so and skip recording rather than guessing a name.
 
 6. **Tell the user where the work happens:** the worktree path(s) above — edits belong there, not in the source clones at `repos/{repo}/`. Work continues from this chat by path. A chat started inside a **project** worktree would not load the workspace's conventions or hooks (a worktree is a context boundary), so staying here is the default. A `.` worktree does load a copy of the workspace's `CLAUDE.md`/`.claude/` — but with the worktree as root, so its chat records land in the worktree's own scratchpad rather than the launcher's; the task still belongs to this chat.
 

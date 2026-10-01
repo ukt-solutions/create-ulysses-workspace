@@ -186,5 +186,17 @@ function buildSpawn(responses) {
   catch (e) { if (/title is required/.test(e.message)) ok(); else fail(`wrong error: ${e.message}`); }
 }
 
+// issueRef renders "#N" for the adapter's own repo, "owner/repo#N" for any
+// other PR repo — a bare #N only closes an issue in the PR's own repo.
+{
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn: () => ({ status: 0, stdout: '', stderr: '' }) });
+  if (t.issueRef('gh:42', { fromRepo: 'foo/bar' }) === '#42'
+      && t.issueRef('gh:42', { fromRepo: 'foo/other' }) === 'foo/bar#42'
+      && t.issueRef('gh:42') === '#42') ok();
+  else fail(`issueRef shapes wrong: ${t.issueRef('gh:42', { fromRepo: 'foo/other' })}`);
+  try { t.issueRef('not-an-id'); fail('issueRef should reject a non-gh id'); }
+  catch (e) { if (/Not a GitHub issue ID/.test(e.message)) ok(); else fail(`wrong error: ${e.message}`); }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

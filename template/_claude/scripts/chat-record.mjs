@@ -20,6 +20,18 @@
 //   node chat-record.mjs --root <dir> --list
 //   node chat-record.mjs --root <dir> --read  <chat-name>
 //   node chat-record.mjs --root <dir> --reconcile --session-id <id> --name <n>
+//   node chat-record.mjs --root <dir> --whoami
+//   node chat-record.mjs --root <dir> --add-task    --chat <n> --work-item <id> --branch <b> [--repo <r>]
+//   node chat-record.mjs --root <dir> --remove-task --chat <n> --work-item <id> [--repo <r>]
+//
+// --add-task / --remove-task report `action`: "added" | "updated" for
+// --add-task, "removed" | "unchanged" for --remove-task. They also keep the
+// older `updated` boolean / `removed` count fields — `updated` means "an
+// existing entry was replaced", not "anything changed" — but new callers
+// should read `action`. --whoami prints this chat's record name by matching
+// $CLAUDE_CODE_SESSION_ID against the records' sessionId, nothing and exit
+// 1 when there is no match: the `Chat record:` hook line can be missing
+// after context compaction, and this is the recovery path.
 
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync,
@@ -197,7 +209,7 @@ function addTask(root, chatName, { workItem, branch, repo = null } = {}) {
   if (i >= 0) rec.tasks[i] = task;
   else rec.tasks.push(task);
   writeRecord(root, rec);
-  return { record: rec, updated: i >= 0 };
+  return { record: rec, action: i >= 0 ? 'updated' : 'added', updated: i >= 0 };
 }
 
 function removeTask(root, chatName, { workItem, repo = null } = {}) {
@@ -207,7 +219,18 @@ function removeTask(root, chatName, { workItem, repo = null } = {}) {
   const before = rec.tasks.length;
   rec.tasks = rec.tasks.filter((t) => !(t.workItem === workItem && (t.repo ?? null) === repo));
   writeRecord(root, rec);
-  return { record: rec, removed: before - rec.tasks.length };
+  return { record: rec, action: before - rec.tasks.length > 0 ? 'removed' : 'unchanged', removed: before - rec.tasks.length };
+}
+
+// The record name for the chat running now. The SessionStart hook injects
+// a `Chat record:` line, but compaction can drop it; the sessionId the
+// hook keyed on is stable, so matching it against the records recovers the
+// name without guessing. Null when the env var is unset or nothing matches.
+function whoami(root, { env = process.env } = {}) {
+  const sid = env.CLAUDE_CODE_SESSION_ID;
+  if (!sid) return null;
+  const mine = listRecords(root).find((r) => r.sessionId === sid);
+  return mine ? mine.chat : null;
 }
 
 // Scope is what a chat declares it owns. The Aug 26 coordination burst had
@@ -230,6 +253,7 @@ function parseArgs(argv) {
     if (a === '--list') { args.mode = 'list'; continue; }
     if (a === '--read') { args.mode = 'read'; args.chat = rest[++i]; continue; }
     if (a === '--reconcile') { args.mode = 'reconcile'; continue; }
+    if (a === '--whoami') { args.mode = 'whoami'; continue; }
     if (a === '--add-task') { args.mode = 'add-task'; continue; }
     if (a === '--remove-task') { args.mode = 'remove-task'; continue; }
     if (a === '--chat') { args.chat = rest[++i]; continue; }
@@ -240,7 +264,7 @@ function parseArgs(argv) {
     if (a === '--name') { args.name = rest[++i]; continue; }
     throw new Error(`unknown argument: ${a}`);
   }
-  if (!args.mode) throw new Error('one of --list, --read <chat>, --reconcile is required');
+  if (!args.mode) throw new Error('one of --list, --read <chat>, --reconcile, --whoami is required');
   if (args.mode === 'reconcile' && (!args.sessionId || !args.name)) {
     throw new Error('--reconcile requires --session-id and --name');
   }
@@ -255,6 +279,15 @@ function parseArgs(argv) {
 
 function main() {
   const args = parseArgs(process.argv);
+  if (args.mode === 'whoami') {
+    // A bare name, not JSON: the caller wants something to put on a command
+    // line. No match prints nothing and exits 1 — the caller decides what
+    // an unidentified chat means.
+    const name = whoami(args.root);
+    if (name === null) process.exit(1);
+    process.stdout.write(`${name}\n`);
+    return;
+  }
   let out;
   if (args.mode === 'list') out = listRecords(args.root);
   else if (args.mode === 'read') out = readRecord(args.root, args.chat);
@@ -278,5 +311,5 @@ if (isMainModule(import.meta.url)) {
 export {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
   listRecords, reconcile, parseArgs, readSessionRegistry, resolveChatName,
-  addTask, removeTask, setScope, CHATS_DIR,
+  addTask, removeTask, setScope, whoami, CHATS_DIR,
 };

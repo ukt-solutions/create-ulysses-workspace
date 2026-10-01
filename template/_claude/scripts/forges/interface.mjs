@@ -17,11 +17,12 @@
 //   prView({ id, repo?, json? })
 //     → { id, url, state, mergeable, mergeStateStatus, reviewDecision, title }
 //     json may name additional fields to pass through
-//   prList({ state = 'merged', base?, search?, limit = 100, repo? })
+//   prList({ state = 'merged', base?, head?, search?, limit = 100, repo? })
 //     → [{ id, number, title, url, headRefName, baseRefName, mergedAt, state }]
-//     `search` passes through the forge's own search syntax (e.g.
-//     'merged:>2026-01-01'), so callers can bound a window without this
-//     interface growing a date vocabulary.
+//     `base`/`head` filter by target/source branch (e.g. the open PR for a
+//     task branch); `search` passes through the forge's own search syntax
+//     (e.g. 'merged:>2026-01-01'), so callers can bound a window without
+//     this interface growing a date vocabulary.
 //   releaseView({ tag, repo? })
 //     → { tag, url, name, publishedAt }
 //     throws ReleaseNotFound if the tag has no release

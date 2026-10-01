@@ -225,6 +225,10 @@ function checkRequiredFiles(files) {
     // Without this script /start-work cannot create them and /complete-work
     // cannot tell the two lifecycles apart.
     'template/_claude/scripts/task-worktree.mjs',
+    // The task lifecycle's PR half (gh:163): push + one PR per repo, then
+    // ordered merge, launcher pull, and issue close. Without it task
+    // completion falls back to hand-written adapter blocks.
+    'template/_claude/scripts/task-pr.mjs',
     // The per-workspace session→task migration (gh:147). Without it
     // /migrate-sessions cannot inventory, back up, or drain old sessions,
     // and existing workspaces have no path onto the task model.
