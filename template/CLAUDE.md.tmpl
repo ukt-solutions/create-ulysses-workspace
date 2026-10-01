@@ -30,9 +30,9 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - `/promote` — move personal memory to shared context
 - `/release [version]` — cut a versioned release: bump, tag, forge release with generated notes
 - `/sync-work` — push branches without ceremony
-- `/workspace-update` — apply template updates (runs maintenance before/after)
+- `/workspace-update` — apply template updates, verified by a post-update audit
 - `/setup-tracker` — wire this workspace to an issue tracker (GitHub Issues shipped; others pluggable)
-- `/maintenance [audit|cleanup]` — workspace health checks and cleanup
+- `/maintenance [audit|cleanup]` — scripted health audit and cleanup
 - `/context-placement` — decide where durable content belongs and what each destination costs before writing it
 - `/goal-driven-work` — run multi-phase autonomous work under `/goal` with phase artifacts and agent-team dispatch
 - `/migrate-sessions` — drain session-model work sessions and switch the workspace to the task lifecycle

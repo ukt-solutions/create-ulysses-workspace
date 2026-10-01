@@ -538,6 +538,156 @@ console.log('# maintenance-audit');
   assertTrue(threw !== null && threw.message.includes('--wat'), 'unknown argument throws');
 }
 
+// 14. identical findings are reported once — a file reached through two
+//     walk roots (here: the sessions dir nested inside workspace-context,
+//     so the tracker is both walked and appended) must not double-report.
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.workspace.workSessionsDir = 'workspace-context/work-sessions';
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    mkdirSync(join(r, 'workspace-context', 'work-sessions', 'demo', 'workspace'), { recursive: true });
+    writeFileSync(
+      join(r, 'workspace-context', 'work-sessions', 'demo', 'workspace', 'session.md'),
+      '---\nname: demo\nstatus: active\nbranch: bugfix/gone\nupdated: 2026-09-30\n---\nWork.\n',
+    );
+    writeCatalogs(r);
+  });
+  const result = await audit(root);
+  const dup = result.issues.filter(
+    (f) => f.section === 'frontmatter' && f.message.includes('bugfix/gone'),
+  );
+  assertEq(dup.length, 1, 'the same file walked twice yields one finding, not two');
+  cleanup(root);
+}
+
+// 15. historical material is not audited: .indexignore-excluded paths and
+//     archive/ directories hold release history whose branches are gone by
+//     design; live files keep their findings.
+{
+  const root = makeWorkspace({}, (r) => {
+    writeFileSync(join(r, 'workspace-context', '.indexignore'), 'scaffolder-release-history/\nrelease-notes/\n');
+    const hist = (p) => {
+      mkdirSync(join(r, dirname(p)), { recursive: true });
+      writeFileSync(
+        join(r, p),
+        '---\ndescription: History.\nlifecycle: active\nbranch: bugfix/gone\nupdated: 2026-09-01\n---\nOld.\n',
+      );
+    };
+    hist('workspace-context/scaffolder-release-history/archive/v0.1.0/notes-abc.md');
+    hist('workspace-context/shared/archive/old-notes.md');
+    // A frontmatter-less file inside another ignored path.
+    mkdirSync(join(r, 'workspace-context', 'release-notes', 'v0.2.0'), { recursive: true });
+    writeFileSync(join(r, 'workspace-context', 'release-notes', 'v0.2.0', 'notes-def.md'), 'no frontmatter at all\n');
+    // A live file still flags the same branch and staleness.
+    writeFileSync(
+      join(r, 'workspace-context', 'shared', 'live.md'),
+      '---\ndescription: Live.\nlifecycle: active\nbranch: bugfix/gone\nupdated: 2026-09-01\n---\nNow.\n',
+    );
+    writeCatalogs(r);
+  });
+  const result = await audit(root);
+  const fm = bySection(result, 'frontmatter');
+  assertEq(
+    fm.filter((f) => f.message.includes('bugfix/gone')).map((f) => f.file),
+    ['workspace-context/shared/live.md'],
+    'branch-gone flags only the live file; .indexignore and archive/ paths are skipped',
+  );
+  assertTrue(
+    !fm.some((f) => f.file.includes('release-notes')),
+    'a frontmatter-less file inside an ignored path raises no warning',
+  );
+  assertTrue(
+    fm.some((f) => f.file === 'workspace-context/shared/live.md' && f.message.includes('stale')),
+    'live stale candidates are still flagged',
+  );
+  cleanup(root);
+}
+
+// 15b. closed-out lifecycles skip the branch check (the branch was deleted
+//      at completion) but keep the resolved info; unlabeled files stay live.
+{
+  const root = makeWorkspace({}, (r) => {
+    writeFileSync(
+      join(r, 'workspace-context', 'shared', 'done.md'),
+      '---\ndescription: Done.\nlifecycle: resolved\nbranch: bugfix/gone\nupdated: 2026-09-01\n---\nDone.\n',
+    );
+    writeCatalogs(r);
+  });
+  const result = await audit(root);
+  const fm = bySection(result, 'frontmatter');
+  assertTrue(
+    !fm.some((f) => f.file === 'workspace-context/shared/done.md' && f.message.includes('no longer exists')),
+    'resolved lifecycle does not flag its (deleted) branch',
+  );
+  assertTrue(
+    fm.some((f) => f.file === 'workspace-context/shared/done.md' && f.severity === 'info'),
+    'resolved lifecycle still reports its info',
+  );
+  cleanup(root);
+}
+
+// 16. cross-reference: only list entries are skill references — a `/name`
+//     inside prose (the /goal-driven-work line mentioning the built-in
+//     /goal) is not a claim, and built-ins never count even as entries.
+{
+  const root = makeWorkspace({}, (r) => {
+    writeFileSync(
+      join(r, 'CLAUDE.md'),
+      '## Skills\n'
+        + '- `/demo [audit|cleanup]` — arg hints inside the backticks still list the skill\n'
+        + '- `/goal-driven-work` — run multi-phase work under `/goal` (built-in)\n'
+        + '- `/rename` — label chats (also a built-in, listed as an entry)\n'
+        + '- `/ghost` — does not exist\n'
+        + '\n@workspace.json\n',
+    );
+    writeCatalogs(r);
+  });
+  const result = await audit(root);
+  const cross = bySection(result, 'cross-reference');
+  assertTrue(
+    cross.some((f) => f.severity === 'issue' && f.message.includes('/ghost')),
+    'a genuine list entry with no installed skill is still flagged',
+  );
+  assertTrue(
+    !cross.some((f) => f.message.includes('lists /goal but')),
+    'prose mentions of built-ins (/goal) are not skill references',
+  );
+  assertTrue(
+    !cross.some((f) => f.message.includes('/rename')),
+    'a built-in listed as an entry (/rename) is exempt too',
+  );
+  assertTrue(
+    !cross.some((f) => f.file === '.claude/skills/demo/SKILL.md'),
+    'an installed skill listed with argument hints is fine',
+  );
+  cleanup(root);
+}
+
+// 17. renderReport collapses a severity group past 5 findings into one
+//     summary line with the count, first 3 files, and a --json pointer.
+{
+  const root = makeWorkspace({}, (r) => {
+    for (const name of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+      writeFileSync(
+        join(r, 'workspace-context', 'shared', `old-${name}.md`),
+        `---\ndescription: Old ${name}.\nlifecycle: active\nupdated: 2026-09-01\n---\nOld.\n`,
+      );
+    }
+    writeCatalogs(r);
+  });
+  const result = await audit(root);
+  const text = renderReport(result);
+  const collapsed = text.split('\n').find((l) => l.includes('warning(s) —'));
+  assertTrue(collapsed !== undefined, 'a 7-finding warning group renders one summary line');
+  assertTrue(collapsed.includes('7 warning(s)'), 'summary line carries the count');
+  assertTrue(collapsed.includes('old-a.md') && collapsed.includes('old-c.md'), 'summary line names the first 3 files');
+  assertTrue(collapsed.includes('--json'), 'summary line points at --json');
+  assertTrue(!text.includes('old-f.md:'), 'individual findings past the cap are not printed');
+  assertEq(result.summary.warnings, 7, 'counts stay complete even when the report collapses');
+  cleanup(root);
+}
+
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

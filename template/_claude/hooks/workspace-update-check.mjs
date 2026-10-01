@@ -26,17 +26,17 @@ const stale = manifest?.timestamp
 const urgency = stale
   ? `URGENT: This update payload has been pending since ${manifest.timestamp}. It was not completed in a previous session. `
   : '';
-const skipAudit = stale
-  ? 'Skip the pre-update audit and proceed directly to comparing and applying changes. '
+const staleHint = stale
+  ? 'This payload survived a previous session — classify and apply the changes directly, and still run the post-update verification the skill ends with. '
   : '';
 
 if (action === 'init' || !initialized) {
   respond(`MANDATORY: ${urgency}A workspace init payload (template v${version}) is pending at .workspace-update/.
 Read .workspace-update/.claude/skills/workspace-init/SKILL.md and follow it before doing anything else.
-${skipAudit}Do not proceed with the user's request until initialization is complete.`);
+${staleHint}Do not proceed with the user's request until initialization is complete.`);
 } else {
   const from = manifest?.fromVersion || 'unknown';
   respond(`MANDATORY: ${urgency}A workspace upgrade payload (v${from} → v${version}) is pending at .workspace-update/.
 Read .workspace-update/.claude/skills/workspace-update/SKILL.md and follow it before doing anything else.
-${skipAudit}Do not proceed with the user's request until the update is complete.`);
+${staleHint}Do not proceed with the user's request until the update is complete.`);
 }

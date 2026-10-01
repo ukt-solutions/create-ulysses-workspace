@@ -75,12 +75,15 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // smallest passing multiple → 250 kB after the /workspace-update dogfood
 // round (gh:180) added maintenance-audit.mjs + its suite (~38 kB) and grew
 // classify-update.mjs for the activated/removed lists: 255,435 bytes —
-// 245 kB fails and 250 kB is the smallest passing multiple.
+// 245 kB fails and 250 kB is the smallest passing multiple → 260 kB after
+// the gh:180 fix round (signal-over-noise scoping, dedupe, report collapse
+// + their tests): 256,922 bytes — 250 kB fails and 260 kB is the smallest
+// passing multiple.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 250 * 1024;
+const SIZE_LIMIT_BYTES = 260 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
