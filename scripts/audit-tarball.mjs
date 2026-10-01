@@ -67,12 +67,15 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // passing multiple → still 230 kB after the release-notes machinery was
 // scrapped (gh:157): check-release-coverage.mjs and its test left, and
 // migrate-sessions shed its gh:155 inventory — the tarball only shrank,
-// so the ceiling holds.
+// so the ceiling holds → 240 kB after the upgrade-path fixes (gh:170):
+// classify-update.mjs + its suite, the --root migrator CLI tests, and
+// lib/upgrade.test.mjs brought the tarball to 235,713 bytes — 230 kB
+// fails and 240 kB is the smallest passing multiple.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 230 * 1024;
+const SIZE_LIMIT_BYTES = 240 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -404,6 +407,37 @@ function checkCLAUDEMdTmpl() {
   return violations;
 }
 
+// Every skill directory under template/_claude/skills/ must be listed in
+// CLAUDE.md.tmpl as `/{name}` — the skill list is how sessions discover what
+// exists, and an unlisted skill is invisible to every workspace. Workspaces
+// may exclude skills locally; the template ships none excluded.
+function checkSkillListings() {
+  const tmpl = readFileSync(join(REPO_ROOT, 'template/CLAUDE.md.tmpl'), 'utf8');
+  const skillsDir = join(REPO_ROOT, 'template/_claude/skills');
+  const violations = [];
+  let names = [];
+  try {
+    names = readdirSync(skillsDir).filter((name) => {
+      try {
+        return statSync(join(skillsDir, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+  } catch (err) {
+    return [{ kind: 'skill-listing', details: `cannot read ${skillsDir}: ${err.message}` }];
+  }
+  for (const name of names) {
+    if (!tmpl.includes(`/${name}`)) {
+      violations.push({
+        kind: 'skill-listing',
+        details: `skill "${name}" is not listed as /${name} in template/CLAUDE.md.tmpl`,
+      });
+    }
+  }
+  return violations;
+}
+
 function checkMcpJson() {
   const mcpPath = join(REPO_ROOT, 'template/_mcp.json');
   try {
@@ -428,6 +462,7 @@ function main() {
     ...checkSizeBound(result.size),
     ...checkReadmeCounts(),
     ...checkCLAUDEMdTmpl(),
+    ...checkSkillListings(),
     ...checkMcpJson(),
   ];
 
