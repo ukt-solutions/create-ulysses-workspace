@@ -99,6 +99,10 @@ withTemp((dir) => {
   mkdirSync(workspace, { recursive: true });
   writeFileSync(join(workspace, 'CLAUDE.md'), '# Workspace\n');
   // The script sits elsewhere entirely; cwd is what counts.
+  // A CLAUDE.md beside the script's own tree (present in an installed workspace,
+  // absent in the package) must come out byte-identical — it is not the target.
+  const scriptSide = join(here, "..", "..", "CLAUDE.md");
+  const scriptSideBefore = existsSync(scriptSide) ? readFileSync(scriptSide, "utf-8") : null;
   const r = runCli(join(here, 'migrate-claude-md-freshness-include.mjs'), { cwd: workspace });
   assertEq(r.status, 0, 'CLI exits 0 with cwd default');
   assertEq(JSON.parse(r.stdout).action, 'appended', 'cwd default finds the workspace CLAUDE.md');
@@ -106,7 +110,11 @@ withTemp((dir) => {
     readFileSync(join(workspace, 'CLAUDE.md'), 'utf-8').includes('@local-only-template-freshness.md'),
     'cwd CLAUDE.md migrated',
   );
-  assertTrue(!existsSync(join(here, '..', '..', 'CLAUDE.md')), 'script-relative root not used');
+  assertEq(
+    existsSync(scriptSide) ? readFileSync(scriptSide, 'utf-8') : null,
+    scriptSideBefore,
+    'script-relative root not used',
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
