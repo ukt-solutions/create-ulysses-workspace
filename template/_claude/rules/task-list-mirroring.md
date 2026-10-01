@@ -1,3 +1,9 @@
+---
+paths:
+  - "work-sessions/**"
+  - "**/session.md"
+---
+
 # Task List Mirroring
 
 The Claude Code `TodoWrite` checklist is a live mirror of the workspace lifecycle. The durable backing store is a `## Tasks` section in `session.md`, round-tripped by `.claude/scripts/sync-tasks.mjs`. This rule defines the contract.

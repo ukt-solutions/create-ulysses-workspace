@@ -1,3 +1,9 @@
+---
+paths:
+  - "**/.claude/skills/**"
+  - "**/.claude/scripts/**"
+---
+
 Activate this rule if the workspace creates PRs, watches CI runs, or interacts with releases from skills. Sibling to `work-item-tracking.md` (which covers issues); together they cover everything a workspace does against a code-hosting forge.
 
 # Forge Operations
