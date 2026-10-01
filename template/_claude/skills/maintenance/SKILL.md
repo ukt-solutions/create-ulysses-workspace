@@ -83,11 +83,32 @@ The JSON payload always includes a `canonical` block summarizing the budget outc
 
 `selectionStatus` walks `ok` → `trimmed` → `stubbed` → `over-budget` as the script gives up progressively more reference content trying to fit the budget. `trimmedFiles` lists reference files whose `<!-- canonical:trim --> ... <!-- canonical:end-trim -->` spans were dropped; `stubbedFiles` lists reference files whose entire body was replaced with a one-line breadcrumb. `overBy` is present only when `selectionStatus === 'over-budget'` and reports the bytes still over after stubbing.
 
-Audit mode reports the status verbatim. When `selectionStatus` is `over-budget`, audit emits the budget violation and recommends `/maintenance cleanup` to triage — regeneration will not resolve it. Cleanup mode runs `--write` when `missing` or `stale`, re-checks, and then enters the budget triage flow described in cleanup step 9 if the post-regen check still reports `over-budget`.
+Audit mode reports the status verbatim. When `selectionStatus` is `over-budget`, audit emits the budget violation and recommends `/maintenance cleanup` to triage — regeneration will not resolve it. Cleanup mode runs `--write` when `missing` or `stale`, re-checks, and then enters the budget triage flow described in cleanup step 11 if the post-regen check still reports `over-budget`.
 
 While the indexes are being read, also flag entries with weak fallbacks: filename-slug-only descriptions (e.g., "project status" with no period) usually indicate the underlying file is missing a `description:` or has no usable opening sentence. Suggest adding `description:` to those source files — the index will pick it up on the next regeneration.
 
-### 6. Template freshness
+### 6. Always-loaded context budget
+
+Everything Claude reads at launch — CLAUDE.md, its @-imports, and the active rules — is measured against `workspace.alwaysLoadedBudgetBytes`:
+
+```bash
+node .claude/scripts/context-footprint.mjs --root .
+```
+
+Rules carrying `paths:` frontmatter are conditional (they load only when a matching file is touched); the script lists them in a separate conditional section and excludes them from the total. With no `alwaysLoadedBudgetBytes` in workspace.json there is no budget and this check passes trivially.
+
+Within budget → an OK line: `✓ Always-loaded context: 43 KB / 64 KB`. Over budget → a Warning (the workspace still functions; this is drift, not breakage) naming the top contributors and the fixes:
+
+```
+⚠ Always-loaded context exceeds budget: 78 KB / 64 KB. Top contributors:
+  .claude/rules/git-conventions.md (12 KB), CLAUDE.md (9 KB),
+  .claude/rules/workspace-structure.md (8 KB). Scope situational rules with
+  paths: frontmatter, or move reference content to shared/.
+```
+
+The script itself exits `1` when over budget; `/maintenance` reports that as the warning above, not as a failed run.
+
+### 7. Template freshness
 
 Compare the workspace's pinned template version against the latest published on npm.
 
@@ -112,7 +133,7 @@ Report one of:
 
 Active recommendations. Flags problems and suggests fixes, but asks before acting.
 
-### 7. Component age check
+### 8. Component age check
 
 Scan the following file sets for a YAML frontmatter `updated:` field:
 - `.claude/rules/*.md` (active rules only — `.md.skip` files are included too, since the rule content can still drift)
@@ -126,7 +147,7 @@ Files without an `updated:` field are skipped — the check is opt-in and activa
 
 When stale candidates are found, surface them as warnings in the output format and link to `config-review.md.skip` (in `.claude/rules/`) as the opt-in rule that documents the review cadence and rationale.
 
-### 8. Stale context
+### 9. Stale context
 - Ephemeral files not updated in 7+ days — suggest resolve, update, or archive
 - `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
 - Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
@@ -136,15 +157,15 @@ When stale candidates are found, surface them as warnings in the output format a
 - Braindumps that overlap significantly — suggest merging (e.g., "workspace-branching.md and persistent-work-sessions.md cover the same topic")
 - Handoffs referencing deleted branches — suggest resolve or remove
 
-### 9. Context reconciliation
+### 10. Context reconciliation
 - Read recent workspace-context writes (last session or last N files by updated date)
 - For each, scan other workspace-context files for references that are now stale
 - Surface: "{file} says X but {newer-file} now says Y. Update {file}?"
 - This is the capture-time cross-check, run retroactively instead of inline
 
-### 10. Canonical budget triage
+### 11. Canonical budget triage
 
-This step runs only when the post-regen `--check` from step 9 still reports `selectionStatus: 'over-budget'`. If the regular regen pass cleared the budget — or if `--check` was already `ok`, `trimmed`, or `stubbed` after step 9 — skip this step entirely.
+This step runs only when the post-regen `--check` from the cleanup regen pass (Flow step 9) still reports `selectionStatus: 'over-budget'`. If the regular regen pass cleared the budget — or if `--check` was already `ok`, `trimmed`, or `stubbed` after that pass — skip this step entirely.
 
 The rest of cleanup is suggestion-list-with-confirmation: surface a candidate, ask before applying, move on. Triage is the one meaningfully more interactive surface in `/maintenance`. It runs as a small REPL: present the budget state and a triage menu, take one action, re-run `--check`, present the menu again with the new state. No suggestion is auto-applied; every action is the user's choice.
 
@@ -189,7 +210,7 @@ For each chosen action:
 
 Trim markers and demotions only matter for `priority: reference` files — `<!-- canonical:trim -->` spans on a `priority: critical` file are inert until the file is demoted. The triage flow never auto-decides which file to demote or which section to wrap; it surfaces the data, presents options, and waits.
 
-### 11. Forge configuration
+### 12. Forge configuration
 
 Read `workspace.json`. If `workspace.tracker?.type === 'github-issues'` and `workspace.forge` is unset, emit a notice (not an error):
 
@@ -201,8 +222,9 @@ Read `workspace.json`. If `workspace.tracker?.type === 'github-issues'` and `wor
 
 This is migration guidance for workspaces created before the `forge` field landed — the field is back-compat with a sensible default, so the unset case is not a bug, just an opportunity to make the implicit explicit. If `workspace.forge.type` is set to a value with no adapter at `.claude/scripts/forges/{type}.mjs`, that IS an error and goes in the Issues section.
 
-### 12. Health metrics
+### 13. Health metrics
 - Canonical budget — read from the same `--check` invocation as step 5. Reported as `current / budget` bytes with the selection status (e.g., `full`, `2 reference files trimmed`). Over-budget cases are deferred to the cleanup triage flow rather than re-reported here.
+- Always-loaded context — read from the same `context-footprint.mjs` invocation as audit step 6, reported the same way (`current / budget` bytes); over-budget is already surfaced as a warning there.
 - Number of ephemeral files — flag if accumulating without resolution
 - Session log stats (if `workspace-scratchpad/session-log.jsonl` exists):
   - Sessions without capture
@@ -231,11 +253,12 @@ Cleanup suggestions (2):
   ⊕ migration-recipes.md still says "/sync handles dogfood" but
     /sync was replaced by /sync-work — update?
 
-OK (5):
+OK (6):
   ✓ All CLAUDE.md skill references valid
   ✓ Workspace structure matches rule
   ✓ workspace.json repos all present
   ✓ Canonical: 17 KB / 40 KB (full)
+  ✓ Always-loaded context: 43 KB / 64 KB
   ✓ Template is up to date (v0.14.0)
 ```
 
@@ -247,9 +270,10 @@ OK (5):
 4. Check `.claude/rules/`, `.claude/skills/`, `.claude/agents/` against references
 5. Check git state (worktrees, branches, remotes)
 6. Run `node .claude/scripts/build-workspace-context.mjs --check --root .` — capture status. Exit `0` = clean and within budget, `1` = artifact missing or stale, `2` = artifacts current but canonical body over budget. The `canonical` block in the JSON output drives both the audit budget line and the cleanup triage decision.
-7. Read session-log.jsonl if it exists
-8. If cleanup mode: regenerate the workspace-context auto-files if stale (index.md, canonical.md, per-user team-member indexes); compare files pairwise for overlap; scan for stale cross-references. If post-regen `--check` reports `over-budget`, enter the canonical-budget triage flow described in cleanup step 10.
-9. Compile and present findings grouped by severity
+7. Run `node .claude/scripts/context-footprint.mjs --root .` — capture the total and the `BUDGET` line. Exit `0` = within budget or no budget set; exit `1` = over budget, reported as a warning with the top contributors (audit step 6).
+8. Read session-log.jsonl if it exists
+9. If cleanup mode: regenerate the workspace-context auto-files if stale (index.md, canonical.md, per-user team-member indexes); compare files pairwise for overlap; scan for stale cross-references. If post-regen `--check` reports `over-budget`, enter the canonical-budget triage flow described in cleanup step 11.
+10. Compile and present findings grouped by severity
 
 ## Notes
 - Audit mode is always read-only — never modifies files

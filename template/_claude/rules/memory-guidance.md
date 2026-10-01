@@ -32,6 +32,10 @@ not need to be in context while editing documentation.
 node .claude/scripts/context-footprint.mjs --root . --add <bytes> --as <destination>
 ```
 
+A rule that applies only to certain files should carry `paths:` frontmatter — it costs nothing
+until a matching file is touched — and the same script checks the live total against
+`workspace.alwaysLoadedBudgetBytes`.
+
 ## The canonical test
 
 Canonical describes what *is* and what *to do*, never what *to think*.

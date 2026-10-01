@@ -10,7 +10,7 @@ This chapter covers the mandatory and optional rules, the .skip activation patte
 
 A rule is a markdown file that gives Claude standing instructions. Unlike skills, which are invoked on demand for specific workflows, rules apply to every interaction. They shape Claude's default behavior — how it commits code, how it revises documents, how it decides what to remember.
 
-Rules live in `.claude/rules/` and are tracked in git. Every `.md` file in this directory is loaded on every turn. This means the team shares the same behavioral constraints, and changes to rules are versioned and reviewable like any other code change.
+Rules live in `.claude/rules/` and are tracked in git. Every `.md` file in this directory is loaded on every turn — unless it declares `paths:` frontmatter, which defers loading until a matching file is touched (see "Path-Scoped Rules" below). This means the team shares the same behavioral constraints, and changes to rules are versioned and reviewable like any other code change.
 
 ## Mandatory Rules
 
@@ -54,7 +54,7 @@ The workspace uses a three-state file convention for activation control:
 
 | Extension | State | Meaning |
 |-----------|-------|---------|
-| `.md` | Active | Loaded on every turn, shared with the team |
+| `.md` | Active | Loaded on every turn (or only on `paths:` matches), shared with the team |
 | `.md.skip` | Available | Present in the workspace but not loaded. Drop `.skip` to activate |
 | `local-only-*.md` | Personal | Active on your machine, gitignored, not shared |
 
@@ -63,6 +63,17 @@ To activate an optional rule, rename it: `scope-guard.md.skip` becomes `scope-gu
 This convention applies universally across the workspace — not just to rules but also to shared context files. It is the same mechanism everywhere: the file extension controls visibility, the `local-only-` prefix controls sharing.
 
 The .skip pattern avoids the complexity of a configuration file that lists which rules are active. The file system is the configuration. If the file ends in `.md` and is in the rules directory, it is active. No registry, no toggle, no indirection.
+
+## Path-Scoped Rules
+
+A rule taxes context on every turn — unless it declares `paths:` frontmatter. A rule with a `paths:` array of globs loads only when Claude reads or edits a file matching one of them, so an instruction about session trackers costs nothing while you are writing code, and vice versa.
+
+Two shipped rules are scoped this way:
+
+- **task-list-mirroring.md** — `work-sessions/**` and `**/session.md`. The `## Tasks` contract only matters when a session tracker is in play.
+- **forge-operations.md** — `**/.claude/skills/**` and `**/.claude/scripts/**`. The forge-adapter discipline only matters when writing the skills and scripts that call it.
+
+Use `paths:` for your own rules whenever the instruction applies to specific files or directories rather than to every session — a rule about migration scripts does not need to be in context while editing documentation. `context-footprint.mjs` lists scoped rules separately from the always-loaded total, and `/maintenance` warns when that total exceeds `workspace.alwaysLoadedBudgetBytes`. Scoping composes with the .skip pattern: `paths:` decides *when* an active rule loads, `.skip` decides *whether* it loads at all.
 
 ## Loading Order and Priority
 
@@ -98,7 +109,7 @@ in edge cases rather than following the letter blindly.
 
 Structure your rule with clear, specific instructions followed by reasoning. The "Why" section is important — it gives Claude context to handle situations the rule does not explicitly cover. A rule that says "never use console.log" without explaining why will be followed literally. A rule that says "avoid console.log in production code because it creates noise in server logs" lets Claude make sensible exceptions during debugging.
 
-Ship new rules as `.md.skip` if they are optional for the team. Ship them as `.md` if they should be active for everyone. Use `local-only-` for rules that are personal experiments.
+Ship new rules as `.md.skip` if they are optional for the team. Ship them as `.md` if they should be active for everyone. Use `local-only-` for rules that are personal experiments. If a rule only matters when certain files are touched, give it `paths:` frontmatter so it costs nothing the rest of the time.
 
 ```
 .claude/rules/
@@ -116,7 +127,7 @@ Ship new rules as `.md.skip` if they are optional for the team. Ship them as `.m
 
 ## Key Takeaways
 
-- Rules are always-loaded behavioral constraints. Every `.md` file in `.claude/rules/` is read on every turn.
+- Rules are always-loaded behavioral constraints. Every `.md` file in `.claude/rules/` is read on every turn — except rules with `paths:` frontmatter (task-list-mirroring, forge-operations), which load only when a matching file is touched.
 - Five mandatory rules ship active: coherent-revisions, git-conventions, honest-pushback, workspace-structure, memory-guidance.
 - Six optional rules ship as `.md.skip` — rename to activate.
 - The .skip pattern is a universal three-state convention: `.md` (active), `.md.skip` (available), `local-only-` (personal).
