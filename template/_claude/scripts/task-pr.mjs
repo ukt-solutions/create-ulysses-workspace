@@ -16,7 +16,8 @@
 // Usage:
 //   node task-pr.mjs --create --root <launcher> --branch <branch>
 //                    [--work-item gh:N] [--chat <name> | --repo <r> ...]
-//                    --body-file <repo>=<path> ... [--force-with-lease]
+//                    --body-file <repo>=<path> ... [--out <file>]
+//                    [--force-with-lease]
 //   node task-pr.mjs --merge --root <launcher> --prs <json-from-create>
 //                    [--work-item gh:N]
 //
@@ -26,16 +27,27 @@
 // each remaining branch, and opens one PR per repo through a per-repo
 // forge. The PR title is the linked issue's title when --work-item is
 // given, else the branch's first commit subject; the body is the repo's
-// body file with `Closes <ref>` appended. Prints `{ prs, empty }`.
+// body file with `Closes <ref>` appended. Prints `{ prs, empty, pushed }`
+// and, with --out, writes the same JSON to a file — a mid-run failure
+// still writes what has landed so far, so the state survives the error.
+// A repo that already has an open PR for the branch gets it reused, so a
+// re-run never opens a duplicate.
 //
 // --merge merges the project PRs first (squash, delete branch), the
-// workspace PR only when every project merge succeeded, then pulls the
-// launcher --ff-only and closes the linked issue. On any failure it stops
-// and names the PRs still open.
+// workspace PR only when every project merge succeeded — a PR the forge
+// reports as already MERGED counts as done and is not merged again, which
+// is what makes re-running after a partial failure safe. An empty or
+// malformed PRs file is refused outright: no PRs means nothing to merge
+// and nothing to close. Once every PR is merged the launcher is pulled
+// --ff-only — only when it sits on the workspace default branch (else
+// pullSkipped), and a failed pull is reported as pullFailed in the JSON
+// rather than an error, because the merges stand and the issue still
+// closes — and then the linked issue closes with a Merged: comment. On a
+// merge failure it stops and names the PRs still open.
 
 import '../lib/require-node.mjs';
-import { readFileSync, existsSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { taskWorktreePath, defaultBranchFor, WORKSPACE_REPO } from './task-worktree.mjs';
@@ -74,6 +86,26 @@ function assertForgeEnabled(ws) {
   if (ws?.workspace?.forge === false) {
     throw new Error('workspace.forge is false — forge operations are disabled here. Nothing was pushed; open the PR by hand.');
   }
+}
+
+// Branch names become refs, refspecs, and (via the slug) paths; git's own
+// format check is the authority, and its --branch variant also rejects
+// names a later git call could mistake for an option. It needs no
+// repository, so it runs before any other git call this script makes.
+function assertBranchName(gitFn, branch) {
+  const res = gitFn('git', ['check-ref-format', '--branch', branch], { encoding: 'utf8' });
+  if (res.error || res.status !== 0) throw new Error(`invalid branch name: ${branch}`);
+}
+
+// The --prs file may have been written by a BOM-emitting writer (PowerShell
+// redirection among them); JSON.parse chokes on the marker, so strip it.
+function stripBom(text) {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+function writeOut(path, payload) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 }
 
 function gitCheck(gitFn, cwd, args) {
@@ -117,8 +149,11 @@ function firstCommitSubject(gitFn, worktree, branch, defaultBranch) {
 }
 
 function pushBranch(gitFn, worktree, repo, branch, { forceWithLease = false } = {}) {
+  // `--` ends option parsing so the refspec can never read as a flag — git
+  // accepts it on push. It is deliberately NOT used on the rev-parse /
+  // rev-list / log calls, where git would flip the argument to a path.
   const res = gitCheck(gitFn, worktree, [
-    'push', '-u', 'origin', ...(forceWithLease ? ['--force-with-lease'] : []), branch,
+    'push', '-u', 'origin', ...(forceWithLease ? ['--force-with-lease'] : []), '--', branch,
   ]);
   if (res.status === 0) return;
   const stderr = String(res.stderr || '').trim();
@@ -144,6 +179,7 @@ function resolveTaskRepos(rootDir, { chat, branch, repos }) {
 }
 
 async function createPrs(args, deps) {
+  assertBranchName(deps.gitFn, args.branch);
   const rootDir = resolve(args.root);
   const ws = readWorkspace(rootDir);
   assertForgeEnabled(ws);
@@ -192,23 +228,45 @@ async function createPrs(args, deps) {
     issueRefs = new Map(active.map((t) => [t.repo, tracker.issueRef(args.workItem, { fromRepo: `${t.owner}/${t.name}` })]));
   }
 
-  for (const t of active) {
-    pushBranch(deps.gitFn, t.worktree, t.repo, args.branch, { forceWithLease: args.forceWithLease });
-  }
-
   const prs = [];
-  for (const t of active) {
-    const forge = deps.forgeFactory({ ...(ws.workspace?.forge ?? {}), repo: `${t.owner}/${t.name}` });
-    const title = issueTitle ?? firstCommitSubject(deps.gitFn, t.worktree, args.branch, t.defaultBranch);
-    let body = readFileSync(args.bodyFiles.get(t.repo), 'utf8').replace(/\s*$/, '');
-    if (issueRefs) body = `${body}\n\nCloses ${issueRefs.get(t.repo)}\n`;
-    const pr = await forge.prCreate({ title, body, head: args.branch, base: t.defaultBranch });
-    prs.push({
-      repo: t.repo, owner: t.owner, name: t.name,
-      number: pr.number, id: pr.id, url: pr.url, isWorkspace: t.isWorkspace,
-    });
+  const pushed = [];
+  try {
+    for (const t of active) {
+      pushBranch(deps.gitFn, t.worktree, t.repo, args.branch, { forceWithLease: args.forceWithLease });
+      pushed.push(t.repo);
+    }
+
+    for (const t of active) {
+      const forge = deps.forgeFactory({ ...(ws.workspace?.forge ?? {}), repo: `${t.owner}/${t.name}` });
+      // Idempotency: a re-run must not open a second PR for a branch that
+      // already has one open against the same base. Reuse it as-is —
+      // re-titling or re-bodying an existing PR is a decision, not a
+      // default, and the one already open is the one reviewers watch.
+      const existing = (await forge.prList({ state: 'open', head: args.branch, base: t.defaultBranch }))
+        .find((p) => p.headRefName === args.branch && p.baseRefName === t.defaultBranch);
+      const title = issueTitle ?? firstCommitSubject(deps.gitFn, t.worktree, args.branch, t.defaultBranch);
+      let body = readFileSync(args.bodyFiles.get(t.repo), 'utf8').replace(/\s*$/, '');
+      if (issueRefs) body = `${body}\n\nCloses ${issueRefs.get(t.repo)}\n`;
+      const pr = existing ?? await forge.prCreate({ title, body, head: args.branch, base: t.defaultBranch });
+      prs.push({
+        repo: t.repo, owner: t.owner, name: t.name,
+        number: pr.number, id: pr.id, url: pr.url, isWorkspace: t.isWorkspace,
+      });
+    }
+  } catch (err) {
+    // A failure after the first push must not lose the run's state: the
+    // pushes and PRs that landed go to --out so a re-run (or a --merge of
+    // what exists) starts from reality. Before the first push nothing has
+    // happened, and an earlier run's file stays untouched rather than
+    // being clobbered with a no-op result.
+    if (args.out && (pushed.length > 0 || prs.length > 0)) {
+      writeOut(args.out, { prs, empty, pushed });
+    }
+    throw err;
   }
-  return { prs, empty };
+  const result = { prs, empty, pushed };
+  if (args.out) writeOut(args.out, result);
+  return result;
 }
 
 async function mergePrs(args, deps) {
@@ -218,11 +276,20 @@ async function mergePrs(args, deps) {
 
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync(args.prs, 'utf-8'));
+    parsed = JSON.parse(stripBom(readFileSync(args.prs, 'utf-8')));
   } catch (err) {
     throw new Error(`cannot read PRs file ${args.prs}: ${err.message}`);
   }
-  const prs = Array.isArray(parsed?.prs) ? parsed.prs : [];
+  // An empty or malformed file is a refusal, not a no-op: with nothing to
+  // merge there is nothing that earns an issue close, and "Merged: " with
+  // no URLs would tell the tracker a lie.
+  if (!parsed || !Array.isArray(parsed.prs)) {
+    throw new Error(`PRs file ${args.prs} is malformed — expected the JSON from a --create run ({ prs: [...] })`);
+  }
+  const prs = parsed.prs;
+  if (prs.length === 0) {
+    throw new Error(`PRs file ${args.prs} lists no PRs — nothing to merge and nothing to close; --merge refuses to close an issue on an empty merge`);
+  }
   for (const p of prs) {
     if (!p || !p.owner || !p.name || !p.id) {
       throw new Error(`PRs file entry is missing owner/name/id: ${JSON.stringify(p)}`);
@@ -230,9 +297,23 @@ async function mergePrs(args, deps) {
   }
   const forgeFor = (p) => deps.forgeFactory({ ...(ws.workspace?.forge ?? {}), repo: `${p.owner}/${p.name}` });
 
+  // State first, so a re-run knows what an earlier run already finished.
+  // A PR the forge reports MERGED is done; anything else is offered to
+  // prMerge, which reports its own failure if the PR cannot merge. If the
+  // view itself fails, fall through to the merge attempt — that path
+  // produces the honest error when something is genuinely wrong.
+  const alreadyMerged = new Set();
+  for (const p of prs) {
+    try {
+      const view = await forgeFor(p).prView({ id: p.id });
+      if (view?.state === 'MERGED') alreadyMerged.add(p.id);
+    } catch { /* state unknown — the merge attempt below decides */ }
+  }
+
   const merged = [];
   const failures = [];
   for (const p of prs.filter((x) => !x.isWorkspace)) {
+    if (alreadyMerged.has(p.id)) { merged.push(p); continue; }
     try {
       await forgeFor(p).prMerge({ id: p.id, strategy: 'squash', deleteBranch: true });
       merged.push(p);
@@ -240,10 +321,14 @@ async function mergePrs(args, deps) {
   }
   const workspacePr = prs.find((x) => x.isWorkspace) ?? null;
   if (failures.length === 0 && workspacePr) {
-    try {
-      await forgeFor(workspacePr).prMerge({ id: workspacePr.id, strategy: 'squash', deleteBranch: true });
+    if (alreadyMerged.has(workspacePr.id)) {
       merged.push(workspacePr);
-    } catch (err) { failures.push(`${workspacePr.repo}: ${err.message}`); }
+    } else {
+      try {
+        await forgeFor(workspacePr).prMerge({ id: workspacePr.id, strategy: 'squash', deleteBranch: true });
+        merged.push(workspacePr);
+      } catch (err) { failures.push(`${workspacePr.repo}: ${err.message}`); }
+    }
   }
   if (failures.length > 0) {
     const open = prs.filter((p) => !merged.includes(p)).map((p) => `${p.repo}: ${p.url}`);
@@ -252,30 +337,35 @@ async function mergePrs(args, deps) {
     );
   }
 
-  // The launcher sat on its default branch waiting on the workspace merge;
-  // a project-only task pulls after the project merges instead. Either way
-  // the pull only happens once every merge above succeeded.
-  const pull = gitCheck(deps.gitFn, rootDir, ['pull', '--ff-only']);
-  if (pull.status !== 0) {
-    throw new Error(`git -C ${rootDir} pull --ff-only failed: ${String(pull.stderr || '').trim()} — the merges landed; pull by hand before teardown`);
+  // Every PR in the file is merged from here on. The launcher pull is a
+  // convenience, not a gate: it happens only when the launcher sits on the
+  // workspace default branch, a failure is a reported flag rather than an
+  // error (the merges stand and the issue still closes), and the user is
+  // told to pull by hand before teardown.
+  const result = { merged: merged.map(({ repo, number, url }) => ({ repo, number, url })), closed: null };
+  const launcherBranch = gitOut(deps.gitFn, rootDir, ['branch', '--show-current']) || '(detached HEAD)';
+  if (launcherBranch !== defaultBranchFor(rootDir, WORKSPACE_REPO, deps.gitFn)) {
+    result.pullSkipped = `launcher on ${launcherBranch}`;
+  } else {
+    const pull = gitCheck(deps.gitFn, rootDir, ['pull', '--ff-only']);
+    if (pull.status !== 0) result.pullFailed = true;
   }
 
-  let closed = null;
   if (args.workItem) {
     const tracker = deps.trackerFactory(ws.workspace?.tracker);
     await tracker.closeIssue(args.workItem, { comment: `Merged: ${merged.map((p) => p.url).join(' ')}` });
-    closed = args.workItem;
+    result.closed = args.workItem;
   }
-  return { merged: merged.map(({ repo, number, url }) => ({ repo, number, url })), closed };
+  return result;
 }
 
 const MODE_FLAGS = new Set(['--create', '--merge']);
-const VALUE_FLAGS = new Set(['--root', '--branch', '--work-item', '--chat', '--prs']);
+const VALUE_FLAGS = new Set(['--root', '--branch', '--work-item', '--chat', '--prs', '--out']);
 
 function parseArgs(argv) {
   const args = {
     root: '.', mode: null, branch: null, workItem: null, chat: null,
-    repos: [], bodyFiles: new Map(), prs: null, forceWithLease: false,
+    repos: [], bodyFiles: new Map(), prs: null, out: null, forceWithLease: false,
   };
   const rest = argv.slice(2);
   const value = (i, flag) => {
@@ -320,6 +410,7 @@ function parseArgs(argv) {
     if (args.repos.length > 0) throw new Error('--repo is only valid with --create');
     if (args.bodyFiles.size > 0) throw new Error('--body-file is only valid with --create');
     if (args.forceWithLease) throw new Error('--force-with-lease is only valid with --create');
+    if (args.out) throw new Error('--out is only valid with --create');
   }
   return args;
 }

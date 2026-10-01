@@ -8,7 +8,7 @@
 // spawnFn pattern. Every git call is an argv array, never a shell string.
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run, parseArgs, parseForgeRemote } from './task-pr.mjs';
@@ -78,6 +78,12 @@ function makeLauncher(repos, { forge = { type: 'github' } } = {}) {
     if (repos[repo]) git(dir, ['remote', 'set-url', 'origin', repos[repo]]);
   }
   writeFileSync(join(root, 'workspace.json'), JSON.stringify(config, null, 2));
+  // The launcher is itself a git repo on main — a real launcher always is,
+  // and --merge reads its checked-out branch before pulling.
+  writeFileSync(join(root, '.gitignore'), '.claude/worktrees/\nrepos\n');
+  git(root, ['init', '-q', '-b', 'main']);
+  git(root, ['add', '-A']);
+  git(root, ['commit', '-q', '-m', 'init']);
   return { root, bares };
 }
 
@@ -96,20 +102,43 @@ function gitWith(overrides = []) {
 }
 const pushOk = { match: (a) => a.includes('push'), result: () => ({ status: 0, stdout: '', stderr: '' }) };
 const pullOk = { match: (a) => a.includes('pull'), result: () => ({ status: 0, stdout: 'Already up to date.', stderr: '' }) };
+const pullFails = {
+  match: (a) => a.includes('pull'),
+  result: () => ({ status: 1, stdout: '', stderr: 'error: not possible to fast-forward' }),
+};
 const pushNonFF = {
   match: (a) => a.includes('push'),
   result: () => ({ status: 1, stdout: '', stderr: ' ! [rejected] feature/x -> feature/x (non-fast-forward)\nerror: failed to push some refs' }),
 };
 
-// A forge factory that records every call and can be told to fail merges.
-function fakeForgeFactory(log, { failMergeIds = [] } = {}) {
+// A forge factory that records every call and can be told to fail merges,
+// report PRs as already merged, hold pre-existing open PRs, or fail PR
+// creation per repo.
+function fakeForgeFactory(log, {
+  failMergeIds = [], mergedIds = [], openPrsFor = null, failCreateRepos = [],
+} = {}) {
   let n = 0;
   return (config) => ({
     async prCreate({ title, body, head, base }) {
+      if (failCreateRepos.includes(config.repo)) throw new Error('create rejected by the forge');
       n += 1;
       const number = 100 + n;
       log.push({ op: 'prCreate', repo: config.repo, title, body, head, base });
       return { id: `${config.repo}#${number}`, number, url: `https://github.com/${config.repo}/pull/${number}` };
+    },
+    async prList({ state, head, base }) {
+      log.push({ op: 'prList', repo: config.repo, state, head, base });
+      return (openPrsFor?.[config.repo] ?? [])
+        .filter((p) => p.headRefName === head && (base ? p.baseRefName === base : true))
+        .map((p) => ({
+          id: `${config.repo}#${p.number}`, number: p.number, title: p.title ?? 'existing',
+          url: p.url, headRefName: p.headRefName, baseRefName: p.baseRefName,
+          mergedAt: null, state,
+        }));
+    },
+    async prView({ id }) {
+      log.push({ op: 'prView', repo: config.repo, id });
+      return { id, state: mergedIds.includes(id) ? 'MERGED' : 'OPEN', number: Number(String(id).split('#')[1]) };
     },
     async prMerge({ id, strategy, deleteBranch }) {
       if (failMergeIds.includes(id)) throw new Error('merge rejected by the forge');
@@ -154,10 +183,12 @@ console.log('# parseArgs validation');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--prs', 'x.json'])), '--prs rejected with --create');
   await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--force-with-lease']), '--force-with-lease rejected with --merge');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--body-file', 'nopath'])), '--body-file needs repo=path');
+  await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--out', 'y.json']), '--out rejected with --merge');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--bogus'])), 'unknown flag rejected');
   const ok = parseArgs(['node', 's', '--create', '--root', '/w', '--branch', 'feature/x',
-    '--work-item', 'gh:163', '--repo', 'app', '--repo', '.', '--body-file', 'app=/tmp/a.md', '--body-file', '.=/tmp/w.md']);
-  assertEq([ok.mode, ok.branch, ok.workItem, ok.repos], ['create', 'feature/x', 'gh:163', ['app', '.']], 'repeated --repo accumulates');
+    '--work-item', 'gh:163', '--repo', 'app', '--repo', '.', '--body-file', 'app=/tmp/a.md', '--body-file', '.=/tmp/w.md',
+    '--out', '/tmp/prs.json']);
+  assertEq([ok.mode, ok.branch, ok.workItem, ok.repos, ok.out], ['create', 'feature/x', 'gh:163', ['app', '.'], '/tmp/prs.json'], 'repeated --repo accumulates');
   assertEq([...ok.bodyFiles.entries()], [['app', '/tmp/a.md'], ['.', '/tmp/w.md']], 'body files map repo to path');
 }
 
@@ -192,7 +223,7 @@ console.log('# --create with a work item: push, PR, closing line (same-repo ref)
     assert(create.body.includes('## Verification'), 'body file content is included');
     assertEq(log.find((e) => e.op === 'issueRef').fromRepo, 'acme/app', 'issueRef got the PR repo as fromRepo');
     const push = gitFn.calls.find((c) => c.intercepted);
-    assert(push && push.args.join(' ').endsWith('push -u origin feature/x'), 'branch pushed with -u before the PR');
+    assert(push && push.args.join(' ').endsWith('push -u origin -- feature/x'), 'branch pushed with -u (after --) before the PR');
   } finally { clean(root); bares.forEach(clean); }
 }
 
@@ -524,6 +555,202 @@ console.log('# a missing task worktree refuses up front');
       'missing worktree errors',
       'no task worktree',
     );
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# an invalid branch name is refused before any other git call');
+{
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git' });
+  try {
+    const gitFn = gitWith();
+    await rejects(
+      () => run(argvCreate(['--root', root, '--branch', 'bad..name', '--repo', 'app']),
+        { gitFn, forgeFactory: fakeForgeFactory([]), trackerFactory: fakeTrackerFactory([]) }),
+      'invalid branch errors',
+      'invalid branch name',
+    );
+    assert(gitFn.calls.length === 1 && gitFn.calls[0].args.includes('check-ref-format'),
+      'the format check is the only git call made');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --create reuses a PR already open for the branch instead of duplicating it');
+{
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git' });
+  try {
+    const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/x' });
+    git(wt.path, ['commit', '-q', '--allow-empty', '-m', 'feat: do the thing']);
+    const bodyFile = join(root, 'body-app.md');
+    writeFileSync(bodyFile, 'Summary.\n');
+    const log = [];
+    const out = await run(argvCreate([
+      '--root', root, '--branch', 'feature/x', '--repo', 'app', '--body-file', `app=${bodyFile}`,
+    ]), {
+      gitFn: gitWith([pushOk]),
+      forgeFactory: fakeForgeFactory(log, {
+        openPrsFor: { 'acme/app': [{ number: 55, url: 'https://github.com/acme/app/pull/55', headRefName: 'feature/x', baseRefName: 'main' }] },
+      }),
+      trackerFactory: fakeTrackerFactory(log),
+    });
+    assertEq(log.filter((e) => e.op === 'prCreate').length, 0, 'no duplicate PR is created');
+    assertEq([out.prs[0].number, out.prs[0].url, out.prs[0].id],
+      [55, 'https://github.com/acme/app/pull/55', 'acme/app#55'], 'the existing PR is reused');
+    assertEq(log.find((e) => e.op === 'prList').head, 'feature/x', 'the lookup filtered by the task branch');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a mid-create failure still writes what landed to --out, and a re-run completes the set');
+{
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git', api: 'git@github.com:acme/api.git' });
+  try {
+    for (const repo of ['app', 'api']) {
+      const wt = createTaskWorktree(root, { repo, branch: 'feature/x' });
+      git(wt.path, ['commit', '-q', '--allow-empty', '-m', `feat: ${repo}`]);
+    }
+    writeFileSync(join(root, 'a.md'), 'Summary a.\n');
+    writeFileSync(join(root, 'b.md'), 'Summary b.\n');
+    const common = [
+      '--root', root, '--branch', 'feature/x', '--repo', 'app', '--repo', 'api',
+      '--body-file', `app=${join(root, 'a.md')}`, '--body-file', `api=${join(root, 'b.md')}`,
+    ];
+    const outFile = join(root, 'drawer', 'prs.json');
+    const log = [];
+    await rejects(
+      () => run(argvCreate([...common, '--out', outFile]),
+        { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log, { failCreateRepos: ['acme/api'] }), trackerFactory: fakeTrackerFactory(log) }),
+      'a PR-create failure errors',
+      'create rejected',
+    );
+    const partial = JSON.parse(readFileSync(outFile, 'utf8'));
+    assertEq(partial.prs.map((p) => p.repo), ['app'], 'the PR that landed is in the partial output');
+    assertEq(partial.pushed.sort(), ['api', 'app'], 'both pushes are recorded');
+    assertEq(partial.empty, [], 'empty list rides along');
+
+    // A failure before the first push writes nothing — an earlier run's
+    // file must survive a guard refusal untouched.
+    const earlier = join(root, 'earlier.json');
+    writeFileSync(earlier, '{"prs":[{"stub":true}],"empty":[]}');
+    await rejects(
+      () => run(argvCreate(['--root', root, '--branch', 'feature/x', '--repo', 'app', '--body-file', `app=${join(root, 'nope.md')}`, '--out', earlier]),
+        { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) }),
+      'a guard refusal still errors',
+      'body file not found',
+    );
+    assertEq(JSON.parse(readFileSync(earlier, 'utf8')).prs[0].stub, true, 'the earlier file was not clobbered');
+
+    // The re-run seeds the reuse from the partial output and completes.
+    const seeded = {};
+    for (const p of partial.prs) seeded[`${p.owner}/${p.name}`] = [{ number: p.number, url: p.url, headRefName: 'feature/x', baseRefName: 'main' }];
+    const done = await run(argvCreate([...common, '--out', outFile]),
+      { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log, { openPrsFor: seeded }), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(done.prs.map((p) => p.repo).sort(), ['api', 'app'], 'the re-run completed the set');
+    assertEq(JSON.parse(readFileSync(outFile, 'utf8')).prs.length, 2, '--out now holds the full result');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge refuses an empty or malformed PRs file and closes nothing');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const deps = { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
+    const empty = join(root, 'empty.json');
+    writeFileSync(empty, JSON.stringify({ prs: [], empty: ['app'] }));
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', empty, '--work-item', 'gh:163'], deps),
+      'an empty PR list errors',
+      'lists no PRs',
+    );
+    const malformed = join(root, 'malformed.json');
+    writeFileSync(malformed, JSON.stringify({ empty: [] }));
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', malformed], deps),
+      'a prs value that is not an array errors',
+      'malformed',
+    );
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', join(root, 'nope.json')], deps),
+      'a missing file errors',
+      'cannot read PRs file',
+    );
+    writeFileSync(join(root, 'garbage.json'), 'not json');
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', join(root, 'garbage.json')], deps),
+      'an unparseable file errors',
+      'cannot read PRs file',
+    );
+    assertEq(log.filter((e) => e.op === 'closeIssue').length, 0, 'no issue was closed by any refusal');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge re-run: PRs already merged count as done, and the completing run closes');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const prs = [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
+      { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace#3', url: 'https://github.com/acme/workspace/pull/3', isWorkspace: true },
+    ];
+    const file = prsFile(root, prs);
+    const log1 = [];
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:163'],
+        { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log1, { failMergeIds: ['acme/workspace#3'] }), trackerFactory: fakeTrackerFactory(log1) }),
+      'the first run stops at the failed workspace merge',
+      'PRs still open',
+    );
+    const log2 = [];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:163'],
+      { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log2, { mergedIds: ['acme/app#1'] }), trackerFactory: fakeTrackerFactory(log2) });
+    assertEq(log2.filter((e) => e.op === 'prMerge').map((m) => m.id), ['acme/workspace#3'], 'only the still-open PR is merged');
+    assertEq(out.merged.map((m) => m.repo), ['app', '.'], 'both PRs count as merged');
+    assertEq(out.closed, 'gh:163', 'the issue closes on the completing run');
+    assertEq(log2.find((e) => e.op === 'closeIssue').comment,
+      'Merged: https://github.com/acme/app/pull/1 https://github.com/acme/workspace/pull/3',
+      'the close comment names every merged URL');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a failed launcher pull is a reported flag, not a failed merge');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const prs = [{ repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false }];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
+      { gitFn: gitWith([pullFails]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.pullFailed, true, 'the pull failure is flagged in the JSON');
+    assertEq(out.closed, 'gh:163', 'the issue still closes once every PR merged');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# the pull is skipped when the launcher is not on its default branch');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    git(root, ['checkout', '-q', '-b', 'feature/side']);
+    const log = [];
+    const gitFn = gitWith([pullOk]);
+    const prs = [{ repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false }];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
+      { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.pullSkipped, 'launcher on feature/side', 'the skip names the branch the launcher is on');
+    assertEq(gitFn.calls.filter((c) => c.args.includes('pull')).length, 0, 'no pull was attempted');
+    assertEq(out.closed, 'gh:163', 'the issue still closes');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge tolerates a UTF-8 BOM in the PRs file');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const prs = [{ repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false }];
+    const bomFile = join(root, 'bom.json');
+    writeFileSync(bomFile, `﻿${JSON.stringify({ prs, empty: [] })}`);
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', bomFile, '--work-item', 'gh:163'],
+      { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.merged.map((m) => m.repo), ['app'], 'the BOM-prefixed file parses and merges');
   } finally { clean(root); bares.forEach(clean); }
 }
 

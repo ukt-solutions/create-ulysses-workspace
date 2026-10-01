@@ -198,6 +198,22 @@ console.log('# prList');
   else fail(`prList on empty stdout should be [], got ${JSON.stringify(prs)}`);
 }
 
+{
+  // `head` filters by source branch — how task-pr.mjs finds the PR a
+  // previous --create run already opened for the task branch.
+  const listJson = JSON.stringify([
+    { number: 9, title: 'feat: x', url: 'https://x/pull/9',
+      headRefName: 'feature/x', baseRefName: 'main', mergedAt: null, state: 'OPEN' },
+  ]);
+  const key = 'pr list --repo foo/bar --state open --limit 100 --json '
+    + 'number,title,url,headRefName,baseRefName,mergedAt,state --head feature/x';
+  const spawnFn = buildSpawn({ [key]: listJson });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const prs = await forge.prList({ state: 'open', head: 'feature/x' });
+  if (prs.length === 1 && prs[0]?.id === 'foo/bar#9' && prs[0]?.state === 'OPEN') ok();
+  else fail(`prList head filter wrong: ${JSON.stringify(prs)}`);
+}
+
 console.log('# releaseView');
 
 // Normalizes the JSON gh release view returns.

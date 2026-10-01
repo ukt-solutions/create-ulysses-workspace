@@ -114,7 +114,7 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
   // complete rather than merely empty (gh:89). `search` takes gh's raw search
   // syntax so callers can bound by merge date without this adapter growing a
   // date-range vocabulary of its own.
-  async function prList({ state = 'merged', base, search, limit = 100, repo }) {
+  async function prList({ state = 'merged', base, head, search, limit = 100, repo }) {
     const target = repoFor(repo);
     const args = [
       'pr', 'list', '--repo', target,
@@ -123,6 +123,7 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
       '--json', 'number,title,url,headRefName,baseRefName,mergedAt,state',
     ];
     if (base) args.push('--base', base);
+    if (head) args.push('--head', head);
     if (search) args.push('--search', search);
     const stdout = ghOrThrow(args).trim();
     const raw = stdout ? JSON.parse(stdout) : [];
