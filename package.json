@@ -18,7 +18,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ukt-solutions/create-ulysses-workspace.git"
+    "url": "git+https://github.com/ukt-solutions/create-ulysses-workspace.git"
   },
   "license": "MIT",
   "type": "module",
@@ -26,7 +26,7 @@
     "node": ">=20.9.0"
   },
   "bin": {
-    "create-workspace": "./bin/create.mjs"
+    "create-workspace": "bin/create.mjs"
   },
   "files": [
     "bin/",
