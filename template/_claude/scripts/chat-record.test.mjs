@@ -187,6 +187,41 @@ console.log('# task lifecycle');
   } finally { clean(r); }
 }
 
+console.log('# tasks without a tracker: workItem null, keyed by branch + repo');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-n', name: 'nowork' });
+
+    const added = addTask(r, 'nowork', { branch: 'feature/local', repo: 'app' });
+    assertEq(added.action, 'added', 'a task with no work item is recorded');
+    assertEq(
+      readRecord(r, 'nowork').tasks,
+      [{ workItem: null, branch: 'feature/local', repo: 'app' }],
+      'the entry carries workItem: null',
+    );
+
+    // Re-recording the same branch + repo updates in place, exactly as
+    // re-recording the same issue + repo does — /start-work is not always
+    // run exactly once, with or without a tracker.
+    const again = addTask(r, 'nowork', { branch: 'feature/local', repo: 'app' });
+    assertEq(again.action, 'updated', 'identity without a work item is branch + repo');
+    assertEq(readRecord(r, 'nowork').tasks.length, 1, 'no duplicate created');
+    addTask(r, 'nowork', { branch: 'feature/other', repo: 'app' });
+    assertEq(readRecord(r, 'nowork').tasks.length, 2, 'a second branch in the same repo is a separate task');
+
+    const rm = removeTask(r, 'nowork', { branch: 'feature/local', repo: 'app' });
+    assertEq(rm.action, 'removed', 'remove works without a work item, by branch');
+    assertEq(
+      readRecord(r, 'nowork').tasks,
+      [{ workItem: null, branch: 'feature/other', repo: 'app' }],
+      'only the matching branch removed',
+    );
+
+    throws(() => removeTask(r, 'nowork', {}), 'removeTask needs a work item or a branch');
+  } finally { clean(r); }
+}
+
 console.log('# a task may target the workspace repo (repo: ".")');
 {
   const r = root();
@@ -232,7 +267,6 @@ console.log('# task ops refuse to invent a record');
     throws(() => removeTask(r, 'ghost', { workItem: 'gh:1' }), 'removeTask on a missing record throws');
     reconcile(r, { sessionId: 'x', name: 'real' });
     throws(() => addTask(r, 'real', { workItem: 'gh:1' }), 'addTask requires a branch');
-    throws(() => addTask(r, 'real', { branch: 'b' }), 'addTask requires a workItem');
   } finally { clean(r); }
 }
 
@@ -253,8 +287,14 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's']), 'a mode is required');
   throws(() => parseArgs(['node', 's', '--reconcile']), '--reconcile needs session-id and name');
   throws(() => parseArgs(['node', 's', '--bogus']), 'unknown flag rejected');
-  throws(() => parseArgs(['node', 's', '--add-task', '--chat', 'c']), '--add-task needs work-item and branch');
-  throws(() => parseArgs(['node', 's', '--remove-task']), '--remove-task needs chat and work-item');
+  throws(() => parseArgs(['node', 's', '--add-task', '--chat', 'c']), '--add-task needs a branch');
+  throws(() => parseArgs(['node', 's', '--remove-task']), '--remove-task needs chat and a selector');
+  throws(() => parseArgs(['node', 's', '--remove-task', '--chat', 'c']), '--remove-task needs work-item or branch');
+  const noTracker = parseArgs(['node', 's', '--add-task', '--chat', 'c', '--branch', 'feature/x', '--repo', 'app']);
+  assertEq([noTracker.mode, noTracker.chat, noTracker.branch, noTracker.repo, noTracker.workItem],
+    ['add-task', 'c', 'feature/x', 'app', null], '--work-item is optional on --add-task');
+  const rmBranch = parseArgs(['node', 's', '--remove-task', '--chat', 'c', '--branch', 'feature/x']);
+  assertEq([rmBranch.mode, rmBranch.branch], ['remove-task', 'feature/x'], '--remove-task can select by branch alone');
   const ok = parseArgs(['node', 's', '--root', '/tmp/x', '--reconcile', '--session-id', 'i', '--name', 'n']);
   assertEq([ok.root, ok.mode, ok.sessionId, ok.name], ['/tmp/x', 'reconcile', 'i', 'n'], 'valid args parse');
   assertEq(parseArgs(['node', 's', '--root', '/tmp/x', '--whoami']).mode, 'whoami', '--whoami parses as a mode');

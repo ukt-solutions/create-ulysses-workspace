@@ -11,8 +11,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { run, parseArgs, parseForgeRemote } from './task-pr.mjs';
-import { createTaskWorktree } from './task-worktree.mjs';
+import { run, parseArgs, parseForgeRemote, mergeModeFor } from './task-pr.mjs';
+import { createTaskWorktree, taskWorktreePath } from './task-worktree.mjs';
 import { reconcile, addTask } from './chat-record.mjs';
 
 let passed = 0;
@@ -57,10 +57,12 @@ const clean = (r) => rmSync(r, { recursive: true, force: true });
 
 // A launcher root with project repos under repos/. Each repo is a clone on
 // main with a bare local origin; `github` maps repo → the forge-shaped URL
-// its origin is rewritten to (repos left out keep the local bare URL).
-function makeLauncher(repos, { forge = { type: 'github' } } = {}) {
+// its origin is rewritten to, `'none'` gives the repo no origin at all
+// (local mode, gh:173), and null keeps the local bare URL (a non-forge
+// origin). The launcher itself gets no origin unless a test adds one.
+function makeLauncher(repos, { forge = { type: 'github' }, tracker = { type: 'github-issues', repo: 'acme/tracker' } } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'task-pr-'));
-  const config = { workspace: { name: 'fixture', forge }, repos: {} };
+  const config = { workspace: { name: 'fixture', forge, ...(tracker ? { tracker } : {}) }, repos: {} };
   const bares = [];
   for (const repo of Object.keys(repos)) {
     config.repos[repo] = { branch: 'main', remote: 'none' };
@@ -70,6 +72,7 @@ function makeLauncher(repos, { forge = { type: 'github' } } = {}) {
     writeFileSync(join(dir, 'README.md'), `# ${repo}\n`);
     git(dir, ['add', '-A']);
     git(dir, ['commit', '-q', '-m', 'init']);
+    if (repos[repo] === 'none') continue; // no origin — the local-mode repo
     const bare = mkdtempSync(join(tmpdir(), `task-pr-origin-${repo}-`));
     git(dir, ['init', '-q', '--bare', join(bare, 'origin.git')]);
     git(dir, ['remote', 'add', 'origin', join(bare, 'origin.git')]);
@@ -172,6 +175,37 @@ console.log('# parseForgeRemote shapes');
   assertEq(parseForgeRemote('/tmp/origin.git'), null, 'local path is not forge-hosted');
   assertEq(parseForgeRemote('file:///srv/bare/app.git'), null, 'file URL is not forge-hosted');
   assertEq(parseForgeRemote('git@gitlab.example.com:acme/app.git'), null, 'unknown host is not forge-hosted');
+}
+
+console.log('# mergeModeFor: override, no origin, forge, non-forge origin');
+{
+  const { root, bares } = makeLauncher({
+    app: 'git@github.com:acme/app.git',
+    fork: 'git@github.com:acme/fork.git',
+    lone: 'none',
+    mirror: null,
+  });
+  try {
+    assertEq(mergeModeFor(root, 'app'), 'forge', 'a forge-hosted origin is forge mode');
+    assertEq(mergeModeFor(root, 'mirror'), null, 'a non-forge origin without an override does not resolve');
+    assertEq(mergeModeFor(root, 'lone'), 'local', 'no origin at all is local mode');
+
+    // The override exists for a clone whose origin is a third-party upstream
+    // nobody here may push to — the URL parses, the repo still merges locally.
+    const wsPath = join(root, 'workspace.json');
+    const ws = JSON.parse(readFileSync(wsPath, 'utf-8'));
+    ws.repos.fork.merge = 'local';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+    assertEq(mergeModeFor(root, 'fork'), 'local', 'repos.{repo}.merge "local" overrides a forge origin');
+
+    ws.workspace.merge = 'local';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+    assertEq(mergeModeFor(root, '.'), 'local', 'workspace.merge "local" overrides for the workspace repo');
+
+    delete ws.workspace.merge;
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+    assertEq(mergeModeFor(root, '.'), 'local', 'the launcher with no origin is local mode');
+  } finally { clean(root); bares.forEach(clean); }
 }
 
 console.log('# parseArgs validation');
@@ -299,7 +333,7 @@ console.log('# an empty branch is skipped: no push, no PR, no body file needed')
   } finally { clean(root); bares.forEach(clean); }
 }
 
-console.log('# a non-forge origin stops before anything is pushed');
+console.log('# a non-forge origin stops before anything is pushed, suggesting the override');
 {
   const { root, bares } = makeLauncher({ app: null }); // origin stays the local bare path
   try {
@@ -314,7 +348,7 @@ console.log('# a non-forge origin stops before anything is pushed');
       () => run(argvCreate(['--root', root, '--branch', 'feature/x', '--repo', 'app', '--body-file', `app=${bodyFile}`]),
         { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) }),
       'non-forge origin errors',
-      'not a forge-hosted repository',
+      'Set repos.app.merge to "local"',
     );
     assertEq(gitFn.calls.filter((c) => c.args.includes('push')).length, 0, 'nothing was pushed');
     assertEq(log.filter((e) => e.op === 'prCreate').length, 0, 'no PR was created');
@@ -391,7 +425,7 @@ console.log('# the workspace repo (".") rides the same path as a project repo');
   const bare = mkdtempSync(join(tmpdir(), 'task-pr-ws-origin-'));
   try {
     writeFileSync(join(root, 'workspace.json'), JSON.stringify({
-      workspace: { name: 'fixture', forge: { type: 'github' } },
+      workspace: { name: 'fixture', forge: { type: 'github' }, tracker: { type: 'github-issues', repo: 'acme/tracker' } },
       repos: {},
     }, null, 2));
     git(root, ['init', '-q', '-b', 'main']);
@@ -422,6 +456,175 @@ console.log('# the workspace repo (".") rides the same path as a project repo');
       ['.', 'acme', 'workspace', true], 'workspace PR entry is flagged isWorkspace');
     assert(log.find((e) => e.op === 'prCreate').repo === 'acme/workspace', 'the forge aimed at the workspace worktree own origin');
   } finally { clean(root); clean(bare); }
+}
+
+console.log('# an all-local task: create records local entries, merge fast-forwards the source clones');
+{
+  const { root, bares } = makeLauncher({ app: 'none', idle: 'none' });
+  try {
+    const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/x' });
+    writeFileSync(join(wt.path, 'work.txt'), 'done\n');
+    git(wt.path, ['add', '-A']);
+    git(wt.path, ['commit', '-q', '-m', 'feat: do the thing']);
+    createTaskWorktree(root, { repo: 'idle', branch: 'feature/x' }); // 0 commits over main
+    const bodyFile = join(root, 'body-app.md');
+    writeFileSync(bodyFile, 'Accepted but ignored for a local repo.\n');
+
+    const log = [];
+    const gitFn = gitWith();
+    const out = await run(argvCreate([
+      '--root', root, '--branch', 'feature/x', '--work-item', 'gh:173', '--repo', 'app', '--repo', 'idle',
+      '--body-file', `app=${bodyFile}`, // optional for a local repo — ignored
+    ]), { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+
+    assertEq(out.empty, ['idle'], 'the idle repo is reported empty');
+    assertEq(out.pushed, [], 'nothing was pushed');
+    assertEq(out.prs, [{
+      repo: 'app', mode: 'local', branch: 'feature/x', base: 'main',
+      worktree: taskWorktreePath(root, 'app', 'feature/x'), commits: 1,
+    }], 'a local entry is recorded instead of a PR');
+    assertEq(log.filter((e) => e.op.startsWith('pr')).length, 0, 'the forge was never consulted');
+    assertEq(gitFn.calls.filter((c) => c.args.includes('push')).length, 0, 'no push was attempted');
+
+    const file = prsFile(root, out.prs);
+    const deps = { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
+    const merged = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:173'], deps);
+    assertEq(merged.merged, [{ repo: 'app', mode: 'local', branch: 'feature/x', base: 'main' }], 'the local merge is reported');
+    assertEq(git(join(root, 'repos', 'app'), ['log', '-1', '--format=%s']).trim(), 'feat: do the thing', "the source clone's main fast-forwarded to the task branch");
+    assertEq(merged.closed, 'gh:173', 'the issue closed with the tracker configured');
+
+    // Re-runnable: the branch is now an ancestor of main, so it counts as
+    // merged and nothing errors or merges twice.
+    const again = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:173'], deps);
+    assertEq(again.merged.map((m) => m.repo), ['app'], 'a re-run counts the merged branch as done');
+    assertEq(git(join(root, 'repos', 'app'), ['log', '-1', '--format=%s']).trim(), 'feat: do the thing', 'the re-run merged nothing new');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a mixed task: local entries and forge PRs, projects first, workspace last');
+{
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git', lone: 'none' });
+  // The workspace repo merges in the launcher itself, which must sit clean —
+  // so every scratch file lives outside the launcher.
+  const scratch = mkdtempSync(join(tmpdir(), 'task-pr-mixed-'));
+  try {
+    // The launcher has no origin, so the workspace repo (".") is local too.
+    const wts = {};
+    for (const repo of ['app', 'lone', '.']) {
+      wts[repo] = createTaskWorktree(root, { repo, branch: 'feature/x' });
+      writeFileSync(join(wts[repo].path, `${repo === '.' ? 'ctx' : 'work'}.txt`), 'done\n');
+      git(wts[repo].path, ['add', '-A']);
+      git(wts[repo].path, ['commit', '-q', '-m', `feat: ${repo}`]);
+    }
+    const bodyFile = join(scratch, 'body-app.md');
+    writeFileSync(bodyFile, 'Summary.\n');
+
+    const log = [];
+    const out = await run(argvCreate([
+      '--root', root, '--branch', 'feature/x', '--work-item', 'gh:173',
+      '--repo', 'app', '--repo', 'lone', '--repo', '.', '--body-file', `app=${bodyFile}`,
+    ]), { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+
+    assertEq(out.prs.map((p) => [p.repo, p.mode]), [['lone', 'local'], ['.', 'local'], ['app', 'forge']], 'both entry kinds ride the same list');
+    assertEq(out.pushed, ['app'], 'only the forge repo was pushed');
+    assertEq(log.filter((e) => e.op === 'prCreate').length, 1, 'one PR for the one forge repo');
+
+    const file = prsFile(scratch, out.prs);
+    const gitFn = gitWith([pushOk]);
+    const merged = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:173'],
+      { gitFn, forgeFactory: fakeForgeFactory(log, { mergedIds: ['acme/app#101'] }), trackerFactory: fakeTrackerFactory(log) });
+
+    assertEq(merged.merged.map((m) => [m.repo, m.mode]), [['lone', 'local'], ['app', 'forge'], ['.', 'local']], 'projects merged first, the workspace last');
+    assertEq(git(join(root, 'repos', 'lone'), ['log', '-1', '--format=%s']).trim(), 'feat: lone', "lone's source clone fast-forwarded");
+    assertEq(git(root, ['log', '-1', '--format=%s']).trim(), 'feat: .', 'the launcher itself fast-forwarded for the local "." merge');
+    assertEq(merged.pullSkipped, 'workspace merged locally', 'the pull is skipped — the launcher already has the work');
+    assertEq(gitFn.calls.filter((c) => c.args.includes('pull')).length, 0, 'no pull was attempted');
+    assertEq(log.find((e) => e.op === 'closeIssue').comment,
+      'Merged: lone feature/x->main https://github.com/acme/app/pull/101 . feature/x->main',
+      'the close comment names local branches and PR URLs alike');
+    // Order in the git stream too: the project's local merge strictly
+    // before the workspace repo's.
+    const loneMergeAt = gitFn.calls.findIndex((c) => c.args.includes('merge') && c.args.join(' ').includes(join('repos', 'lone')));
+    const wsMergeAt = gitFn.calls.findIndex((c) => c.args.includes('merge') && c.args.includes(root) && !c.args.join(' ').includes(join('repos', 'lone')));
+    assert(loneMergeAt >= 0 && wsMergeAt >= 0 && loneMergeAt < wsMergeAt, 'the project local merge preceded the workspace merge');
+  } finally { clean(root); bares.forEach(clean); clean(scratch); }
+}
+
+console.log('# a local merge that is not fast-forwardable stops and says to rebase');
+{
+  const { root, bares } = makeLauncher({ app: 'none' });
+  try {
+    const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/x' });
+    git(wt.path, ['commit', '-q', '--allow-empty', '-m', 'feat: branch work']);
+    // Diverge the source clone's main after the branch was cut.
+    writeFileSync(join(root, 'repos', 'app', 'main.txt'), 'moved on\n');
+    git(join(root, 'repos', 'app'), ['add', '-A']);
+    git(join(root, 'repos', 'app'), ['commit', '-q', '-m', 'main moved on']);
+
+    const log = [];
+    const out = await run(argvCreate(['--root', root, '--branch', 'feature/x', '--repo', 'app']),
+      { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    const deps = { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, out.prs), '--work-item', 'gh:173'], deps),
+      'a diverged local merge errors',
+      'rebase the task branch onto main',
+    );
+    assertEq(git(join(root, 'repos', 'app'), ['log', '-1', '--format=%s']).trim(), 'main moved on', 'main was left where it was');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a local merge refuses a dirty source clone or one off its default branch');
+{
+  const { root, bares } = makeLauncher({ app: 'none' });
+  try {
+    const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/x' });
+    git(wt.path, ['commit', '-q', '--allow-empty', '-m', 'feat: do the thing']);
+    const log = [];
+    const out = await run(argvCreate(['--root', root, '--branch', 'feature/x', '--repo', 'app']),
+      { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    const deps = { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
+
+    writeFileSync(join(root, 'repos', 'app', 'loose.txt'), 'uncommitted\n');
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, out.prs)], deps),
+      'a dirty source clone errors',
+      'uncommitted changes',
+    );
+    rmSync(join(root, 'repos', 'app', 'loose.txt'));
+
+    git(join(root, 'repos', 'app'), ['checkout', '-q', '-b', 'side-branch']);
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, out.prs)], deps),
+      'a source clone off its default branch errors',
+      'not main',
+    );
+    assertEq(git(join(root, 'repos', 'app'), ['log', '-1', '--format=%s']).trim(), 'init', 'nothing merged by either refusal');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# without a tracker: no issue read, nothing closed, the JSON says why');
+{
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git' }, { tracker: null });
+  try {
+    const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/x' });
+    git(wt.path, ['commit', '-q', '--allow-empty', '-m', 'feat: first commit']);
+    const bodyFile = join(root, 'body-app.md');
+    writeFileSync(bodyFile, 'Summary.\n');
+
+    const log = [];
+    const out = await run(argvCreate([
+      '--root', root, '--branch', 'feature/x', '--work-item', 'gh:173', '--repo', 'app', '--body-file', `app=${bodyFile}`,
+    ]), { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(log.find((e) => e.op === 'prCreate').title, 'feat: first commit', 'the title fell back to the first commit subject');
+    assert(!log.find((e) => e.op === 'prCreate').body.includes('Closes'), 'no closing line without a tracker');
+
+    const merged = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, out.prs), '--work-item', 'gh:173'],
+      { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(merged.closed, null, 'nothing was closed');
+    assertEq(merged.closeSkipped, 'no tracker configured', 'the skip is reported in the JSON');
+    assertEq(log.filter((e) => e.op === 'closeIssue').length, 0, 'no close call was made');
+  } finally { clean(root); bares.forEach(clean); }
 }
 
 console.log('# --chat resolves the task repos from the chat record');
@@ -517,7 +720,7 @@ console.log('# a failed project merge leaves the workspace PR open and stops');
       () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
         { gitFn, forgeFactory: fakeForgeFactory(log, { failMergeIds: ['acme/api#2'] }), trackerFactory: fakeTrackerFactory(log) }),
       'failed merge errors',
-      'PRs still open',
+      'Still open',
     );
     const merges = log.filter((e) => e.op === 'prMerge').map((m) => m.repo);
     assertEq(merges, ['acme/app'], 'the PRs before the failure merged, nothing after');
@@ -697,7 +900,7 @@ console.log('# --merge re-run: PRs already merged count as done, and the complet
       () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:163'],
         { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log1, { failMergeIds: ['acme/workspace#3'] }), trackerFactory: fakeTrackerFactory(log1) }),
       'the first run stops at the failed workspace merge',
-      'PRs still open',
+      'Still open',
     );
     const log2 = [];
     const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:163'],

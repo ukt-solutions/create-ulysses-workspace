@@ -233,8 +233,10 @@ function createTaskWorktree(root, { repo, branch, base = null, gitFn = spawnSync
   gitFn('git', ['-C', repoDir, 'fetch', 'origin'], { encoding: 'utf8', timeout: 10000 });
   run(gitFn, repoDir, ['worktree', 'prune']);
 
-  // The base is a starting point, not a freshness guarantee: it is
-  // origin's default branch as of the best-effort fetch above.
+  // The base is a starting point, not a freshness guarantee: origin's
+  // default branch as of the best-effort fetch above, and — for a repo with
+  // no origin, whose task completes in local mode (gh:173) — the local
+  // default branch itself, there being no remote ref to prefer.
   const defaultBranch = defaultBranchFor(rootDir, repo, gitFn);
   const resolvedBase = base
     || (refExists(gitFn, repoDir, `refs/remotes/origin/${defaultBranch}`)
@@ -519,7 +521,7 @@ if (isMainModule(import.meta.url)) {
 }
 
 export {
-  slugForBranch, taskWorktreePath, createTaskWorktree, removeTaskWorktree,
+  slugForBranch, taskWorktreePath, repoDirFor, createTaskWorktree, removeTaskWorktree,
   detectWorkModel, parseArgs, defaultBranchFor, WORKSPACE_REPO,
   WORKTREES_DIR, EXCLUDE_LINE,
 };

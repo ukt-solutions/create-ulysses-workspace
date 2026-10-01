@@ -21,8 +21,8 @@
 //   node chat-record.mjs --root <dir> --read  <chat-name>
 //   node chat-record.mjs --root <dir> --reconcile --session-id <id> --name <n>
 //   node chat-record.mjs --root <dir> --whoami
-//   node chat-record.mjs --root <dir> --add-task    --chat <n> --work-item <id> --branch <b> [--repo <r>]
-//   node chat-record.mjs --root <dir> --remove-task --chat <n> --work-item <id> [--repo <r>]
+//   node chat-record.mjs --root <dir> --add-task    --chat <n> --branch <b> [--repo <r>] [--work-item <id>]
+//   node chat-record.mjs --root <dir> --remove-task --chat <n> (--work-item <id> | --branch <b>) [--repo <r>]
 //
 // --add-task / --remove-task report `action`: "added" | "updated" for
 // --add-task, "removed" | "unchanged" for --remove-task. They also keep the
@@ -191,20 +191,25 @@ function resolveChatName(root, { sessionId, registryName = null } = {}) {
 }
 
 
-// A task is a tracker issue plus a branch plus the repo it lands in. It is
-// created on demand and disappears when it merges — nothing about it is
-// durable except the issue and the commits, so the record holds only the
-// pointer, never a copy of the issue.
+// A task is a branch plus the repo it lands in, plus the tracker issue when
+// the workspace has one. It is created on demand and disappears when it
+// merges — nothing about it is durable except the issue and the commits, so
+// the record holds only the pointer, never a copy of the issue.
 //
 // Identity is workItem + repo: the same issue can legitimately be open against
 // two repos in a multi-repo task, and re-recording the same one must update
-// rather than duplicate. /start-work is not always run exactly once.
-function addTask(root, chatName, { workItem, branch, repo = null } = {}) {
-  if (!workItem) throw new Error('addTask: workItem is required');
+// rather than duplicate. /start-work is not always run exactly once. A task
+// recorded without a tracker (gh:173) carries `workItem: null` and is keyed
+// by branch + repo instead — the branch is the only identity it has — so
+// both add and remove take the branch for those entries.
+function addTask(root, chatName, { workItem = null, branch, repo = null } = {}) {
   if (!branch) throw new Error('addTask: branch is required');
   const rec = readRecord(root, chatName);
   if (!rec) throw new Error(`addTask: no chat record for "${chatName}"`);
-  const i = rec.tasks.findIndex((t) => t.workItem === workItem && (t.repo ?? null) === repo);
+  const i = rec.tasks.findIndex(
+    (t) => (t.workItem ?? null) === workItem && (t.repo ?? null) === repo
+      && (workItem !== null || t.branch === branch),
+  );
   const task = { workItem, branch, repo };
   if (i >= 0) rec.tasks[i] = task;
   else rec.tasks.push(task);
@@ -212,12 +217,15 @@ function addTask(root, chatName, { workItem, branch, repo = null } = {}) {
   return { record: rec, action: i >= 0 ? 'updated' : 'added', updated: i >= 0 };
 }
 
-function removeTask(root, chatName, { workItem, repo = null } = {}) {
-  if (!workItem) throw new Error('removeTask: workItem is required');
+function removeTask(root, chatName, { workItem = null, branch = null, repo = null } = {}) {
+  if (workItem === null && !branch) throw new Error('removeTask: workItem or branch is required');
   const rec = readRecord(root, chatName);
   if (!rec) throw new Error(`removeTask: no chat record for "${chatName}"`);
   const before = rec.tasks.length;
-  rec.tasks = rec.tasks.filter((t) => !(t.workItem === workItem && (t.repo ?? null) === repo));
+  rec.tasks = rec.tasks.filter(
+    (t) => !((t.workItem ?? null) === workItem && (t.repo ?? null) === repo
+      && (workItem !== null || t.branch === branch)),
+  );
   writeRecord(root, rec);
   return { record: rec, action: before - rec.tasks.length > 0 ? 'removed' : 'unchanged', removed: before - rec.tasks.length };
 }
@@ -268,11 +276,11 @@ function parseArgs(argv) {
   if (args.mode === 'reconcile' && (!args.sessionId || !args.name)) {
     throw new Error('--reconcile requires --session-id and --name');
   }
-  if (args.mode === 'add-task' && (!args.chat || !args.workItem || !args.branch)) {
-    throw new Error('--add-task requires --chat, --work-item and --branch');
+  if (args.mode === 'add-task' && (!args.chat || !args.branch)) {
+    throw new Error('--add-task requires --chat and --branch (--work-item is optional — omitted without a tracker)');
   }
-  if (args.mode === 'remove-task' && (!args.chat || !args.workItem)) {
-    throw new Error('--remove-task requires --chat and --work-item');
+  if (args.mode === 'remove-task' && (!args.chat || (!args.workItem && !args.branch))) {
+    throw new Error('--remove-task requires --chat and --work-item or --branch');
   }
   return args;
 }
@@ -292,9 +300,9 @@ function main() {
   if (args.mode === 'list') out = listRecords(args.root);
   else if (args.mode === 'read') out = readRecord(args.root, args.chat);
   else if (args.mode === 'add-task') {
-    out = addTask(args.root, args.chat, { workItem: args.workItem, branch: args.branch, repo: args.repo });
+    out = addTask(args.root, args.chat, { workItem: args.workItem ?? null, branch: args.branch, repo: args.repo });
   } else if (args.mode === 'remove-task') {
-    out = removeTask(args.root, args.chat, { workItem: args.workItem, repo: args.repo });
+    out = removeTask(args.root, args.chat, { workItem: args.workItem ?? null, branch: args.branch, repo: args.repo });
   } else out = reconcile(args.root, { sessionId: args.sessionId, name: args.name });
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
 }

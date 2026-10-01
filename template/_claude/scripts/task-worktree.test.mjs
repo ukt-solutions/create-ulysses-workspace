@@ -149,6 +149,22 @@ console.log('# base prefers origin/{defaultBranch} when the remote ref exists');
   } finally { clean(root); clean(bare); }
 }
 
+console.log('# a repo with no origin bases the worktree on the local default branch');
+{
+  const { root, app } = makeRoot(); // makeRoot wires no origin — local mode (gh:173)
+  try {
+    // Advance the local default branch itself: with no origin there is no
+    // fresher ref the base could be, so the worktree must land on this.
+    writeFileSync(join(app, 'later.txt'), 'local advance\n');
+    git(app, 'add -A');
+    git(app, 'commit -q -m local-advance');
+    const res = createTaskWorktree(root, { repo: 'app', branch: 'feature/no-remote' });
+    assertEq(git(res.path, 'log -1 --format=%s').trim(), 'local-advance', 'worktree started from the local default branch');
+    assertEq(git(res.path, 'rev-parse --abbrev-ref HEAD').trim(), 'feature/no-remote', 'worktree is on the task branch');
+    assert(!gitOk(app, 'rev-parse --abbrev-ref "feature/no-remote@{u}"'), 'no upstream without an origin');
+  } finally { clean(root); }
+}
+
 console.log('# new branches do not track the base');
 {
   const { root, app } = makeRoot();
