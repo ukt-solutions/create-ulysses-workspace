@@ -17,7 +17,7 @@ the work at hand. This skill covers everything after that decision.
 - One `goal-{topic}.md` artifact per effort. Session model: at the top of the session worktree, alongside `session.md`. Task model: in the chat drawer at `workspace-scratchpad/chats/{chat}/`, alongside its phase outputs. One goal per worktree or task either way.
 - The artifact's frontmatter holds machine state; its body holds the human-readable goal statement, per-phase intent, and a mandatory `## Start command` section (see "Kicking off the goal") with the literal `/goal "..."` invocation the user runs to start the loop.
 - Phase output artifacts live as siblings. `research-*.md` and `crossref-*.md` are goal-native (produced by `parallel-research` and `crossref` phase types). `design-*.md` and `plan-*.md` are pre-existing session-artifact patterns that `type: skill` phases reuse when the wrapped skill is `superpowers:brainstorming` or `superpowers:writing-plans`; they are not goal-specific.
-- Session model: the artifact is tracked on the session branch and lives there until `/complete-work` runs, which strips it before the final PR. Task model: the drawer is machine-local and untracked; `/complete-work` routes the artifact (promote into `workspace-context/` or discard) at completion.
+- Session model: the artifact is tracked on the session branch and lives there until `/complete-work` runs, which strips it before the final PR. Task model: the drawer is machine-local and untracked; `/complete-work` routes the artifact (promote into `workspace-context/` or discard) at completion, so while a task is active give the artifact's frontmatter a `workItem: {id}` line — the offer is scoped to the task that owns the artifact.
 
 ## Frontmatter schema
 

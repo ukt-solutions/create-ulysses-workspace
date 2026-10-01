@@ -191,7 +191,7 @@ There is no session folder and no `session.md`. The chat stays at the workspace 
 
 `/start-work` under the task model: pick or create the tracker issue (or skip tracking entirely), pick the repo(s) — the workspace repo can be one of them — propose the branch, create one worktree per repo with `.claude/scripts/task-worktree.mjs`, and record the task on the chat record. The record, the issue, and the branch are the entire state.
 
-`/complete-work` under the task model: rebases each worktree onto its default branch, offers to promote drawer items into `workspace-context/` (through a workspace-repo worktree on the task's branch, so nothing lands on the launcher's default branch), then pushes and opens one PR per repo — the workspace repo included, merged last — tears the worktrees down, and clears the record entries.
+`/complete-work` under the task model: rebases each worktree onto its default branch, offers to promote drawer items into `workspace-context/` (through a workspace-repo worktree on the task's branch, so nothing lands on the launcher's default branch), writes a short PR body per repo into the drawer, then hands the rest to `.claude/scripts/task-pr.mjs` — one command pushes and opens one PR per repo (the workspace repo included), a second merges them in order and closes the issue — and finally tears the worktrees down and clears the record entries.
 
 Several tasks can be open at once across chats; each is just a branch plus its worktrees. The session model remains the right choice for long multi-chat efforts that want a folder, a tracker file, and pause/resume semantics — and both lifecycles can coexist in one workspace while a team migrates.
 
