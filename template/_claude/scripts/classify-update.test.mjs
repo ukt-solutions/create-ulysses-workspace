@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Unit tests for classify-update.mjs
 // Run: node template/_claude/scripts/classify-update.test.mjs
-import { classifyUpdate } from './classify-update.mjs';
+import { classifyUpdate, mergeClaudeMd } from './classify-update.mjs';
+import { createHash } from 'node:crypto';
 import {
   mkdtempSync,
   mkdirSync,
@@ -131,6 +132,10 @@ console.log('# classify-update');
     join(nestedScripts, 'build-workspace-context.mjs'),
     readFileSync(join(here, 'build-workspace-context.mjs'), 'utf8'),
   );
+  writeFileSync(
+    join(nestedScripts, 'template-baseline.mjs'),
+    readFileSync(join(here, 'template-baseline.mjs'), 'utf8'),
+  );
   mkdirSync(join(payload, '.claude', 'lib'), { recursive: true });
   writeFileSync(
     join(payload, '.claude', 'lib', 'session-frontmatter.mjs'),
@@ -145,7 +150,7 @@ console.log('# classify-update');
   );
   assertEq(r.status, 0, `CLI exits 0 from nested location (stderr: ${r.stderr.trim().slice(0, 200)})`);
   const parsed = JSON.parse(r.stdout);
-  // The nested copies themselves (classifier plus the sibling it imports) are
+  // The nested copies themselves (classifier plus the siblings it imports) are
   // genuinely new to this workspace.
   assertEq(
     parsed.new,
@@ -153,6 +158,7 @@ console.log('# classify-update');
       '.claude/lib/session-frontmatter.mjs',
       '.claude/scripts/build-workspace-context.mjs',
       '.claude/scripts/classify-update.mjs',
+      '.claude/scripts/template-baseline.mjs',
       '.claude/skills/new-skill/SKILL.md',
     ],
     'CLI classifies the --root workspace',
@@ -257,6 +263,206 @@ console.log('# classify-update');
   const result = classifyUpdate({ root });
   assertEq(result.removed, ['.mcp.json'], 'a payload-dropped .mcp.json reads as removed');
   rmSync(root, { recursive: true, force: true });
+}
+
+// 8. three-way classification with a baseline: a file the template changed
+//    that the user never touched is `updated`, a real local edit is `differs`.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  // untouched-then-template-changed → updated: workspace holds the baseline
+  // bytes, the payload ships new ones
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v2\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// template v1\n');
+  // locally edited → differs: workspace matches neither baseline nor payload
+  mkdirSync(join(payload, '.claude', 'rules'), { recursive: true });
+  mkdirSync(join(root, '.claude', 'rules'), { recursive: true });
+  writeFileSync(join(payload, '.claude', 'rules', 'core.md'), 'core v2\n');
+  writeFileSync(join(root, '.claude', 'rules', 'core.md'), 'my local take\n');
+  // already applied by hand → identical even though it differs from baseline
+  writeFileSync(join(payload, '.claudeignore'), 'scratch/ v2\n');
+  writeFileSync(join(root, '.claudeignore'), 'scratch/ v2\n');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.20.0',
+    files: {
+      '.claude/hooks/session-start.mjs': sha('// template v1\n'),
+      '.claude/rules/core.md': sha('core v1\n'),
+      '.claudeignore': sha('scratch/ v1\n'),
+    },
+  }) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertTrue(result.hasBaseline, 'hasBaseline true when the baseline exists');
+  assertEq(result.updated, ['.claude/hooks/session-start.mjs'], 'workspace==baseline≠payload classifies as updated');
+  assertEq(result.differs, ['.claude/rules/core.md'], 'workspace≠baseline≠payload classifies as differs');
+  assertEq(result.identical, ['.claudeignore'], 'workspace==payload classifies as identical regardless of baseline');
+  assertTrue(!result.removed.includes('.claude/.template-baseline.json'), 'the baseline itself is never a removal');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8b. no baseline (pre-v0.21 workspace): template changes land in differs —
+//     the old two-way behavior — and hasBaseline is false so the skill can say
+//     the first update asks per file.
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v2\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// template v1\n');
+
+  const result = classifyUpdate({ root });
+  assertTrue(!result.hasBaseline, 'hasBaseline false without a baseline');
+  assertEq(result.updated, [], 'nothing classifies as updated without a baseline');
+  assertEq(result.differs, ['.claude/hooks/session-start.mjs'], 'template change falls back to differs');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8c. staleTests: *.test.mjs under .claude/ with no payload counterpart are
+//     listed for removal, never counted as template removals.
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// template\n');
+  mkdirSync(join(root, '.claude', 'scripts'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'scripts', 'helper.test.mjs'), '// stale\n');
+  mkdirSync(join(root, '.claude', 'worktrees', 'fix-x'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'worktrees', 'fix-x', 'nested.test.mjs'), '// inside a worktree\n');
+  // a test the payload DOES carry is not stale — it updates with the template
+  mkdirSync(join(payload, '.claude', 'scripts'), { recursive: true });
+  writeFileSync(join(payload, '.claude', 'scripts', 'current.test.mjs'), '// current\n');
+  writeFileSync(join(root, '.claude', 'scripts', 'current.test.mjs'), '// current\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.staleTests, ['.claude/scripts/helper.test.mjs'], 'staleTests lists orphaned test files only');
+  assertEq(result.removed, [], 'test files are never template removals');
+  assertTrue(result.identical.includes('.claude/scripts/current.test.mjs'), 'a payload-carried test classifies normally');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 9. CLI --write-baseline: records the payload hashes (the template's content,
+//    regardless of what the workspace holds) and prints a confirmation.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.manifest.json'), JSON.stringify({ templateVersion: '0.21.0' }) + '\n');
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v2\n');
+  // the user kept a local edit; the baseline must still record the payload hash
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// my version\n');
+  writeFileSync(join(root, '.claude', 'skills', 'kept', 'SKILL.md'), '# Same\n');
+  writeFileSync(join(payload, '.claude', 'skills', 'kept', 'SKILL.md'), '# Same\n');
+
+  const r = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', root, '--payload', payload, '--write-baseline'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r.status, 0, `--write-baseline exits 0 (stderr: ${r.stderr.trim().slice(0, 200)})`);
+  const parsed = JSON.parse(r.stdout);
+  assertEq(parsed.written, true, 'confirmation JSON says written');
+  assertEq(parsed.templateVersion, '0.21.0', 'confirmation carries the payload version');
+  const baseline = JSON.parse(readFileSync(join(root, '.claude', '.template-baseline.json'), 'utf8'));
+  assertEq(baseline.templateVersion, '0.21.0', 'baseline records the payload version');
+  assertEq(baseline.files['.claude/hooks/session-start.mjs'], sha('// template v2\n'),
+    'a kept local edit records the PAYLOAD hash — the divergence stays visible next update');
+  assertEq(baseline.files['.claude/skills/kept/SKILL.md'], sha('# Same\n'), 'applied files record the payload hash too');
+  assertTrue(Object.keys(baseline.files).every((k) => !k.endsWith('.test.mjs')), 'tests are never baselined');
+
+  // with the fresh baseline, the same workspace classifies the kept file as
+  // differs (deliberate divergence) and nothing as updated
+  const result = classifyUpdate({ root });
+  assertEq(result.differs, ['.claude/hooks/session-start.mjs'], 'kept local edit reads as differs against the payload-hash baseline');
+  assertEq(result.updated, [], 'nothing reads as updated');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 10. mergeClaudeMd — template lines update, workspace lines survive
+{
+  const current = [
+    '## Workspace: demo',
+    '',
+    'This is a claude-workspace.',
+    '',
+    '## Skills',
+    '- `/start-work [handoff|blank]` — begin a work session (reworded locally)',
+    '- `/my-skill` — added by this workspace',
+    '',
+    '## Local Conventions',
+    'Deploy on Fridays only.',
+    '',
+  ].join('\n') + '\n';
+  const next = [
+    '## Workspace: demo',
+    '',
+    'This is a claude-workspace. All conventions are defined in .claude/rules/.',
+    '',
+    '## Skills',
+    '- `/start-work [handoff|blank]` — begin a work session',
+    '- `/brand-new` — shipped by the new template',
+    '',
+    '## Freshness',
+    'New template section.',
+    '',
+  ].join('\n') + '\n';
+
+  const merged = mergeClaudeMd(current, next);
+  const lines = merged.split('\n');
+  assertTrue(merged.includes('All conventions are defined in .claude/rules/.'), 'template prose lines update');
+  assertTrue(lines.includes('- `/start-work [handoff|blank]` — begin a work session'),
+    'a skill entry the template reworded takes the template line (matched by /name)');
+  assertTrue(!merged.includes('reworded locally'), 'the workspace stale rewording of that entry is dropped');
+  assertTrue(lines.includes('- `/my-skill` — added by this workspace'), 'a workspace-only skill entry is kept');
+  assertTrue(lines.includes('- `/brand-new` — shipped by the new template'), 'a new template entry lands');
+  assertTrue(merged.includes('## Local Conventions') && merged.includes('Deploy on Fridays only.'),
+    'a workspace-only section survives');
+  assertTrue(merged.includes('## Freshness') && merged.includes('New template section.'),
+    'a new template section is appended');
+  assertTrue(merged.indexOf('## Local Conventions') < merged.indexOf('## Freshness'),
+    'workspace sections keep their place before appended template sections');
+}
+
+// 10b. mergeClaudeMd — identical inputs round-trip byte-for-byte
+{
+  const text = readFileSync(join(here, '..', '..', '..', 'template', 'CLAUDE.md.tmpl'), 'utf8')
+    .replace(/\{\{project-name\}\}/g, 'demo');
+  assertEq(mergeClaudeMd(text, text), text, 'merging a file with itself changes nothing');
+  assertEq(mergeClaudeMd('', text), text, 'an empty current file takes the template as-is');
+}
+
+// 11. CLI --merge-claude-md — substitutes {{project-name}}, merges with the
+//     workspace's CLAUDE.md, prints the result
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, 'CLAUDE.md.tmpl'), '## Workspace: {{project-name}}\n\n## Skills\n- `/start-work` — begin\n');
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
+  writeFileSync(join(root, 'CLAUDE.md'), '## Workspace: acme\n\n## Skills\n- `/start-work` — begin\n- `/acme-deploy` — ours\n');
+
+  const r = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', root, '--payload', payload, '--merge-claude-md'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r.status, 0, `--merge-claude-md exits 0 (stderr: ${r.stderr.trim().slice(0, 200)})`);
+  assertTrue(r.stdout.includes('## Workspace: acme'), '{{project-name}} substituted from workspace.json');
+  assertTrue(r.stdout.includes('- `/acme-deploy` — ours'), 'workspace skill entries survive the CLI merge');
+  assertTrue(readFileSync(join(root, 'CLAUDE.md'), 'utf8').includes('## Workspace: acme'),
+    'the mode prints only — the workspace file is untouched until the skill writes it');
+
+  // no template in the payload → named error
+  const bare = setupWorkspace();
+  setupPayload(bare);
+  const r2 = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', bare, '--payload', join(bare, '.workspace-update'), '--merge-claude-md'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r2.status, 1, 'missing CLAUDE.md.tmpl exits 1');
+  assertTrue(r2.stderr.includes('CLAUDE.md.tmpl'), 'error names the missing template');
+  rmSync(root, { recursive: true, force: true });
+  rmSync(bare, { recursive: true, force: true });
 }
 
 console.log('');

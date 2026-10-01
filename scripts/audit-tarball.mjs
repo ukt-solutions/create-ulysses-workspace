@@ -241,6 +241,11 @@ function checkRequiredFiles(files) {
     // completion falls back to hand-written adapter blocks.
     'template/_claude/scripts/task-pr.mjs',
     'template/_claude/scripts/classify-update.mjs',
+    // The template baseline behind three-way update classification (gh:183):
+    // classify-update.mjs imports it, and lib/init.mjs + lib/scaffold.mjs
+    // write the baseline through it. Without it every update treats template
+    // changes as local edits and asks per file.
+    'template/_claude/scripts/template-baseline.mjs',
     // The scripted audit behind /maintenance audit and the post-update
     // verification in /workspace-update (gh:180). Without it both skills fall
     // back to hand-walking seven sections of prose checks per run.

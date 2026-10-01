@@ -37,28 +37,32 @@ In the commands below, `{payload}` is `.workspace-update` in the no-remote flow 
 
 ### Step 2: Classify the payload
 
-Run the classifier — it compares every verbatim-installed payload file (`.claude/**`, `.mcp.json`, `.claudeignore`) against the workspace by content, and detects files the template no longer ships:
+Run the classifier — it compares every verbatim-installed payload file (`.claude/**`, `.mcp.json`, `.claudeignore`) against the workspace and the template baseline (`.claude/.template-baseline.json`, the hashes of what the template last shipped here), and detects files the template no longer ships:
 
 ```bash
 node {payload}/.claude/scripts/classify-update.mjs --root . --payload {payload}
 ```
 
-It runs from the payload precisely so workspaces that don't have it installed yet can use it; once installed, `node .claude/scripts/classify-update.mjs --root .` is equivalent. Output is JSON with five lists:
+It runs from the payload precisely so workspaces that don't have it installed yet can use it; once installed, `node .claude/scripts/classify-update.mjs --root .` is equivalent. Output is JSON:
 
 - `new` — no installed counterpart; safe to batch-apply (Step 3) behind one confirmation
 - `identical` — installed file already equals the payload; skip silently
-- `differs` — installed file was locally modified; needs a per-file decision
+- `updated` — installed file still holds the baseline content while the payload ships something new: a pure template change the user never touched. Batched with `new` behind one confirmation
+- `differs` — installed file matches neither the payload nor the baseline: a local edit. Needs a per-file decision
 - `activated` — the payload ships `rules/{name}.md.skip` while the workspace keeps `{name}.md` active: the rule was deliberately activated. Nothing to install — the active rule stays.
-- `removed` — installed file with no counterpart in the payload. Tests (`*.test.mjs`), gitignored paths, `.claude/worktrees/`, and files listed in `workspace.json` → `workspace.localFiles` (an array of `.claude/`-relative paths or globs the workspace owns) are excluded automatically, so only real template removals are listed.
+- `removed` — installed file with no counterpart in the payload. Gitignored paths, `.claude/worktrees/`, and files listed in `workspace.json` → `workspace.localFiles` (an array of `.claude/`-relative paths or globs the workspace owns) are excluded automatically, so only real template removals are listed.
+- `staleTests` — `*.test.mjs` files under `.claude/` the payload doesn't carry. The package never ships tests, so these came from a dev checkout and no update refreshes them (Step 3 offers removal).
+
+If `hasBaseline` is false (the workspace predates v0.21), tell the user: "No template baseline — this first update asks about every changed file individually; once it finishes and writes the baseline (Step 4), later updates won't." Template changes then land in `differs`.
 
 Templates (`*.tmpl`, which install with `{{project-name}}` substitution), `_gitignore` (merged line-by-line), and `.manifest.json` (payload metadata) are not classified — each is handled by its own sub-step in Step 3.
 
 Report with version info from the manifest:
 ```
-"Template update: v{fromVersion} → v{templateVersion}. {N} new files, {M} locally modified, {A} activated rules, {R} removed files, {K} unchanged."
+"Template update: v{fromVersion} → v{templateVersion}. {N} new files, {U} template-updated, {M} locally modified, {A} activated rules, {R} removed files, {K} unchanged."
 ```
 
-If `new`, `differs`, `activated`, and `removed` are all empty, report: "Workspace is up to date (template v{templateVersion}). No changes needed."
+If `new`, `updated`, `differs`, `activated`, and `removed` are all empty, report: "Workspace is up to date (template v{templateVersion}). No changes needed." (`staleTests` may still be worth offering.)
 
 ### Step 2b: Historical .gitignore safety check
 
@@ -79,24 +83,37 @@ Commit the fix **before** applying other template updates. This runs ahead of St
 
 ### Step 3: Selective update
 
-Batch the safe case, ask on the rest:
+Batch the safe cases, ask on the rest:
 
-- **New files (`new`):** present the list once — "Apply these {N} new files? [Y/n]" — and install them all on confirmation. No per-file prompting.
-- **Locally modified (`differs`):** ask per file — "Template updated {file} but you have local changes. Show diff? [y/N]" — then apply, keep, or merge per the user's decision.
+- **New and template-updated files (`new` + `updated`):** present both lists once — "Apply these {N} new and {U} template-updated files? [Y/n]" — and install them all on confirmation. No per-file prompting: `updated` means the file still holds exactly what the template last shipped here, so applying the new version loses nothing.
+- **Locally modified (`differs`):** ask per file — "Your version of {file} differs from the template's. Show diff? [y/N]" — then apply, keep, or merge per the user's decision.
 - **Removed in template (`removed`):** "Template removed {file}. Delete locally? [y/N]" — conservative default.
 - **Activated rules (`activated`):** keep the active file, install nothing — report: "Rule {name} is active here and optional in the template; your activation is preserved."
+- **Stale tests (`staleTests`):** "These {N} test files under .claude/ came from a dev checkout — the package never ships them, so updates can't refresh them (tests live in the template repo). Remove them? [Y/n]" — one confirmation for the whole list.
 - **Hook migration (.sh to .mjs):** Detect old `.sh` hooks in `.claude/hooks/` that have `.mjs` replacements in the payload. Offer: "Hook {name}.sh has a .mjs replacement in the update. Replace and update settings.json commands? [Y/n]" — this is a one-time migration for workspaces upgrading from pre-0.2.0
 
 Also handle these non-component files from the payload:
 
 - **settings.json:** Merge payload values into existing `.claude/settings.json` — do not overwrite user customizations. Add new keys, update hook commands if hooks were migrated, preserve user-added entries.
 - **workspace.json keys:** Compare the `workspace` object of the payload's `workspace.json.tmpl` with the installed `workspace.json`, key by key. For each key the template ships that the workspace lacks, show its template default and ask before adding. Never remove an existing key just because the template no longer ships it. `canonicalBudgetBytes` is opt-in since v0.19 — leave an existing value alone and mention it can be removed to turn the budget off.
-- **CLAUDE.md:** If `{payload}/CLAUDE.md.tmpl` exists, regenerate `CLAUDE.md` from the template. Preserve any user-added sections not present in the template.
+- **CLAUDE.md:** If `{payload}/CLAUDE.md.tmpl` exists, merge — never regenerate from scratch:
+  ```bash
+  node {payload}/.claude/scripts/classify-update.mjs --root . --payload {payload} --merge-claude-md
+  ```
+  The command prints the merged CLAUDE.md: template-owned lines take the template's new versions (skill-list entries match by their `/name`), while lines the template doesn't have — the workspace's own skill entries, custom bullets, whole sections — are kept in place. Show the user the diff against the current CLAUDE.md before writing the merged result.
 - **.gitignore:** Merge new entries from the payload's `_gitignore` into the existing `.gitignore` — do not remove user-added lines.
 
-### Step 4: Update version
+### Step 4: Update version and write the baseline
 
 Read `templateVersion` from `.workspace-update/.manifest.json` and update `templateVersion` in `workspace.json` to match.
+
+Then write the template baseline so the NEXT update classifies three ways instead of asking per file:
+
+```bash
+node {payload}/.claude/scripts/classify-update.mjs --root . --payload {payload} --write-baseline
+```
+
+Run it after every Step 3 decision has been made (it runs from the payload because the workspace's own copy may predate this update). It records the sha256 of every verbatim payload file — what the template now ships — regardless of per-file decisions: a file the user kept in their own version keeps the payload hash, so the next update still sees the divergence and asks about it; a file nobody touched never reads as a local edit again.
 
 ### Step 4a: Run idempotent migrators
 
@@ -138,7 +155,7 @@ node .claude/scripts/build-workspace-context.mjs --check --root .
 
 `--check` must exit clean. If it reports drift, re-run `--write` and check again before continuing.
 
-Then run the scripted audit — once, covering everything (gh:180). Build the changed list — every file this update added or changed: the applied `new` and `differs` files plus the merged ones (`CLAUDE.md`, `workspace.json`, `.gitignore`, `.claude/settings.json`, `.mcp.json` as touched) — one path per line into a temp file such as `workspace-scratchpad/update-changed.txt`, then:
+Then run the scripted audit — once, covering everything (gh:180). Build the changed list — every file this update added or changed: the applied `new`, `updated`, and `differs` files plus the merged ones (`CLAUDE.md`, `workspace.json`, `.gitignore`, `.claude/settings.json`, `.mcp.json` as touched) — one path per line into a temp file such as `workspace-scratchpad/update-changed.txt`, then:
 
 ```bash
 node {payload}/.claude/scripts/maintenance-audit.mjs --root . --changed workspace-scratchpad/update-changed.txt
@@ -178,8 +195,9 @@ After the update is applied, if the sessions directory (`workspace.workSessionsD
 ## Notes
 
 - The CLI (`npx @ulysses-ai/create-workspace --upgrade`) stages the payload. This skill processes it.
-- Never overwrites without asking — `new` files are batched behind one confirmation; `differs` files are asked per file
+- Never overwrites without asking — `new` and `updated` files are batched behind one confirmation; `differs` files are asked per file
 - Preserves local modifications, custom content, existing `workspace.json` keys, and deliberately activated rules
+- The template baseline (`.claude/.template-baseline.json`) is what separates `updated` from `differs`: every entry holds the payload hash of the last-shipped content, so a deliberately kept local edit stays visible across updates while an untouched file never prompts
 - The launcher's default branch takes a template-update commit only when the workspace has no remote; with a remote, the update lands through a task worktree and a PR
 - Can be run multiple times safely (idempotent) — if `.workspace-update/` doesn't exist, it reports no payload and exits
 - Initial setup is handled by `npx @ulysses-ai/create-workspace --init` + `/workspace-init` — this skill is for subsequent updates only

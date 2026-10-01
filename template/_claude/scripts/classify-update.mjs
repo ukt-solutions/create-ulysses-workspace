@@ -4,33 +4,63 @@
 //
 // Usage:
 //   node classify-update.mjs [--root <dir>] [--payload <dir>]
+//   node classify-update.mjs --root <dir> --payload <dir> --write-baseline
+//   node classify-update.mjs --root <dir> --payload <dir> --merge-claude-md
 //
 // --root    workspace root; defaults to the current working directory (never
 //           derived from this script's location — the upgrade payload runs
 //           this file from <workspace>/.workspace-update/.claude/scripts/)
 // --payload the staged payload; defaults to <root>/.workspace-update
 //
-// Prints JSON with five lists:
-//   new       — no installed counterpart; safe to batch-apply after one confirm
-//   identical — installed file already equals the payload byte-for-byte
-//   differs   — installed file differs; needs a per-file decision
-//   activated — the payload ships rules/{name}.md.skip while the workspace
-//               deliberately keeps {name}.md active; nothing to install, the
-//               active rule stays (gh:180)
-//   removed   — installed file with no payload counterpart: the template
-//               stopped shipping it. Excludes what the workspace owns:
-//               *.test.mjs (the npm tarball does not ship tests, dev-checkout
-//               installs do — every test file would otherwise read as
-//               removed), anything gitignored (machine-local), paths under
-//               .claude/worktrees/, and entries of workspace.json →
-//               workspace.localFiles (array of .claude/-relative paths or
-//               globs for files this workspace owns) (gh:180)
+// The default mode prints JSON with these lists:
+//   new        — no installed counterpart; safe to batch-apply after one confirm
+//   identical  — installed file already equals the payload byte-for-byte
+//   updated    — installed file equals the BASELINE (what the template last
+//                shipped here) but not the payload: a pure template change the
+//                user never touched. Batched with `new` behind one confirm.
+//   differs    — installed file matches neither the payload nor the baseline:
+//                a real local edit (or the workspace predates baselines and
+//                has no entry to compare). Needs a per-file decision.
+//   activated  — the payload ships rules/{name}.md.skip while the workspace
+//                deliberately keeps {name}.md active; nothing to install, the
+//                active rule stays (gh:180)
+//   removed    — installed file with no payload counterpart: the template
+//                stopped shipping it. Excludes what the workspace owns:
+//                *.test.mjs (see staleTests), anything gitignored
+//                (machine-local), paths under .claude/worktrees/, and entries
+//                of workspace.json → workspace.localFiles (array of
+//                .claude/-relative paths or globs for files this workspace
+//                owns) (gh:180)
+//   staleTests — *.test.mjs files under .claude/ with no payload counterpart.
+//                The npm tarball ships no tests, so these came from a dev
+//                checkout and are never updated by /workspace-update; the
+//                skill offers to remove them (tests live in the template repo)
+//
+// Plus `hasBaseline`: whether .claude/.template-baseline.json exists. Without
+// it (workspaces older than the baseline's introduction) template changes
+// cannot be told from local edits, so they land in `differs` — the first
+// update after v0.21 asks per file; once it writes the baseline, later updates
+// won't.
 //
 // Only verbatim-installed files are classified: everything under .claude/,
 // plus .mcp.json and .claudeignore. The payload's templates (*.tmpl, which
 // install with {{project-name}} substitution), _gitignore (merged line-by-line
 // into the workspace's .gitignore), and .manifest.json (payload metadata) are
 // handled by their own steps in /workspace-update and are excluded here.
+//
+// The other two modes are /workspace-update bookends:
+//   --write-baseline  write .claude/.template-baseline.json recording the
+//                     sha256 of every verbatim payload file — what the
+//                     template now ships. Run at the END of an update, after
+//                     all per-file decisions: every entry records the PAYLOAD
+//                     hash regardless of decisions, so a file the user kept
+//                     against the template still reads as deliberately
+//                     diverged (workspace ≠ baseline) next time, while a file
+//                     nobody touched never reads as a local edit.
+//   --merge-claude-md print CLAUDE.md with the payload's CLAUDE.md.tmpl
+//                     merged in: template lines updated, the workspace's own
+//                     lines (custom skill entries, sections) kept. The skill
+//                     shows the diff against the current file before writing.
 
 import {
   existsSync,
@@ -39,9 +69,11 @@ import {
   statSync,
   realpathSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitIgnoredPaths } from './build-workspace-context.mjs';
+import { BASELINE_PATH, readBaseline, writeBaseline } from './template-baseline.mjs';
 
 function isMainModule(metaUrl) {
   if (!process.argv[1]) return false;
@@ -51,14 +83,20 @@ function isMainModule(metaUrl) {
 }
 
 function parseArgs(argv) {
-  const args = { root: process.cwd(), payload: null };
+  const args = { root: process.cwd(), payload: null, writeBaseline: false, mergeClaudeMd: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--root') args.root = argv[++i];
     else if (a === '--payload') args.payload = argv[++i];
+    else if (a === '--write-baseline') args.writeBaseline = true;
+    else if (a === '--merge-claude-md') args.mergeClaudeMd = true;
     else throw new Error(`Unknown arg: ${a}`);
   }
   return args;
+}
+
+function sha256hex(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 // Payload-relative paths that install verbatim at the same relative path.
@@ -136,9 +174,11 @@ function globMatches(pattern, rel) {
 }
 
 function isOwnedByWorkspace(rel, localFiles) {
-  if (rel.endsWith('.test.mjs')) return true;
-  // The template's own .gitignore declares these machine-local.
-  if (rel === '.claude/settings.local.json' || rel === '.claude/.active-session.json') return true;
+  // The template's own .gitignore declares these machine-local; the baseline
+  // is per-workspace state the template never ships.
+  if (rel === '.claude/settings.local.json' || rel === '.claude/.active-session.json' || rel === BASELINE_PATH) {
+    return true;
+  }
   if (!rel.startsWith('.claude/')) return false;
   const claudeRel = rel.slice('.claude/'.length);
   return localFiles.some((pattern) => globMatches(pattern, claudeRel));
@@ -153,8 +193,18 @@ export function classifyUpdate({ root, payload }) {
 
   const payloadFiles = [...walkFiles(absPayload)].filter(isClassified);
   const payloadSet = new Set(payloadFiles);
+  const baseline = readBaseline(absRoot);
 
-  const result = { new: [], identical: [], differs: [], activated: [], removed: [] };
+  const result = {
+    new: [],
+    identical: [],
+    updated: [],
+    differs: [],
+    activated: [],
+    removed: [],
+    staleTests: [],
+    hasBaseline: baseline !== null,
+  };
   for (const rel of payloadFiles) {
     // A .skip rule whose active counterpart is installed was deliberately
     // activated by this workspace: report it as activated, not new.
@@ -174,6 +224,10 @@ export function classifyUpdate({ root, payload }) {
     const installedBytes = readFileSync(installed);
     if (Buffer.compare(payloadBytes, installedBytes) === 0) {
       result.identical.push(rel);
+    } else if (baseline && baseline.files[rel] === sha256hex(installedBytes)) {
+      // Workspace still holds exactly what the template last shipped here —
+      // the difference is the template's own change since then.
+      result.updated.push(rel);
     } else {
       result.differs.push(rel);
     }
@@ -190,16 +244,171 @@ export function classifyUpdate({ root, payload }) {
     // not a removed one.
     if (rel.startsWith('.claude/rules/') && rel.endsWith('.md') && skipSet.has(`${rel}.skip`)) continue;
     if (gitignored.has(rel)) continue;
+    // Test files never come from the npm tarball; the payload not carrying one
+    // means the template's test suite moved on without this copy.
+    if (rel.endsWith('.test.mjs')) {
+      result.staleTests.push(rel);
+      continue;
+    }
     if (isOwnedByWorkspace(rel, localFiles)) continue;
     result.removed.push(rel);
   }
   return result;
 }
 
+// ---------- CLAUDE.md merge ----------
+
+/**
+ * Split markdown into blocks: the preamble (heading null) plus one block per
+ * `## ` heading. Deeper headings belong to their enclosing section.
+ */
+function splitBlocks(text) {
+  const blocks = [];
+  let cur = { heading: null, lines: [] };
+  for (const line of text.split(/\r?\n/)) {
+    if (/^##\s/.test(line)) {
+      blocks.push(cur);
+      cur = { heading: line.trim(), lines: [] };
+    } else {
+      cur.lines.push(line);
+    }
+  }
+  blocks.push(cur);
+  return blocks;
+}
+
+/**
+ * A list entry's merge key: the name of its first backticked `/command`
+ * token (`- \`/start-work [handoff|blank]\` — …` → start-work). Two entries
+ * with the same name are the same skill, so the template's reworded line
+ * replaces the workspace's instead of duplicating it.
+ */
+function entryKey(line) {
+  const m = line.match(/^\s*[-*]\s+`\/([a-z0-9][a-z0-9-]*)[^`]*`/);
+  return m ? m[1] : null;
+}
+
+function trimTrailingBlanks(lines) {
+  let end = lines.length;
+  while (end > 0 && lines[end - 1].trim() === '') end--;
+  return lines.slice(0, end);
+}
+
+function trimLeadingBlanks(lines) {
+  let start = 0;
+  while (start < lines.length && lines[start].trim() === '') start++;
+  return lines.slice(start);
+}
+
+/**
+ * One section's bodies merged: the template's new lines, then the workspace's
+ * lines that the template no longer carries (matched by entry name for list
+ * entries, by trimmed text otherwise).
+ */
+function mergeBody(curLines, nxtLines) {
+  const nxtKeys = new Set(nxtLines.map(entryKey).filter(Boolean));
+  const nxtTrimmed = new Set(nxtLines.map((l) => l.trim()).filter(Boolean));
+  const kept = [];
+  for (const line of curLines) {
+    const key = entryKey(line);
+    if (key !== null && nxtKeys.has(key)) continue; // template owns this entry — its line updates ours
+    const t = line.trim();
+    if (t !== '' && nxtTrimmed.has(t)) continue; // unchanged line, already present
+    kept.push(line);
+  }
+  const body = trimTrailingBlanks(nxtLines);
+  return kept.length === 0 ? body : [...body, ...trimLeadingBlanks(trimTrailingBlanks(kept))];
+}
+
+function renderBlocks(blocks) {
+  const parts = [];
+  for (const b of blocks) {
+    const body = trimTrailingBlanks(b.lines);
+    if (b.heading === null) {
+      if (body.length > 0) parts.push(body.join('\n'));
+    } else {
+      parts.push([b.heading, ...body].join('\n'));
+    }
+  }
+  return parts.join('\n\n') + '\n';
+}
+
+/**
+ * Merge an updated template CLAUDE.md (`nextText`, already {{project-name}}-
+ * substituted) into the workspace's current one. Template-owned lines take the
+ * template's new versions; lines the template doesn't have — the workspace's
+ * own skill entries, custom bullets, whole sections — are kept. Sections are
+ * matched by heading: the result follows the workspace's section order, new
+ * template sections are appended at the end, and kept lines land at the end of
+ * their section.
+ */
+export function mergeClaudeMd(currentText, nextText) {
+  const nxtBlocks = splitBlocks(nextText);
+  if (currentText == null || currentText.trim() === '') return renderBlocks(nxtBlocks);
+  const nxtByHeading = new Map(nxtBlocks.map((b) => [b.heading, b]));
+  const used = new Set();
+  const out = [];
+  for (const cur of splitBlocks(currentText)) {
+    const nxt = nxtByHeading.get(cur.heading);
+    if (nxt) {
+      used.add(nxt);
+      out.push({ heading: nxt.heading, lines: mergeBody(cur.lines, nxt.lines) });
+    } else {
+      out.push(cur); // a section the template doesn't have — the workspace's own
+    }
+  }
+  for (const nxt of nxtBlocks) {
+    if (!used.has(nxt)) out.push({ heading: nxt.heading, lines: trimTrailingBlanks(nxt.lines) });
+  }
+  return renderBlocks(out);
+}
+
+// ---------- CLI modes ----------
+
+function resolvePayload(args) {
+  return resolve(args.payload ?? join(resolve(args.root), '.workspace-update'));
+}
+
+function writeBaselineMode(args) {
+  const baseline = writeBaseline(args.root, resolvePayload(args));
+  process.stdout.write(JSON.stringify({
+    written: true,
+    path: BASELINE_PATH,
+    templateVersion: baseline.templateVersion,
+    files: Object.keys(baseline.files).length,
+  }, null, 2) + '\n');
+}
+
+function mergeClaudeMdMode(args) {
+  const absRoot = resolve(args.root);
+  const absPayload = resolvePayload(args);
+  const tmplPath = join(absPayload, 'CLAUDE.md.tmpl');
+  if (!existsSync(tmplPath)) {
+    throw new Error(`No CLAUDE.md.tmpl in ${absPayload} — nothing to merge`);
+  }
+  // The workspace name for {{project-name}} substitution: workspace.json is
+  // the source of truth; the directory name is the fallback.
+  let name = basename(absRoot);
+  try {
+    const config = JSON.parse(readFileSync(join(absRoot, 'workspace.json'), 'utf8'));
+    if (typeof config?.workspace?.name === 'string' && config.workspace.name) name = config.workspace.name;
+  } catch { /* no workspace.json — keep the directory name */ }
+  const next = readFileSync(tmplPath, 'utf8').replace(/\{\{project-name\}\}/g, name);
+  const claudeMdPath = join(absRoot, 'CLAUDE.md');
+  const current = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf8') : '';
+  process.stdout.write(mergeClaudeMd(current, next));
+}
+
 function main() {
   const args = parseArgs(process.argv);
-  const result = classifyUpdate({ root: args.root, payload: args.payload });
-  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  if (args.writeBaseline) {
+    writeBaselineMode(args);
+  } else if (args.mergeClaudeMd) {
+    mergeClaudeMdMode(args);
+  } else {
+    const result = classifyUpdate({ root: args.root, payload: args.payload });
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  }
 }
 
 if (isMainModule(import.meta.url)) {
