@@ -18,7 +18,7 @@ The `/release` skill is a per-repo operation — each repo has its own release c
 
 4. **Merge.** Push the branch, open a PR through the forge adapter, and merge (squash, delete branch) after the operator confirms.
 
-5. **Tag and publish.** Tag the merge commit `v{version}`, push the tag, and create the forge release with generated notes. If the repo has a publish workflow (`.github/workflows/publish.yml`), the skill finds and watches its run; a failed run is reported, not thrown.
+5. **Tag and publish.** Tag the merge commit `v{version}` and push the tag. If the repo's publish workflow (`.github/workflows/publish.yml`) creates the release itself, the skill leaves that to the workflow, watches its run, and confirms the release exists; otherwise it creates the forge release with generated notes (still watching any publish run). A failed run is reported, not thrown.
 
 6. **Tear down** the release worktree and report the PR, tag, release URL, and publish status.
 
