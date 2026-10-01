@@ -483,6 +483,26 @@ console.log('# inventory: a repo whose origin is unreachable still reports the r
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
+// gh:172 review: a detached worktree has no branch to compare against any
+// remote, but it still HAS remotes — each is listed with state no-branch
+// and its URLs, never collapsed into "no remotes".
+console.log('# inventory: a detached worktree lists its remotes as no-branch');
+{
+  const fx = makeWorkspace();
+  try {
+    makeSession(fx, { name: 'det', branch: 'bugfix/det', tracker: { branch: 'bugfix/det', repos: ['app'], updated: daysAgoIso(40) } });
+    git(join(fx.root, 'work-sessions', 'det', 'workspace', 'repos', 'app'), 'checkout -q --detach');
+    const app = byName(inventory(fx.root), 'det').worktrees.find((w) => w.repo === 'app');
+    assertEq(app.branch, null, 'the worktree is detached');
+    assertEq(app.remotes.origin.state, 'no-branch', 'the remote is listed with state no-branch');
+    assertEq(app.remoteUrls.origin, fx.appOrigin, 'the fetch URL is still reported');
+    assert(Array.isArray(app.remotePushUrls.origin) && app.remotePushUrls.origin[0] === fx.appOrigin, 'and the push target');
+    const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
+    assert(r.stderr.includes('origin:no-branch'), 'the table renders origin:no-branch');
+    assert(r.stderr.includes(fx.appOrigin), 'with the URL beside it');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
 console.log('# ls-remote timeout degrades to unknown (S3, injected gitFn)');
 {
   const fx = makeWorkspace();
@@ -525,9 +545,18 @@ console.log('# backup: local tags by default; push mode needs an explicit allow 
     assertEq(plan.needsAllow, true, 'the plan says what is missing');
     assertEq(plan.targets.length, 2, 'one target per unsafe tip');
     assert(plan.targets.every((t) => t.remote === 'origin' && typeof t.url === 'string' && t.url.includes('origin.git')), 'every target names the remote and its exact URL');
+    assert(plan.targets.every((t) => Array.isArray(t.pushUrls) && t.pushUrls.length === 1 && t.pushUrls[0] === t.url), 'every target also names its push URL — same as fetch when no pushurl is set');
     assert(plan.reasons.some((r) => r.includes('--remote-allow')), 'the reasons say which flag to add');
     assertEq(git(fx.root, 'tag -l "drain/drain/*"').trim(), '', 'the plan created no tag');
     assertEq(git(fx.wsOrigin, 'tag -l "drain/drain/*"').trim(), '', 'the plan pushed nothing');
+
+    // The dry-run form of the same plan exits non-zero too — pushing is
+    // still waiting on a decision, wet or dry.
+    const dryCli = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--backup', '--session', 'drain', '--remote', '--dry-run'], { encoding: 'utf8' });
+    assertEq(dryCli.status, 1, 'the dry-run plan also exits non-zero');
+    const dryPlan = JSON.parse(dryCli.stdout);
+    assertEq(dryPlan.needsAllow, true, 'the dry plan says what is missing');
+    assertEq(dryPlan.targets.length, 2, 'with every target listed');
 
     // Plain --backup: local tags only, both repos, no pushes at all.
     const out = backupSession(fx.root, { session: 'drain' });
@@ -577,6 +606,15 @@ console.log('# backup: --remote-allow scopes the push to the repos the operator 
     commitAll(wsWt, 'content', daysAgoIso(40));
     writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
     commitAll(projWts.app, 'project fix', daysAgoIso(40));
+
+    // The dry plan never hides a destination: the repo the allow does not
+    // name still shows the remote and URL a push there would use.
+    const scopedPlan = backupSession(fx.root, { session: 'scoped', remote: true, dryRun: true, remoteAllow: ['app=origin'] });
+    const wsPlan = scopedPlan.tips.find((t) => t.repo === '.');
+    assert(wsPlan && wsPlan.remote === 'origin' && typeof wsPlan.url === 'string' && wsPlan.url.includes('origin.git'), 'a non-allowed repo names the remote and URL it would push to');
+    assert(wsPlan && wsPlan.willPush === false, 'while still saying it will not push there');
+    const appPlan = scopedPlan.tips.find((t) => t.repo === 'app');
+    assert(appPlan && appPlan.willPush === true, 'the allowed repo is the one marked to push');
 
     const out = backupSession(fx.root, { session: 'scoped', remote: true, remoteAllow: ['app=origin'] });
     assertEq(out.refused, undefined, 'the allow-one run is not refused');
@@ -700,6 +738,128 @@ console.log('# S4: push-remote resolution — first remote without origin, allow
     assert(appEntry && appEntry.remote === 'upstream', 'the first configured remote is used and reported');
     assert(git(upstream, 'tag -l drain/nomigin/bugfix-nomigin').trim() !== '', 'the tag landed on upstream');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, upstream); }
+}
+
+// gh:172 review: the fetch URL is what the operator reads as "the remote",
+// but `git push` sends to remote.<name>.pushurl — a decoy there must be
+// visible in the plan, must not be reachable through --remote-allow-all,
+// and the push (and its verification) must land on the printed decoy.
+console.log('# backup: a pushurl decoy is shown in the plan, gated from allow-all, pushed to when explicitly allowed');
+{
+  const fx = makeWorkspace();
+  const decoy = join(mkdtempSync(join(tmpdir(), 'mig-decoy-')), 'decoy.git');
+  try {
+    execSync(`git init -q --bare "${decoy}"`, { stdio: 'pipe' });
+    const { projWts } = makeSession(fx, { name: 'decoy', branch: 'bugfix/decoy', tracker: { branch: 'bugfix/decoy', repos: ['app'], updated: daysAgoIso(40) } });
+    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
+    commitAll(projWts.app, 'fix', daysAgoIso(40));
+    git(fx.app, `remote set-url --push origin "${decoy}"`);
+
+    // The no-allow plan shows BOTH sides: the fetch URL and where the
+    // push would really go.
+    const plan = backupSession(fx.root, { session: 'decoy', remote: true, dryRun: true });
+    assertEq(plan.needsAllow, true, 'the plan asks for an allow');
+    const target = plan.targets.find((t) => t.repo === 'app');
+    assert(target && target.url === fx.appOrigin, 'the target shows the fetch URL');
+    assert(target && Array.isArray(target.pushUrls) && target.pushUrls.length === 1 && target.pushUrls[0] === decoy, 'with the push target beside it');
+    assert(plan.reasons.some((r) => r.includes(decoy) && r.includes('pushes to')), 'the reasons print the push target');
+
+    // allow-all blesses fetch URLs only — the divergence refuses before
+    // anything is tagged, in any repo.
+    const blanket = backupSession(fx.root, { session: 'decoy', remote: true, remoteAllowAll: true });
+    assertEq(blanket.refused, true, 'allow-all does not bless a divergent push URL');
+    assert(blanket.reasons.some((r) => r.includes(decoy) && r.includes('--remote-allow app=origin')), 'the refusal shows the push target and the explicit way through');
+    assertEq(git(fx.app, 'tag -l "drain/decoy/*"').trim(), '', 'nothing was tagged by the refused run');
+    assertEq(git(fx.root, 'tag -l "drain/decoy/*"').trim(), '', 'in any repo — a refusal acts on nothing');
+
+    // The explicit allow names the remote: the push goes where the plan
+    // said, and verification confirms it THERE (the fetch origin never
+    // sees the tag).
+    const allowed = backupSession(fx.root, { session: 'decoy', remote: true, remoteAllow: ['app=origin'] });
+    assertEq(allowed.refused, undefined, 'the explicit allow proceeds');
+    const appPushed = allowed.branches.find((b) => b.repo === 'app');
+    assert(appPushed && appPushed.pushed === true && appPushed.verified === true, 'the push is verified');
+    assert(appPushed && Array.isArray(appPushed.pushUrls) && appPushed.pushUrls[0] === decoy, 'the entry reports the push URL it was verified against');
+    assert(git(decoy, 'tag -l drain/decoy/bugfix-decoy').trim() !== '', 'the tag landed on the decoy — where git push sends');
+    assertEq(git(fx.appOrigin, 'tag -l "drain/decoy/*"').trim(), '', 'and not on the fetch origin');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, decoy); }
+}
+
+// gh:172 review: url.*.pushInsteadOf rewrites push targets without any
+// pushurl config — the resolution must catch that rewrite too (it comes
+// from `remote get-url --push`, which expands insteadOf/pushInsteadOf).
+console.log('# backup: a pushInsteadOf rewrite is resolved as the push target');
+{
+  const fx = makeWorkspace();
+  const instead = join(mkdtempSync(join(tmpdir(), 'mig-instead-')), 'instead.git');
+  try {
+    execSync(`git init -q --bare "${instead}"`, { stdio: 'pipe' });
+    const { projWts } = makeSession(fx, { name: 'insteadof', branch: 'bugfix/insteadof', tracker: { branch: 'bugfix/insteadof', repos: ['app'], updated: daysAgoIso(40) } });
+    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
+    commitAll(projWts.app, 'fix', daysAgoIso(40));
+    git(fx.app, `config "url.${instead}.pushInsteadOf" "${fx.appOrigin}"`);
+
+    const plan = backupSession(fx.root, { session: 'insteadof', remote: true });
+    assertEq(plan.needsAllow, true, 'the plan asks for an allow');
+    const target = plan.targets.find((t) => t.repo === 'app');
+    assert(target && target.url === fx.appOrigin && target.pushUrls[0] === instead, 'the rewritten push target is shown beside the fetch URL');
+    assertEq(backupSession(fx.root, { session: 'insteadof', remote: true, remoteAllowAll: true }).refused, true, 'allow-all still refuses the divergence');
+    const allowed = backupSession(fx.root, { session: 'insteadof', remote: true, remoteAllow: ['app=origin'] });
+    assertEq(allowed.refused, undefined, 'the explicit allow proceeds');
+    assert(git(instead, 'tag -l drain/insteadof/bugfix-insteadof').trim() !== '', 'the push went to the rewritten target');
+    assertEq(git(fx.appOrigin, 'tag -l "drain/insteadof/*"').trim(), '', 'not to the fetch origin');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, instead); }
+}
+
+// gh:172 review: "verified" must mean verified at the push URL. The push
+// here succeeds; only the ls-remote against the push URL is faked empty —
+// exactly the gap the old fetch-URL check would have papered over.
+console.log('# backup: a tag missing at the push URL fails verification and rolls back');
+{
+  const fx = makeWorkspace();
+  const decoy = join(mkdtempSync(join(tmpdir(), 'mig-verify-')), 'decoy.git');
+  try {
+    execSync(`git init -q --bare "${decoy}"`, { stdio: 'pipe' });
+    const { projWts } = makeSession(fx, { name: 'verify', branch: 'bugfix/verify', tracker: { branch: 'bugfix/verify', repos: ['app'], updated: daysAgoIso(40) } });
+    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
+    commitAll(projWts.app, 'fix', daysAgoIso(40));
+    git(fx.app, `remote set-url --push origin "${decoy}"`);
+    const fakeLs = (cmd, args, opts = {}) => (
+      args.includes('ls-remote') && args.includes('--tags') && args.includes(decoy)
+        ? { status: 0, stdout: '', stderr: '' }
+        : gitFn(cmd, args, opts)
+    );
+    const out = backupSession(fx.root, { session: 'verify', remote: true, remoteAllow: ['app=origin'], gitFn: fakeLs });
+    assertEq(out.refused, true, 'a tag missing at the push URL refuses');
+    assert(out.reasons.some((r) => r.includes('not found at the push URL')), 'the refusal names the push-URL check');
+    assertEq(git(fx.app, 'tag -l "drain/verify/*"').trim(), '', 'the unverified local tag was rolled back');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, decoy); }
+}
+
+// gh:172 review: --remote-allow and --remote-allow-all combine — allow-all
+// covers every repo, an entry only pinning which remote its repo uses.
+// The plan must still print every push URL, allowed or not.
+console.log('# backup: --remote-allow alongside --remote-allow-all covers every repo and prints every push URL');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt, projWts } = makeSession(fx, { name: 'both', branch: 'bugfix/both', tracker: { branch: 'bugfix/both', repos: ['app'], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
+    commitAll(projWts.app, 'project fix', daysAgoIso(40));
+
+    const plan = backupSession(fx.root, { session: 'both', remote: true, dryRun: true, remoteAllow: ['app=origin'], remoteAllowAll: true });
+    assertEq(plan.tips.length, 2, 'the plan covers both tips');
+    assert(plan.tips.every((t) => t.willPush === true && t.remote === 'origin' && Array.isArray(t.pushUrls) && t.pushUrls.length === 1 && typeof t.pushUrls[0] === 'string'), 'every repo is covered and names its push URL');
+
+    const out = backupSession(fx.root, { session: 'both', remote: true, remoteAllow: ['app=origin'], remoteAllowAll: true });
+    assertEq(out.refused, undefined, 'the combined run is not refused');
+    assertEq(out.branches.length, 2, 'both tips backed up');
+    assert(out.branches.every((b) => b.pushed === true && b.verified === true), 'the explicit entry does not narrow allow-all');
+    assert(git(fx.wsOrigin, 'tag -l drain/both/bugfix-both').trim() !== '', 'the un-named repo pushed');
+    assert(git(fx.appOrigin, 'tag -l drain/both/bugfix-both').trim() !== '', 'and the named one');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
 console.log('# archive: moves the session and keeps every kind of state intact');
@@ -1079,7 +1239,7 @@ console.log('# R3: --backup --dry-run reports the plan with no side effects');
     assertEq(plan.dryRun, true, 'the output says it was a dry run');
     assertEq(plan.tips.length, 1, 'only the unproven tip is planned');
     const t = plan.tips[0];
-    assert(t.repo === '.' && t.tag === 'drain/dry/bugfix-dry' && t.remote === null && t.willPush === false && t.wouldCreate === true, 'the local plan names the tag and says nothing is pushed');
+    assert(t.repo === '.' && t.tag === 'drain/dry/bugfix-dry' && t.willPush === false && t.wouldCreate === true, 'the local plan names the tag and says nothing is pushed');
     assertEq(plan.skipped.length, 1, 'the remote-safe tip is reported as skipped');
     assertEq(git(fx.root, 'tag -l "drain/dry/*"').trim(), '', 'no tag was created');
     assertEq(git(fx.wsOrigin, 'tag -l "drain/dry/*"').trim(), '', 'nothing was pushed');
