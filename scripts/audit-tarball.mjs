@@ -40,54 +40,29 @@ const TEXT_FILENAMES = new Set(['LICENSE', '_gitignore']);
 
 const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 
-// Hard size ceiling. Current tarball is ~192 kB after the round-1
-// task-model fixes (detect --chat, remote-branch resume, the
-// repo-write-detection carve-out and its test); 195 kB leaves headroom for
-// the next bit of growth. Trips loudly if something like docs/ or
-// node_modules/ gets pulled in by accident.
+// Hard size ceiling. v0.23 lands four growth spurts at once — the GitLab
+// forge and issue-tracker adapters (gh:185), the upgrade bootstrap with
+// baseline reconstruction and the config merge (gh:186), migrate-sessions'
+// orphan-shell and external-worktree handling (gh:187), and lane-chat
+// detection (gh:188) — bringing the tarball to 300,774 bytes, so the
+// ceiling moves to 295 kB, the smallest passing 5 kB multiple. Trips loudly
+// if something like docs/ or node_modules/ gets pulled in by accident.
 //
-// Bump history: 150 kB initial → 155 kB after BP-10's session-end reflection
-// added ~750 bytes → 170 kB after the forges/ adapter family added ~13 kB of
-// adapter code + ~15 kB of tests → 185 kB after context-footprint.mjs and
-// workspace-diagnostics.mjs added ~59 kB, of which ~26 kB is test code →
-// 190 kB after the task-model scripts (gh:132 stage 2) → 195 kB after the
-// stage-2 review fixes grew task-worktree.mjs and its suite and added the
-// repo-write-detection test → 200 kB after the workspace repo became a task
-// target (gh:146 / Q6) grew task-worktree.mjs, its suite, and the
-// repo-write-detection suite → 215 kB after the session→task migration
-// added migrate-sessions.mjs + its suite + the /migrate-sessions skill
-// (gh:147) → 225 kB after the gh:147 fix round: the teardown invariant,
-// per-remote states, and the cleanup-work-session.mjs security rewrite
-// grew migrate-sessions.mjs and both suites → still 225 kB after the
-// gh:147 allowlist round (structure + tip allowlists, dry-run, submodule
-// and regenerable-ignore handling): 227,168 bytes means 220 kB fails and
-// 225 kB is the smallest passing multiple → 230 kB after the gh:155
-// round grew the migration's switch step and its tests, bringing the
-// tarball to 231,553 bytes — 225 kB fails and 230 kB is the smallest
-// passing multiple → still 230 kB after the release-notes machinery was
-// scrapped (gh:157): check-release-coverage.mjs and its test left, and
-// migrate-sessions shed its gh:155 inventory — the tarball only shrank,
-// so the ceiling holds → 245 kB once both landed: the upgrade-path fixes
-// (gh:170 — classify-update.mjs + suite, --root migrator CLI tests,
-// lib/upgrade.test.mjs) and the gh:172 review round (push-URL resolution,
-// the divergent-push gate, verification at the push URL) together outgrow
-// the 240 kB each needed alone (246,937 bytes combined); 245 kB is the
-// smallest passing multiple → 250 kB after the /workspace-update dogfood
-// round (gh:180) added maintenance-audit.mjs + its suite (~38 kB) and grew
-// classify-update.mjs for the activated/removed lists: 255,435 bytes —
-// 245 kB fails and 250 kB is the smallest passing multiple → 260 kB after
-// the gh:180 fix round (signal-over-noise scoping, dedupe, report collapse
-// + their tests): 256,922 bytes — 250 kB fails and 260 kB is the smallest
-// passing multiple → 265 kB after the gh:183 fix round (localOnly and
-// deletedLocally buckets, CRLF-normalized hashing, baseline write guards,
-// mergeClaudeMd fence/CRLF handling, NUL-free audit key + launcher dirty
-// check): 267,497 bytes — 260 kB fails and 265 kB is the smallest passing
-// multiple.
+// Bump history (5 kB steps unless noted): 150 kB initial → 155 kB (BP-10
+// session-end reflection) → 170 kB (forges/ adapter family) → 185 kB
+// (context-footprint + workspace-diagnostics) → 190 kB (task-model scripts,
+// gh:132) → 195 kB (stage-2 review fixes) → 200 kB (workspace repo as task
+// target, gh:146) → 215 kB (session→task migration, gh:147) → 225 kB
+// (gh:147 fix + allowlist rounds; held through gh:157) → 230 kB (gh:155
+// switch step) → 245 kB (upgrade path + gh:170/gh:172 review rounds) →
+// 250 kB (/workspace-update dogfood, gh:180) → 260 kB (gh:180 fix round) →
+// 265 kB (gh:183 fix round: 267,497 bytes) → 295 kB (v0.23: 300,774 bytes —
+// 290 kB fails, 295 kB is the smallest passing multiple).
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 265 * 1024;
+const SIZE_LIMIT_BYTES = 295 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -228,6 +203,7 @@ function checkRequiredFiles(files) {
     'template/_claude/scripts/forges/interface.mjs',
     'template/_claude/scripts/forges/github.mjs',
     'template/_claude/scripts/forges/gitlab.mjs',
+    'template/_claude/scripts/trackers/gitlab-issues.mjs',
     // The context-placement skill and the memory-guidance rule both instruct
     // Claude to price a placement before writing it. If this script does not
     // ship, that instruction silently becomes advice nobody can follow.
