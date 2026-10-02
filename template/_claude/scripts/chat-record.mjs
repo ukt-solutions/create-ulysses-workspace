@@ -21,6 +21,7 @@
 //   node chat-record.mjs --root <dir> --read  <chat-name>
 //   node chat-record.mjs --root <dir> --reconcile --session-id <id> --name <n>
 //   node chat-record.mjs --root <dir> --whoami
+//   node chat-record.mjs --root <dir> --owner <work-item>
 //   node chat-record.mjs --root <dir> --add-task    --chat <n> --branch <b> [--repo <r>] [--work-item <id>]
 //   node chat-record.mjs --root <dir> --remove-task --chat <n> (--work-item <id> | --branch <b>) [--repo <r>]
 //
@@ -31,11 +32,14 @@
 // should read `action`. --whoami prints this chat's record name by matching
 // $CLAUDE_CODE_SESSION_ID against the records' sessionId, nothing and exit
 // 1 when there is no match: the `Chat record:` hook line can be missing
-// after context compaction, and this is the recovery path.
+// after context compaction, and this is the recovery path. --owner prints
+// the chat a work item's open task belongs to as `{ chat, branch, repos }`,
+// and nothing with exit 1 when no record lists it — /start-work uses it to
+// offer adopting a task another chat started (gh:188).
 
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync,
-  readdirSync, renameSync, rmSync, realpathSync,
+  readdirSync, renameSync, rmSync, realpathSync, statSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -241,6 +245,36 @@ function whoami(root, { env = process.env } = {}) {
   return mine ? mine.chat : null;
 }
 
+// The chat a work item's open task belongs to (gh:188). /start-work on an
+// issue that already has a task needs the owner before it can ask the
+// operator whether to adopt the task or leave it — and the record name
+// returned here is the session-registry name SendMessage reaches a chat
+// by, so it doubles as the address for "ask the owner". Records are scanned
+// most-recently-modified first, so a stray duplicate answers with the chat
+// that touched its record last. Null when no record lists the work item.
+function findOwner(root, workItem) {
+  if (!workItem) return null;
+  const dir = chatsDir(root);
+  let names;
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith('.json'));
+  } catch {
+    return null; // no records at all
+  }
+  names.sort((a, b) => statSync(join(dir, b)).mtimeMs - statSync(join(dir, a)).mtimeMs);
+  for (const name of names) {
+    const rec = readRecord(root, name.slice(0, -5));
+    const hits = rec && Array.isArray(rec.tasks)
+      ? rec.tasks.filter((t) => (t.workItem ?? null) === workItem)
+      : [];
+    if (hits.length === 0) continue;
+    // One issue is one task: a shared branch across repos. All matching
+    // entries are that task's repos.
+    return { chat: rec.chat, branch: hits[0].branch, repos: hits.map((t) => t.repo) };
+  }
+  return null;
+}
+
 // Scope is what a chat declares it owns. The Aug 26 coordination burst had
 // sessions declaring this by hand in chat messages; recording it makes it
 // answerable without asking.
@@ -262,6 +296,7 @@ function parseArgs(argv) {
     if (a === '--read') { args.mode = 'read'; args.chat = rest[++i]; continue; }
     if (a === '--reconcile') { args.mode = 'reconcile'; continue; }
     if (a === '--whoami') { args.mode = 'whoami'; continue; }
+    if (a === '--owner') { args.mode = 'owner'; args.workItem = rest[++i]; continue; }
     if (a === '--add-task') { args.mode = 'add-task'; continue; }
     if (a === '--remove-task') { args.mode = 'remove-task'; continue; }
     if (a === '--chat') { args.chat = rest[++i]; continue; }
@@ -272,7 +307,10 @@ function parseArgs(argv) {
     if (a === '--name') { args.name = rest[++i]; continue; }
     throw new Error(`unknown argument: ${a}`);
   }
-  if (!args.mode) throw new Error('one of --list, --read <chat>, --reconcile, --whoami is required');
+  if (!args.mode) throw new Error('one of --list, --read <chat>, --reconcile, --whoami, --owner <work-item> is required');
+  if (args.mode === 'owner' && !args.workItem) {
+    throw new Error('--owner requires a work item');
+  }
   if (args.mode === 'reconcile' && (!args.sessionId || !args.name)) {
     throw new Error('--reconcile requires --session-id and --name');
   }
@@ -294,6 +332,15 @@ function main() {
     const name = whoami(args.root);
     if (name === null) process.exit(1);
     process.stdout.write(`${name}\n`);
+    return;
+  }
+  if (args.mode === 'owner') {
+    // Same exit-1 contract as --whoami: no owning chat prints nothing, and
+    // the caller (a /start-work adoption check) treats that as "no task
+    // exists for this issue yet".
+    const owner = findOwner(args.root, args.workItem);
+    if (owner === null) process.exit(1);
+    process.stdout.write(`${JSON.stringify(owner, null, 2)}\n`);
     return;
   }
   let out;
@@ -319,5 +366,5 @@ if (isMainModule(import.meta.url)) {
 export {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
   listRecords, reconcile, parseArgs, readSessionRegistry, resolveChatName,
-  addTask, removeTask, setScope, whoami, CHATS_DIR,
+  addTask, removeTask, setScope, whoami, findOwner, CHATS_DIR,
 };

@@ -21,7 +21,20 @@ New work as a task: one tracker issue, one branch, one worktree per repo the wor
 
 If `workspace.tracker` is absent, say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. What that costs: without a tracker there is no `workItem` and no issue to close at completion — the task is still recorded on the chat record (with no work item, keyed by repo + branch), so `/complete-work` finds it from the launcher like any other task.
 
-1. **Identify or create the tracker issue and claim it.** If the invocation's arguments already name an issue — `gh:N`, `#N`, or an issue URL — normalize it to the adapter's id (`#42` and a `.../issues/42` URL both mean `gh:42`), fetch it with `tracker.getIssue(id)`, claim it when it is not yet assigned to you (with the same `ALREADY_ASSIGNED` handling as the fallback pick below), and skip the candidate list entirely. Otherwise, list the candidates — the same adapter calls as Flow: Blank steps 3–6:
+1. **Identify or create the tracker issue and claim it.** If the invocation's arguments already name an issue — `gh:N`, `#N`, or an issue URL — normalize it to the adapter's id (`#42` and a `.../issues/42` URL both mean `gh:42`) and fetch it with `tracker.getIssue(id)`. Then check whether the issue already has a task before claiming anything — another chat may have started it (gh:188):
+
+   ```bash
+   node .claude/scripts/chat-record.mjs --root . --owner "{workItem}"
+   ```
+
+   Exit 1 means no chat owns a task for the issue: claim it when it is not yet assigned to you (with the same `ALREADY_ASSIGNED` handling as the fallback pick below) and skip the candidate list entirely. Exit 0 prints `{ chat, branch, repos }` — a task exists. First make sure its worktrees are there: run step 4's `--create` for each of `repos`; over an existing branch or worktree `--create` REUSES what it finds (`created: false`) — it never fails or duplicates. Then ask the operator which way to take it:
+   - **Adopt into this chat** — record the task with step 5's `--add-task`, and remove it from the old chat's record (`--remove-task --chat "{owner.chat}"` with the same selectors) only when the operator says that chat is done with it. While both chats still work the task, both records legitimately list it — the branch and worktrees are shared, not duplicated.
+   - **Leave it with the owner** — message the owning chat via SendMessage using the name `--owner` printed (the record name doubles as the session-registry name SendMessage reaches a chat by) and stop here.
+   - When `--owner` names this chat, it is a resume of your own task: reuse the worktrees as above and continue.
+
+   Notes another chat will need to continue the task never go in this chat's drawer — the drawer is per-chat and machine-local. Put them on the issue as a comment (`await tracker.comment("{workItem}", body)`), where any chat can read them.
+
+   When the invocation's arguments name no issue, list the candidates — the same adapter calls as Flow: Blank steps 3–6 (an issue picked from the list gets the same `--owner` check once its id is known):
 
    ```javascript
    import { createTracker } from './.claude/scripts/trackers/interface.mjs';
@@ -91,7 +104,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
    - Workspace: `work-sessions/{name}/workspace/`
    - For each repo in `repos:` frontmatter: `work-sessions/{name}/workspace/repos/{repo}/`
    - If any are missing, recreate from the branch
-3. The session-start hook automatically registers each chat in the session tracker's `chatSessions` frontmatter when Claude opens in a worktree. Verify the current chat is registered — if not (e.g., the hook didn't fire), append an entry using the invocation shown under "Create work session" below (the helper is an importable library, not a CLI).
+3. The session-start hook automatically registers each chat in the session tracker's `chatSessions` frontmatter when Claude opens in a worktree. A lane chat resuming from the launcher is never opened there, so the hook cannot register it. Verify the current chat is registered — from either starting point — and when it is not, append an entry using the invocation shown under "Create work session" below (the helper is an importable library, not a CLI). Take the chat's UUID from this chat's record: `node .claude/scripts/chat-record.mjs --root . --read "{chat}"` prints it as `sessionId` (the `Chat record:` hook line names `{chat}`). The id matters — it is what `/complete-work` later matches this session by from the launcher.
 
    Each `chatSessions` entry has this shape:
    ```yaml

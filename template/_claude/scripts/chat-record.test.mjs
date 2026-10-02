@@ -5,7 +5,7 @@
 // Every case builds its own fixture under tmpdir. Nothing reads the real
 // workspace or the real session registry.
 
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import {
   recordPath, drawerPath, emptyRecord, readRecord, writeRecord,
   listRecords, reconcile, parseArgs, resolveChatName,
-  addTask, removeTask, setScope, whoami,
+  addTask, removeTask, setScope, whoami, findOwner,
 } from './chat-record.mjs';
 
 let passed = 0;
@@ -298,6 +298,9 @@ console.log('# parseArgs validation');
   const ok = parseArgs(['node', 's', '--root', '/tmp/x', '--reconcile', '--session-id', 'i', '--name', 'n']);
   assertEq([ok.root, ok.mode, ok.sessionId, ok.name], ['/tmp/x', 'reconcile', 'i', 'n'], 'valid args parse');
   assertEq(parseArgs(['node', 's', '--root', '/tmp/x', '--whoami']).mode, 'whoami', '--whoami parses as a mode');
+  throws(() => parseArgs(['node', 's', '--owner']), '--owner requires a work item');
+  const own = parseArgs(['node', 's', '--owner', 'gh:42']);
+  assertEq([own.mode, own.workItem], ['owner', 'gh:42'], '--owner parses with its work item');
 }
 
 console.log('# whoami resolves this chat\'s record from the session id');
@@ -335,6 +338,76 @@ console.log('# whoami CLI: bare name on stdout, silence and exit 1 without a mat
     }
     assertEq(exit, 1, 'no match exits 1');
     assertEq(String(silent), '', 'no match prints nothing');
+  } finally { clean(r); }
+}
+
+console.log('# findOwner: the chat a work item\'s task belongs to (gh:188)');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-o1', name: 'owner' });
+    addTask(r, 'owner', { workItem: 'gh:40', branch: 'feature/shared', repo: 'app' });
+    addTask(r, 'owner', { workItem: 'gh:40', branch: 'feature/shared', repo: '.' });
+    reconcile(r, { sessionId: 'sid-b', name: 'bystander' });
+    addTask(r, 'bystander', { workItem: 'gh:41', branch: 'feature/other', repo: 'app' });
+
+    assertEq(
+      findOwner(r, 'gh:40'),
+      { chat: 'owner', branch: 'feature/shared', repos: ['app', '.'] },
+      'the owning chat, its branch, and every repo of the task',
+    );
+    assertEq(findOwner(r, 'gh:999'), null, 'an unowned work item is null');
+    assertEq(findOwner(r, null), null, 'a missing work item is null');
+
+    // A tracker-less task carries workItem null — it is never an owner hit.
+    reconcile(r, { sessionId: 'sid-n', name: 'nowork' });
+    addTask(r, 'nowork', { branch: 'feature/local', repo: 'app' });
+    assertEq(findOwner(r, 'feature/local'), null, 'a branch is not a work item — no false match');
+  } finally { clean(r); }
+}
+
+console.log('# findOwner: a stray duplicate answers with the most recent record');
+{
+  const r = root();
+  try {
+    // An adoption that kept the old entry leaves two records listing the
+    // task; the chat that touched its record last is the live owner.
+    const older = emptyRecord('older', 'sid-old');
+    older.tasks.push({ workItem: 'gh:50', branch: 'feature/dup', repo: 'app' });
+    writeRecord(r, older);
+    const newer = emptyRecord('newer', 'sid-new');
+    newer.tasks.push({ workItem: 'gh:50', branch: 'feature/dup', repo: 'app' });
+    writeRecord(r, newer);
+    // Force the ordering — write mtimes can tie on coarse filesystems.
+    const day = 24 * 60 * 60 * 1000;
+    const ago = (d) => new Date(Date.now() - d * day);
+    utimesSync(recordPath(r, 'older'), ago(7), ago(7));
+    assertEq(findOwner(r, 'gh:50').chat, 'newer', 'the most recently modified record wins');
+    utimesSync(recordPath(r, 'newer'), ago(14), ago(14));
+    assertEq(findOwner(r, 'gh:50').chat, 'older', 'touching the older record flips the answer');
+  } finally { clean(r); }
+}
+
+console.log('# --owner CLI: JSON on stdout, silence and exit 1 without an owner');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-c', name: 'cliowner' });
+    addTask(r, 'cliowner', { workItem: 'gh:60', branch: 'feature/cli-owner', repo: 'app' });
+    const script = fileURLToPath(new URL('./chat-record.mjs', import.meta.url));
+    const out = JSON.parse(execFileSync(process.execPath, [script, '--root', r, '--owner', 'gh:60'], { encoding: 'utf8' }));
+    assertEq(out, { chat: 'cliowner', branch: 'feature/cli-owner', repos: ['app'] }, 'CLI prints the owner payload');
+
+    let exit = null;
+    let silent = '';
+    try {
+      silent = execFileSync(process.execPath, [script, '--root', r, '--owner', 'gh:999'], { encoding: 'utf8' });
+    } catch (err) {
+      exit = err.status;
+      silent = err.stdout;
+    }
+    assertEq(exit, 1, 'no owner exits 1');
+    assertEq(String(silent), '', 'no owner prints nothing');
   } finally { clean(r); }
 }
 
