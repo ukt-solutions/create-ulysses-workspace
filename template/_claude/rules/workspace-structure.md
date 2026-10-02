@@ -11,7 +11,8 @@ All paths are relative to the workspace root. Two work lifecycles coexist, selec
 | `.claude/worktrees/{slug}/` | Task worktree for the workspace repo (`--repo .`) — Claude Code's native worktree location; the two converge | No |
 | `work-sessions/{name}/workspace/…` | Session lifecycle: workspace worktree, nested project worktrees at `workspace/repos/{repo}/`, `session.md` + artifacts (`design/plan/goal/research/crossref-*.md`) on top | Session branch |
 | `workspace-context/` | Team knowledge: `shared/` (ephemerals), `shared/locked/` (canonical truths), `team-member/{user}/` (per-user) | Yes |
-| `workspace-context/index.md`, `canonical.md`, `team-member/{user}/index.md` | Auto-generated catalogs (`canonical.md` = verbatim `shared/locked/`; `.indexignore` excludes paths) — regenerate with `build-workspace-context.mjs`, never hand-edit | Yes |
+| `workspace-context/index.md`, `canonical.md` | Auto-generated catalogs (`canonical.md` = verbatim `shared/locked/`; `.indexignore` excludes paths) — regenerate with `build-workspace-context.mjs`, never hand-edit | Yes |
+| `workspace-context/team-member/{user}/index.md` | The per-user slice of that catalog — gitignored: generated per machine, so a tracked copy would conflict across users; the personal files beside it stay tracked | No |
 | `workspace-scratchpad/` | Machine-local, regenerable: session log, hook debug output, chat records `chats/{chat}.json`, chat drawers `chats/{chat}/` (task-lifecycle designs, plans, braindumps, research in progress) | No |
 | `CLAUDE.md`, `CLAUDE.local.md`, `.claude/` | Launcher prompt (imports `canonical.md` + `index.md`); per-user prompt; rules, agents, skills, hooks, scripts | All but `CLAUDE.local.md`, `settings.local.json`, `.claude/.active-session.json`, and `.claude/worktrees/` |
 
