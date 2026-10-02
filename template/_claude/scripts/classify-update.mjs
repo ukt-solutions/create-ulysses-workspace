@@ -24,6 +24,17 @@
 //                edit AND a template change — the one case that needs a
 //                per-file decision (or the workspace predates baselines and
 //                has no entry to compare).
+//   config     — .mcp.json and .claude/settings.json: JSON the workspace
+//                owns jointly with the template (its own MCP servers and
+//                settings live beside template keys). Never classified by
+//                content and never batch-copied — instead each entry carries
+//                a key-level diff (`added` keys the template ships, keys
+//                `workspaceOnly`, keys `changed` in both, nested paths joined
+//                with '/'), and /workspace-update merges key by key: add
+//                template keys, keep workspace-only keys, ask on conflicting
+//                keys. Entries flag `notInstalled` (no workspace file — the
+//                payload's copy can be installed as-is) or `unparseable`
+//                (broken JSON on either side — ask, never merge blind).
 //   localOnly  — installed file differs from the payload, but the payload
 //                equals the baseline: the template hasn't touched the file
 //                since the last update, so the difference is purely local.
@@ -38,6 +49,8 @@
 //                active rule stays (gh:180)
 //   removed    — installed file with no payload counterpart: the template
 //                stopped shipping it. Excludes what the workspace owns:
+//                the config files above (the template dropping one hands it
+//                to the workspace, it never deletes user content),
 //                *.test.mjs (see staleTests), anything gitignored
 //                (machine-local), paths under .claude/worktrees/, and entries
 //                of workspace.json → workspace.localFiles (array of
@@ -58,11 +71,13 @@
 // files hash byte-exact), so a git autocrlf checkout that stores CRLF where
 // the payload ships LF classifies as identical rather than locally modified.
 //
-// Only verbatim-installed files are classified: everything under .claude/,
-// plus .mcp.json and .claudeignore. The payload's templates (*.tmpl, which
-// install with {{project-name}} substitution), _gitignore (merged line-by-line
-// into the workspace's .gitignore), and .manifest.json (payload metadata) are
-// handled by their own steps in /workspace-update and are excluded here.
+// Only verbatim-installed files are classified: everything under .claude/
+// except .claude/settings.json, plus .mcp.json and .claudeignore — the two
+// JSON configs route to `config` instead of the content lists. The payload's
+// templates (*.tmpl, which install with {{project-name}} substitution),
+// _gitignore (merged line-by-line into the workspace's .gitignore), and
+// .manifest.json (payload metadata) are handled by their own steps in
+// /workspace-update and are excluded here.
 //
 // The other two modes are /workspace-update bookends:
 //   --write-baseline  write .claude/.template-baseline.json recording the
@@ -114,6 +129,85 @@ function parseArgs(argv) {
 // Payload-relative paths that install verbatim at the same relative path.
 // Everything else in the payload is a template or metadata handled elsewhere.
 const VERBATIM_ROOTS = ['.claude', '.mcp.json', '.claudeignore'];
+
+// JSON configs the workspace owns jointly with the template: its own MCP
+// servers sit inside .mcp.json's mcpServers, its own settings beside the
+// template's keys in .claude/settings.json. Content classification would
+// file every one of them as `differs` the moment the workspace adds
+// anything, and a batch copy would wipe the workspace's entries — so they
+// are reported in `config` with a key-level diff and merged key by key,
+// never compared by bytes and never copied wholesale (gh:186).
+const CONFIG_PATHS = new Set(['.mcp.json', '.claude/settings.json']);
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Key-level diff between the payload's config object and the workspace's.
+ * Paths join keys with '/' (mcpServers/playwright) and stop at two
+ * segments: these configs are maps of named units — mcpServers/{server},
+ * permissions/{allow} — and a unit's own internals (a server's args vs
+ * command) merge as one decision, not as separate asks. Anything below
+ * that depth, and any non-object value (arrays included), compares by JSON
+ * value and reports at its unit's path.
+ */
+const CONFIG_DIFF_DEPTH = 2;
+
+function configKeyDiff(payloadObj, workspaceObj, prefix = '') {
+  const added = [];
+  const workspaceOnly = [];
+  const changed = [];
+  const keys = new Set([...Object.keys(payloadObj), ...Object.keys(workspaceObj)]);
+  for (const key of [...keys].sort()) {
+    const path = prefix ? `${prefix}/${key}` : key;
+    const inPayload = Object.prototype.hasOwnProperty.call(payloadObj, key);
+    const inWorkspace = Object.prototype.hasOwnProperty.call(workspaceObj, key);
+    if (inPayload && !inWorkspace) { added.push(path); continue; }
+    if (!inPayload && inWorkspace) { workspaceOnly.push(path); continue; }
+    const pv = payloadObj[key];
+    const wv = workspaceObj[key];
+    if (
+      prefix.split('/').filter(Boolean).length + 1 < CONFIG_DIFF_DEPTH
+      && isPlainObject(pv) && isPlainObject(wv)
+    ) {
+      const sub = configKeyDiff(pv, wv, path);
+      added.push(...sub.added);
+      workspaceOnly.push(...sub.workspaceOnly);
+      changed.push(...sub.changed);
+    } else if (JSON.stringify(pv) !== JSON.stringify(wv)) {
+      changed.push(path);
+    }
+  }
+  return { added, workspaceOnly, changed };
+}
+
+/**
+ * One `config` entry: the key-level diff for a payload-shipped config file
+ * against the workspace's copy, or a flag when no diff is possible —
+ * `notInstalled` (no workspace file; the payload's copy can be installed
+ * as-is, nothing of the workspace's is at risk) and `unparseable` (broken
+ * JSON on either side; the skill asks rather than merging blind).
+ */
+function configEntry(absRoot, absPayload, rel) {
+  let payloadJson;
+  try {
+    payloadJson = JSON.parse(readFileSync(join(absPayload, rel), 'utf8'));
+  } catch {
+    return { path: rel, unparseable: true };
+  }
+  if (!isPlainObject(payloadJson)) return { path: rel, unparseable: true };
+  const installed = join(absRoot, rel);
+  if (!existsSync(installed)) return { path: rel, notInstalled: true };
+  let workspaceJson;
+  try {
+    workspaceJson = JSON.parse(readFileSync(installed, 'utf8'));
+  } catch {
+    return { path: rel, unparseable: true };
+  }
+  if (!isPlainObject(workspaceJson)) return { path: rel, unparseable: true };
+  return { path: rel, ...configKeyDiff(payloadJson, workspaceJson) };
+}
 
 function isClassified(payloadRelPath) {
   const first = payloadRelPath.split('/')[0];
@@ -212,6 +306,7 @@ export function classifyUpdate({ root, payload }) {
     identical: [],
     updated: [],
     differs: [],
+    config: [],
     localOnly: [],
     deletedLocally: [],
     activated: [],
@@ -220,6 +315,12 @@ export function classifyUpdate({ root, payload }) {
     hasBaseline: baseline !== null,
   };
   for (const rel of payloadFiles) {
+    // Jointly-owned JSON configs never compare by content — the config
+    // list carries a key-level diff for the skill to merge instead.
+    if (CONFIG_PATHS.has(rel)) {
+      result.config.push(configEntry(absRoot, absPayload, rel));
+      continue;
+    }
     // A .skip rule whose active counterpart is installed was deliberately
     // activated by this workspace: report it as activated, not new.
     if (rel.startsWith('.claude/rules/') && rel.endsWith('.md.skip')) {
@@ -270,6 +371,9 @@ export function classifyUpdate({ root, payload }) {
   const gitignored = gitIgnoredPaths(absRoot, installedFiles);
   for (const rel of installedFiles) {
     if (skipSet.has(rel)) continue;
+    // A config file the payload dropped stays with the workspace: it holds
+    // user content the template never deletes.
+    if (CONFIG_PATHS.has(rel)) continue;
     // An active rule whose .skip twin is in the payload is an activated rule,
     // not a removed one.
     if (rel.startsWith('.claude/rules/') && rel.endsWith('.md') && skipSet.has(`${rel}.skip`)) continue;

@@ -68,13 +68,13 @@ console.log('# classify-update');
   // differs: installed file was locally modified
   writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template\n');
   writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// locally modified\n');
-  // .mcp.json new, .claudeignore identical
+  // .claudeignore identical; .mcp.json routes to `config` (test 12), not `new`
   writeFileSync(join(payload, '.mcp.json'), '{"mcpServers":{}}\n');
   writeFileSync(join(payload, '.claudeignore'), 'scratch/\n');
   writeFileSync(join(root, '.claudeignore'), 'scratch/\n');
 
   const result = classifyUpdate({ root });
-  assertEq(result.new, ['.claude/skills/new-skill/SKILL.md', '.mcp.json'], 'new lists uninstalled files, sorted');
+  assertEq(result.new, ['.claude/skills/new-skill/SKILL.md'], 'new lists uninstalled files, sorted');
   assertEq(result.identical, ['.claude/skills/kept/SKILL.md', '.claudeignore'], 'identical lists byte-equal files, sorted');
   assertEq(result.differs, ['.claude/hooks/session-start.mjs'], 'differs lists locally modified files');
   rmSync(root, { recursive: true, force: true });
@@ -254,14 +254,17 @@ console.log('# classify-update');
   rmSync(root, { recursive: true, force: true });
 }
 
-// 7c. .mcp.json and .claudeignore are classified roots on both sides
+// 7c. a payload-dropped config file is the workspace's to keep: .mcp.json
+//     and .claude/settings.json hold user content (its MCP servers), so the
+//     template stopping shipping one never reads as a removal.
 {
   const root = setupWorkspace();
   setupPayload(root);
-  writeFileSync(join(root, '.mcp.json'), '{"mcpServers":{}}\n');
+  writeFileSync(join(root, '.mcp.json'), '{"mcpServers":{"mine":{"command":"npx"}}}\n');
 
   const result = classifyUpdate({ root });
-  assertEq(result.removed, ['.mcp.json'], 'a payload-dropped .mcp.json reads as removed');
+  assertEq(result.removed, [], 'a payload-dropped .mcp.json is never removed');
+  assertEq(result.config, [], 'a payload-dropped .mcp.json carries no config entry');
   rmSync(root, { recursive: true, force: true });
 }
 
@@ -410,6 +413,96 @@ console.log('# classify-update');
   assertEq(after.updated, ['.claude/hooks/session-start.mjs'], 'an unapplied update still presents as updated after the baseline rewrite');
   assertEq(after.differs, [], 'an unapplied update never demotes to differs');
   assertEq(after.localOnly, [], 'an unapplied update never demotes to localOnly');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 12. config: .mcp.json and .claude/settings.json are never classified by
+//     content — never new/updated/differs/identical, whatever the baseline
+//     says — and carry a nested key-level diff instead, so the skill merges
+//     key by key instead of copying wholesale and wiping the workspace's
+//     own MCP servers (gh:186).
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  // Payload .mcp.json: a server the workspace lacks, a server it changed,
+  // a server both hold identically, and a template-only top-level key.
+  writeFileSync(join(payload, '.mcp.json'), JSON.stringify({
+    mcpServers: {
+      playwright: { command: 'npx', args: ['@playwright/mcp@v2'] },
+      brandnew: { command: 'npx' },
+      shared: { command: 'node' },
+    },
+    enableAllProjectMcpServers: true,
+  }, null, 2) + '\n');
+  // Workspace .mcp.json: its own server, its own top-level key, a changed
+  // playwright, and the identical shared server.
+  writeFileSync(join(root, '.mcp.json'), JSON.stringify({
+    mcpServers: {
+      playwright: { command: 'npx', args: ['@playwright/mcp@v1'] },
+      mine: { command: 'npx' },
+      shared: { command: 'node' },
+    },
+    customTopLevel: { a: 1 },
+  }, null, 2) + '\n');
+  // The bytes differ from the baseline too — irrelevant for a config file.
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.21.0',
+    files: {
+      '.mcp.json': sha('{"mcpServers":{}}\n'),
+      '.claude/settings.json': sha('{}\n'),
+    },
+  }) + '\n');
+  // settings.json: identical on both sides — empty diff, nothing to ask.
+  writeFileSync(join(payload, '.claude', 'settings.json'), '{"permissions":{"deny":[]}}\n');
+  writeFileSync(join(root, '.claude', 'settings.json'), '{"permissions":{"deny":[]}}\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.config, [
+    { path: '.claude/settings.json', added: [], workspaceOnly: [], changed: [] },
+    {
+      path: '.mcp.json',
+      added: ['enableAllProjectMcpServers', 'mcpServers/brandnew'],
+      workspaceOnly: ['customTopLevel', 'mcpServers/mine'],
+      changed: ['mcpServers/playwright'],
+    },
+  ], 'config carries the key-level diff at unit depth, sorted paths');
+  for (const list of [result.new, result.updated, result.differs, result.identical, result.localOnly, result.removed]) {
+    assertTrue(!list.includes('.mcp.json') && !list.includes('.claude/settings.json'),
+      'config files never appear in a content list');
+  }
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 12b. config with no installed counterpart: nothing of the workspace's is
+//      at risk, so the payload's copy can be installed as-is.
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.mcp.json'), '{"mcpServers":{"playwright":{"command":"npx"}}}\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.config, [{ path: '.mcp.json', notInstalled: true }], 'a missing workspace config flags notInstalled');
+  assertTrue(!result.new.includes('.mcp.json'), 'a missing config file is never new');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 12c. broken JSON on either side flags unparseable — the skill must ask,
+//      never merge blind and never copy wholesale.
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.mcp.json'), '{ not json\n');
+  writeFileSync(join(payload, '.claude', 'settings.json'), '{"hooks":{}}\n');
+  writeFileSync(join(root, '.claude', 'settings.json'), '{ also not json\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.config, [
+    { path: '.claude/settings.json', unparseable: true },
+    { path: '.mcp.json', unparseable: true },
+  ], 'unparseable configs are flagged, one per side');
+  assertTrue(!result.differs.includes('.mcp.json'), 'an unparseable config is still never differs');
   rmSync(root, { recursive: true, force: true });
 }
 
