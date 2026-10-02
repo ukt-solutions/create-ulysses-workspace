@@ -198,6 +198,7 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--remote-allow-all']), '--remote-allow-all requires --remote');
   throws(() => parseArgs(['node', 's', '--inventory', '--remote', '--remote-allow', 'app=origin']), '--remote-allow only with --backup');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--allow-uncommitted']), '--allow-uncommitted only with --archive');
+  throws(() => parseArgs(['node', 's', '--inventory', '--allow-unbacked']), '--allow-unbacked only with --archive');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--remote', '--remote-allow']), 'a dangling --remote-allow value is rejected');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--fetch']), '--fetch is only valid with --inventory');
   throws(() => parseArgs(['node', 's', '--inventory', '--bogus']), 'unknown flag rejected');
@@ -205,6 +206,8 @@ console.log('# parseArgs validation');
   assertEq([inv.mode, inv.root, inv.activeDays], ['inventory', '/w', null], 'inventory defaults parse');
   const ar = parseArgs(['node', 's', '--archive', '--session', 'x', '--allow-uncommitted']);
   assertEq([ar.mode, ar.session, ar.allowUncommitted], ['archive', 'x', true], '--archive --session --allow-uncommitted parses');
+  const ub = parseArgs(['node', 's', '--archive', '--session', 'x', '--allow-uncommitted', '--allow-unbacked']);
+  assertEq([ub.mode, ub.allowUncommitted, ub.allowUnbacked], ['archive', true, true], '--allow-unbacked parses alongside --allow-uncommitted');
   const bk = parseArgs(['node', 's', '--backup', '--session', 'x', '--remote', '--remote-allow', 'app=origin', '--remote-allow', '.=upstream']);
   assertEq([bk.mode, bk.remote, bk.remoteAllow], ['backup', true, ['app=origin', '.=upstream']], '--remote-allow is repeatable and "." names the workspace repo');
   const days = parseArgs(['node', 's', '--inventory', '--active-days', '7']);
@@ -446,6 +449,62 @@ ${chats}
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
+// gh:191: an open chat entry alone is not "a chat may be working here" —
+// session-end misses often enough that an entry on a session idle for
+// months is a stale record. Only recent activity (the session's own
+// signals, or the tracker file's mtime — a resuming chat rewrites it)
+// keeps the chat-open flag; otherwise it is informational.
+console.log('# inventory: an open chat entry on an idle session is info, not chat-open (gh:191)');
+{
+  const fx = makeWorkspace();
+  try {
+    makeSession(fx, { name: 'mustychat', branch: 'bugfix/mustychat', tracker: { status: 'paused', branch: 'bugfix/mustychat', repos: ['app'], updated: daysAgoIso(40) } });
+    const wsWt = join(fx.root, 'work-sessions', 'mustychat', 'workspace');
+    const sessionMd = join(wsWt, 'session.md');
+    writeFileSync(sessionMd, `---
+type: session-tracker
+name: mustychat
+status: paused
+branch: bugfix/mustychat
+repos:
+  - app
+chatSessions:
+  - id: chat-old
+    names: []
+    started: ${daysAgoIso(60)}
+    ended: null
+---
+
+# Work Session: mustychat
+`);
+    commitAll(wsWt, 'tracker', daysAgoIso(40));
+    // The tracker file's mtime is itself a chat signal — age it too, or a
+    // session idle for months would read as freshly chatted.
+    const old = new Date(Date.now() - 40 * DAY_MS);
+    utimesSync(sessionMd, old, old);
+
+    const s = byName(inventory(fx.root), 'mustychat');
+    assertEq(s.chatOpen, false, 'an open chat entry with no recent activity is not chat-open');
+    assertEq(typeof s.chatIdleDays, 'number', 'the idle age is reported');
+    assert(s.chatIdleDays >= 39, `the idle days are counted (${s.chatIdleDays})`);
+    const warn = s.warnings.find((w) => w.kind === 'chat-open-idle');
+    assert(warn && warn.info === true, 'the idle entry is an informational warning');
+    assert(!s.warnings.some((w) => w.kind === 'chat-open'), 'no chat-open warning for an idle session');
+    const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
+    assert(r.stderr.includes('chat: no end recorded (idle '), 'the table renders the idle info line');
+    assert(!r.stderr.includes('chat open?'), 'not the chat open? flag');
+    assert(r.stderr.includes('i 1 chat session(s)'), 'the info warning renders with the info marker');
+
+    // A fresh tracker mtime alone flips it back: a chat resuming the
+    // session rewrites the tracker, so the mtime is live-chat evidence.
+    utimesSync(sessionMd, new Date(), new Date());
+    const fresh = byName(inventory(fx.root), 'mustychat');
+    assertEq(fresh.chatOpen, true, 'a fresh tracker mtime keeps the chat-open flag');
+    assert(fresh.warnings.some((w) => w.kind === 'chat-open'), 'with the chat-open warning');
+    assertEq(fresh.chatIdleDays, undefined, 'and no idle field');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
 console.log('# inventory: fetch age — stale tracking refs are flagged, --fetch refreshes them (gh:187)');
 {
   const fx = makeWorkspace();
@@ -508,7 +567,9 @@ console.log('# inventory + archive: external worktrees are reported and never to
   const extWt = join(outside, 'scratch-wt');
   try {
     makeSession(fx, { name: 'home', branch: 'bugfix/home', tracker: { branch: 'bugfix/home', repos: ['app'], updated: daysAgoIso(40) } });
-    commitAll(join(fx.root, 'work-sessions', 'home', 'workspace'), 'tracker', daysAgoIso(40));
+    const homeWs = join(fx.root, 'work-sessions', 'home', 'workspace');
+    commitAll(homeWs, 'tracker', daysAgoIso(40));
+    git(homeWs, 'push -q origin bugfix/home'); // backed tips — no unbacked gate in the way
     git(fx.app, `worktree add -q -b ext/scratch "${extWt}"`);
     writeFileSync(join(extWt, 'precious.txt'), 'someone else’s work\n');
 
@@ -1092,8 +1153,10 @@ console.log('# archive: moves the session and keeps every kind of state intact')
     // Something beside workspace/ in the session folder.
     writeFileSync(join(fx.root, 'work-sessions', 'keep', 'notes.md'), 'beside workspace\n');
 
-    const out = archiveSession(fx.root, { session: 'keep', cwd: fx.root, allowUncommitted: true, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
+    const out = archiveSession(fx.root, { session: 'keep', cwd: fx.root, allowUncommitted: true, allowUnbacked: true, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
     assertEq(out.refused, undefined, 'archive is not refused');
+    assertEq(out.unbacked.length, 2, 'the result reports the unbacked tips that rode along');
+    assert(out.unbacked.some((u) => u.repo === 'app' && u.branch === 'bugfix/keep' && u.commits === 2), 'with repo, branch and commit count');
     assertEq(out.to, join('work-sessions', '.archived', 'keep--20260927T120000'), 'archived under .archived/ with a stamp');
     assert(!existsSync(join(fx.root, 'work-sessions', 'keep')), 'the session left the active lifecycle');
     const dest = join(fx.root, out.to);
@@ -1141,10 +1204,52 @@ console.log('# archive: uncommitted changes refuse by default; --allow-uncommitt
     assert(existsSync(join(fx.root, 'work-sessions', 'notes', 'workspace')), 'nothing moved');
 
     // The operator’s explicit choice: proceed — the edits ride along.
-    const ok = archiveSession(fx.root, { session: 'notes', cwd: fx.root, allowUncommitted: true, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
+    const ok = archiveSession(fx.root, { session: 'notes', cwd: fx.root, allowUncommitted: true, allowUnbacked: true, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
     assertEq(ok.refused, undefined, '--allow-uncommitted archives');
     assert(readFileSync(join(fx.root, ok.to, 'workspace', 'session.md'), 'utf8').includes('edited, not committed'), 'the uncommitted session.md edit survives uncommitted');
     assertEq(readFileSync(join(fx.root, ok.to, 'workspace', 'repos', 'app', 'untracked.txt'), 'utf8'), 'scratch\n', 'the untracked file survives');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+// gh:191: unpushed commits ride into an archive safely, but that decision
+// belongs to the operator — the archive refuses until the backup step
+// pushed them to a remote, or --allow-unbacked records the decline, and
+// the refusal names every repo and its commit count.
+console.log('# archive: unbacked tips refuse until the backup decision is made (gh:191)');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt, projWts } = makeSession(fx, { name: 'unbacked', branch: 'bugfix/unbacked', tracker: { branch: 'bugfix/unbacked', repos: ['app'], updated: daysAgoIso(40) } });
+    commitAll(wsWt, 'tracker', daysAgoIso(40));
+    writeFileSync(join(projWts.app, 'fix.txt'), 'fix\n');
+    commitAll(projWts.app, 'project fix', daysAgoIso(40));
+
+    const out = archiveSession(fx.root, { session: 'unbacked', cwd: fx.root });
+    assertEq(out.refused, true, 'unbacked tips refuse the archive');
+    assert(out.reasons.some((r) => r.includes('repo "app"') && r.includes('1 commit(s)')), 'the refusal names the repo and its commit count');
+    assert(out.reasons.some((r) => r.startsWith('the workspace repo')), 'the workspace tip is named too');
+    assert(out.reasons.some((r) => r.includes('only on this machine')), 'the refusal says the commits exist only on this machine');
+    assert(out.reasons.some((r) => r.includes('--allow-unbacked')), 'the refusal names the explicit way through');
+    assert(existsSync(join(fx.root, 'work-sessions', 'unbacked', 'workspace')), 'nothing moved');
+
+    // The recorded decline proceeds and reports what rode along.
+    const ok = archiveSession(fx.root, { session: 'unbacked', cwd: fx.root, allowUnbacked: true, now: Date.UTC(2026, 8, 27, 12, 0, 0) });
+    assertEq(ok.refused, undefined, '--allow-unbacked archives');
+    assertEq(ok.unbacked.length, 2, 'the result reports every unbacked tip');
+    assert(ok.unbacked.some((u) => u.repo === 'app' && u.branch === 'bugfix/unbacked' && u.commits === 1), 'with repo, branch and commit count');
+    assert(ok.unbacked.some((u) => u.repo === '.' && u.commits === 1), 'the workspace tip included');
+
+    // Once every tip is on its remote — what the backup step's push mode
+    // achieves — the same archive needs no flag at all.
+    const { wsWt: ws2, projWts: proj2 } = makeSession(fx, { name: 'backed', branch: 'bugfix/backed', tracker: { branch: 'bugfix/backed', repos: ['app'], updated: daysAgoIso(40) } });
+    commitAll(ws2, 'tracker', daysAgoIso(40));
+    writeFileSync(join(proj2.app, 'fix.txt'), 'fix\n');
+    commitAll(proj2.app, 'project fix', daysAgoIso(40));
+    git(ws2, 'push -q origin bugfix/backed');
+    git(proj2.app, 'push -q origin bugfix/backed');
+    const plain = archiveSession(fx.root, { session: 'backed', cwd: fx.root, now: Date.UTC(2026, 8, 27, 12, 0, 1) });
+    assertEq(plain.refused, undefined, 'a fully pushed session archives without the flag');
+    assertEq(plain.unbacked, undefined, 'and reports no unbacked tips');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
@@ -1163,7 +1268,7 @@ console.log('# archive: a failed repair moves the session back, nothing lost');
       }
       return gitFn(cmd, args, opts);
     };
-    const out = archiveSession(fx.root, { session: 'rb', cwd: fx.root, gitFn: flaky });
+    const out = archiveSession(fx.root, { session: 'rb', cwd: fx.root, allowUnbacked: true, gitFn: flaky });
     assertEq(out.refused, true, 'a failed repair refuses');
     assert(out.reasons.some((r) => r.includes('back at') && r.includes('nothing was lost')), 'the refusal reports a verified restore');
     assert(existsSync(join(fx.root, 'work-sessions', 'rb', 'workspace', 'NOTES.md')), 'the session is back where it was');
@@ -1185,7 +1290,7 @@ console.log('# archive: a thrown git error during repair still rolls back consis
       if (!fired && args.includes('worktree') && args.includes('repair')) { fired = true; throw new Error('spawn exploded'); }
       return gitFn(cmd, args, opts);
     };
-    const out = archiveSession(fx.root, { session: 'thr', cwd: fx.root, gitFn: throwing });
+    const out = archiveSession(fx.root, { session: 'thr', cwd: fx.root, allowUnbacked: true, gitFn: throwing });
     assertEq(out.refused, true, 'a thrown error refuses instead of escaping');
     assert(out.reasons.some((r) => r.includes('nothing was lost')), 'the restore is verified');
     assertEq(realpathSync(git(wsWt, 'rev-parse --show-toplevel').trim()), realpathSync(wsWt), 'the session resolves where it was');
@@ -1347,7 +1452,7 @@ console.log('# S5: the session hosting the current chat refuses backup and archi
 
     // From the launcher the self-host refusal is gone.
     commitAll(wsWt, 'tracker', daysAgoIso(40));
-    const ok = archiveSession(fx.root, { session: 'self', cwd: fx.root });
+    const ok = archiveSession(fx.root, { session: 'self', cwd: fx.root, allowUnbacked: true });
     assertEq(ok.refused, undefined, 'from the launcher root there is no self-host refusal');
     assertEq(ok.archived, true, 'and the archive completes');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
