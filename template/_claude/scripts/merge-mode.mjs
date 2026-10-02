@@ -26,14 +26,62 @@ function readWorkspace(rootDir) {
   }
 }
 
-// Same remote shapes the forge adapters resolve a repo from. A URL that
-// does not match is not forge-hosted, and the forge path supports
-// forge-hosted repos only — a local/bare remote has no PR concept to aim at.
-const FORGE_REMOTE_RE = /github\.com[:/]([^/]+)\/([^/.]+?)(?:\.git)?$/;
+// Same remote shapes the forge adapters resolve a repo from: scp-style SSH
+// (`git@github.com:owner/name.git`, `git@gitlab.com:group/sub/name.git`),
+// scheme URLs (`ssh://git@host/...`, `https://host/...`, optional port), with
+// or without a trailing `.git`. A URL that does not match is not
+// forge-hosted, and the forge path supports forge-hosted repos only — a
+// local/bare remote has no PR concept to aim at.
+//
+// GitLab repos may sit in nested groups (`group/sub/project` at any depth),
+// so the parser returns the full `slug` plus `host` and `forge` type; GitHub
+// remains exactly two segments (owner/name). `hosts` names additional
+// self-managed GitLab hosts (workspace.forge.host) — gitlab.com is always
+// recognised, and a URL on any other host parses as nothing.
+function parseForgeRemote(url, { hosts = [] } = {}) {
+  const parsed = parseRemoteUrl(url);
+  if (!parsed) return null;
+  const { host, path: segments } = parsed;
+  if (segments.length < 2) return null;
+  if (host === 'github.com') {
+    if (segments.length !== 2) return null;
+    return { owner: segments[0], name: segments[1], slug: segments.join('/'), host, forge: 'github' };
+  }
+  const gitlabHosts = new Set(['gitlab.com', ...hosts.map((h) => String(h).toLowerCase())]);
+  if (gitlabHosts.has(host)) {
+    return {
+      owner: segments.slice(0, -1).join('/'),
+      name: segments[segments.length - 1],
+      slug: segments.join('/'),
+      host,
+      forge: 'gitlab',
+    };
+  }
+  return null;
+}
 
-function parseForgeRemote(url) {
-  const m = String(url).trim().match(FORGE_REMOTE_RE);
-  return m ? { owner: m[1], name: m[2] } : null;
+// Split any remote URL into host + path segments, or null when it is not a
+// forge-shaped remote at all (local path, file:// URL, …).
+function parseRemoteUrl(url) {
+  const s = String(url).trim().replace(/\/+$/, '');
+  // scp-style: user@host:path — the colon separator, no scheme.
+  let m = s.match(/^[^@/]+@([^:/]+):(.+)$/);
+  if (m) return { host: m[1].toLowerCase(), path: splitRemotePath(m[2]) };
+  // scheme://[user@]host[:port]/path
+  m = s.match(/^(?:ssh|https?|git):\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+)$/);
+  if (m) return { host: m[1].toLowerCase(), path: splitRemotePath(m[2]) };
+  return null;
+}
+
+function splitRemotePath(p) {
+  return p.replace(/\.git$/, '').split('/').filter(Boolean);
+}
+
+// Self-managed GitLab hosts configured for this workspace — the value of
+// workspace.forge.host, when set, is a GitLab host however the forge `type`
+// reads (a mixed workspace may leave type unset entirely).
+function forgeHosts(ws) {
+  return [ws?.workspace?.forge?.host].filter(Boolean);
 }
 
 /**
@@ -43,9 +91,10 @@ function parseForgeRemote(url) {
  * right call for a clone whose origin is a third-party upstream nobody
  * here may push to) or when the repo has no origin remote at all;
  * "forge" — pushed and PR'd — when its origin parses as a forge-hosted
- * owner/name. An origin that is neither (say a local bare mirror with no
- * override) resolves to null: the caller stops with the override spelled
- * out rather than pushing somewhere that cannot host a PR.
+ * repo (github.com, gitlab.com, or the configured self-managed host). An
+ * origin that is neither (say a local bare mirror with no override)
+ * resolves to null: the caller stops with the override spelled out rather
+ * than pushing somewhere that cannot host a PR.
  */
 function mergeModeFor(root, repo, deps = {}) {
   const gitFn = deps.gitFn ?? spawnSync;
@@ -55,7 +104,7 @@ function mergeModeFor(root, repo, deps = {}) {
   if (override === 'local') return 'local';
   const res = gitFn('git', ['-C', repoDirFor(rootDir, repo), 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
   if (res.error || res.status !== 0) return 'local'; // no origin — nowhere to push
-  return parseForgeRemote(String(res.stdout || '').trim()) ? 'forge' : null;
+  return parseForgeRemote(String(res.stdout || '').trim(), { hosts: forgeHosts(ws) }) ? 'forge' : null;
 }
 
-export { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, mergeModeFor };
+export { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, mergeModeFor };

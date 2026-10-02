@@ -16,14 +16,15 @@
 //
 // Usage:
 //   node task-pr.mjs --create --root <launcher> --branch <branch>
-//                    [--work-item gh:N] [--chat <name> | --repo <r> ...]
+//                    [--work-item gh:N|gl:N] [--chat <name> | --repo <r> ...]
 //                    --body-file <forge-repo>=<path> ... [--out <file>]
 //                    [--force-with-lease]
 //   node task-pr.mjs --merge --root <launcher> --prs <json-from-create>
-//                    [--work-item gh:N]
+//                    [--work-item gh:N|gl:N]
 //
 // Every repo of the task resolves to a merge mode (mergeModeFor below):
-// "forge" — its origin is a forge-hosted owner/name — or "local" — no
+// "forge" — its origin is forge-hosted (github.com, gitlab.com, or the
+// configured self-managed GitLab host) — or "local" — no
 // origin at all, or an explicit "local" override in workspace.json
 // (repos.{repo}.merge / workspace.merge), the escape hatch for a clone
 // whose origin is a third-party upstream nobody here may push to. An
@@ -77,7 +78,7 @@ import { resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { taskWorktreePath, defaultBranchFor } from './task-worktree.mjs';
-import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, mergeModeFor } from './merge-mode.mjs';
+import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, mergeModeFor } from './merge-mode.mjs';
 import { readRecord } from './chat-record.mjs';
 import { createForge } from './forges/interface.mjs';
 import { createTracker } from './trackers/interface.mjs';
@@ -95,6 +96,15 @@ function assertForgeEnabled(ws) {
   if (ws?.workspace?.forge === false) {
     throw new Error('workspace.forge is false — forge operations are disabled here. Nothing was pushed; open the PR by hand.');
   }
+}
+
+// The per-repo forge config: the workspace block (host, any shared
+// settings) with the repo's own identity layered on. The origin's host and
+// slug win over any workspace-level `type` — a workspace may mix GitHub
+// and GitLab repos, and each repo's origin names where its PRs live, so
+// one global type cannot speak for both.
+function perRepoForge(ws, { forge, host, slug }) {
+  return { ...(ws.workspace?.forge ?? {}), type: forge, host, repo: slug };
 }
 
 // Branch names become refs, refspecs, and (via the slug) paths; git's own
@@ -236,7 +246,7 @@ async function createPrs(args, deps) {
   // still complete with forge operations disabled.
   if (forgeActive.length > 0) assertForgeEnabled(ws);
   for (const t of forgeActive) {
-    Object.assign(t, parseForgeRemote(gitOut(deps.gitFn, t.worktree, ['remote', 'get-url', 'origin'])));
+    Object.assign(t, parseForgeRemote(gitOut(deps.gitFn, t.worktree, ['remote', 'get-url', 'origin']), { hosts: forgeHosts(ws) }));
   }
   for (const t of forgeActive) {
     const bodyFile = args.bodyFiles.get(t.repo);
@@ -273,7 +283,7 @@ async function createPrs(args, deps) {
     }
 
     for (const t of forgeActive) {
-      const forge = deps.forgeFactory({ ...(ws.workspace?.forge ?? {}), repo: `${t.owner}/${t.name}` });
+      const forge = deps.forgeFactory(perRepoForge(ws, t));
       // Idempotency: a re-run must not open a second PR for a branch that
       // already has one open against the same base. Reuse it as-is —
       // re-titling or re-bodying an existing PR is a decision, not a
@@ -286,6 +296,7 @@ async function createPrs(args, deps) {
       const pr = existing ?? await forge.prCreate({ title, body, head: args.branch, base: t.defaultBranch });
       prs.push({
         repo: t.repo, mode: 'forge', owner: t.owner, name: t.name,
+        forge: t.forge, host: t.host,
         number: pr.number, id: pr.id, url: pr.url, isWorkspace: t.isWorkspace, commits: t.commits,
       });
     }
@@ -375,7 +386,14 @@ async function mergePrs(args, deps) {
     }
   }
   if (prs.some((p) => modeOf(p) === 'forge')) assertForgeEnabled(ws);
-  const forgeFor = (p) => deps.forgeFactory({ ...(ws.workspace?.forge ?? {}), repo: `${p.owner}/${p.name}` });
+  // Entries carry their repo's forge and host since GitLab support landed;
+  // older files predate the fields and fall back to the workspace block —
+  // the GitHub default those runs were built under.
+  const forgeFor = (p) => deps.forgeFactory({
+    ...(ws.workspace?.forge ?? {}),
+    ...(p.forge ? { type: p.forge, host: p.host } : {}),
+    repo: `${p.owner}/${p.name}`,
+  });
 
   // State first, so a re-run knows what an earlier run already finished.
   // A PR the forge reports MERGED is done; anything else is offered to

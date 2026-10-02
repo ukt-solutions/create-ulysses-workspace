@@ -36,5 +36,14 @@ const fail = (msg) => { failed++; console.error(`  FAIL: ${msg}`); };
   else fail(`unexpected identity: ${adapter.identity}`);
 }
 
+// createTracker builds a gitlab-issues adapter the same way (repo literal,
+// no glab call at construction).
+{
+  const fakeSpawn = () => { throw new Error('spawn should not run at construction'); };
+  const adapter = createTracker({ type: 'gitlab-issues', repo: 'group/sub/proj' }, { spawnFn: fakeSpawn });
+  if (adapter.identity === 'gitlab-issues:group/sub/proj') ok();
+  else fail(`unexpected identity: ${adapter.identity}`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
