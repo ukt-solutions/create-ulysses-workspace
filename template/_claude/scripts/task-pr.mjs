@@ -16,14 +16,15 @@
 //
 // Usage:
 //   node task-pr.mjs --create --root <launcher> --branch <branch>
-//                    [--work-item gh:N] [--chat <name> | --repo <r> ...]
+//                    [--work-item gh:N|gl:N] [--chat <name> | --repo <r> ...]
 //                    --body-file <forge-repo>=<path> ... [--out <file>]
 //                    [--force-with-lease]
 //   node task-pr.mjs --merge --root <launcher> --prs <json-from-create>
-//                    [--work-item gh:N]
+//                    [--work-item gh:N|gl:N]
 //
 // Every repo of the task resolves to a merge mode (mergeModeFor below):
-// "forge" — its origin is a forge-hosted owner/name — or "local" — no
+// "forge" — its origin is forge-hosted (github.com, gitlab.com, or the
+// configured self-managed GitLab host) — or "local" — no
 // origin at all, or an explicit "local" override in workspace.json
 // (repos.{repo}.merge / workspace.merge), the escape hatch for a clone
 // whose origin is a third-party upstream nobody here may push to. An
@@ -39,7 +40,9 @@
 // body file is required per forge repo alone; one given for a local repo
 // is ignored). The PR title is the linked issue's title when --work-item
 // is given, else the branch's first commit subject; the body is the
-// repo's body file with `Closes <ref>` appended. Prints
+// repo's body file with a closing reference appended — `Closes <ref>`
+// when the tracker's forge matches the PR's, else the issue's URL (a
+// GitHub `owner/repo#N` reference cannot resolve on GitLab). Prints
 // `{ prs, empty, pushed }` — prs holds forge entries (mode "forge") and
 // local entries (mode "local") alike, every entry carrying its commit
 // count — and, with --out, writes the same JSON to a file — a mid-run
@@ -77,7 +80,7 @@ import { resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { taskWorktreePath, defaultBranchFor } from './task-worktree.mjs';
-import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, mergeModeFor } from './merge-mode.mjs';
+import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, perRepoForge, mergeModeFor } from './merge-mode.mjs';
 import { readRecord } from './chat-record.mjs';
 import { createForge } from './forges/interface.mjs';
 import { createTracker } from './trackers/interface.mjs';
@@ -95,6 +98,33 @@ function assertForgeEnabled(ws) {
   if (ws?.workspace?.forge === false) {
     throw new Error('workspace.forge is false — forge operations are disabled here. Nothing was pushed; open the PR by hand.');
   }
+}
+
+// perRepoForge (from merge-mode.mjs, re-exported below) builds each repo's
+// forge config; see its definition there for why the origin wins over the
+// workspace-level type.
+
+// Which forge an issues adapter's references resolve on — `owner/repo#N`
+// from github-issues only closes on GitHub, `group/sub#N` from
+// gitlab-issues only on GitLab.
+const TRACKER_FORGE = { 'github-issues': 'github', 'gitlab-issues': 'gitlab' };
+
+// The closing line for a PR body. Same forge as the tracker: the native
+// reference (issueRef). Cross-forge — a GitHub tracker's issue referenced
+// from a GitLab MR, or the reverse — cannot use it, since the target forge
+// cannot resolve the reference; the line carries the issue's URL instead.
+// As `Closes {url}` when the tracker mints canonical URLs (issueUrl —
+// both forges close issues referenced by full URL); otherwise as a bare
+// `Refs {url}` on the URL getIssue already returned, which references the
+// issue without claiming close semantics the target forge may not honor.
+function closingLineFor(tracker, issue, workItem, target, trackerConfig) {
+  const ref = tracker.issueRef(workItem, { fromRepo: `${target.owner}/${target.name}` });
+  const trackerForge = trackerConfig?.type ? TRACKER_FORGE[trackerConfig.type] : undefined;
+  if (!trackerForge || !target.forge || trackerForge === target.forge) {
+    return `Closes ${ref}`;
+  }
+  if (typeof tracker.issueUrl === 'function') return `Closes ${tracker.issueUrl(workItem)}`;
+  return issue?.url ? `Refs ${issue.url}` : `Closes ${ref}`;
 }
 
 // Branch names become refs, refspecs, and (via the slug) paths; git's own
@@ -236,7 +266,7 @@ async function createPrs(args, deps) {
   // still complete with forge operations disabled.
   if (forgeActive.length > 0) assertForgeEnabled(ws);
   for (const t of forgeActive) {
-    Object.assign(t, parseForgeRemote(gitOut(deps.gitFn, t.worktree, ['remote', 'get-url', 'origin'])));
+    Object.assign(t, parseForgeRemote(gitOut(deps.gitFn, t.worktree, ['remote', 'get-url', 'origin']), { hosts: forgeHosts(ws) }));
   }
   for (const t of forgeActive) {
     const bodyFile = args.bodyFiles.get(t.repo);
@@ -249,11 +279,12 @@ async function createPrs(args, deps) {
   }
 
   let issueTitle = null;
-  let issueRefs = null;
+  let closingLines = null;
   if (args.workItem && ws.workspace?.tracker) {
     const tracker = deps.trackerFactory(ws.workspace.tracker);
-    issueTitle = (await tracker.getIssue(args.workItem)).title;
-    issueRefs = new Map(forgeActive.map((t) => [t.repo, tracker.issueRef(args.workItem, { fromRepo: `${t.owner}/${t.name}` })]));
+    const issue = await tracker.getIssue(args.workItem);
+    issueTitle = issue.title;
+    closingLines = new Map(forgeActive.map((t) => [t.repo, closingLineFor(tracker, issue, args.workItem, t, ws.workspace.tracker)]));
   }
 
   // Local entries are recorded up front, before anything can fail: they are
@@ -273,7 +304,7 @@ async function createPrs(args, deps) {
     }
 
     for (const t of forgeActive) {
-      const forge = deps.forgeFactory({ ...(ws.workspace?.forge ?? {}), repo: `${t.owner}/${t.name}` });
+      const forge = deps.forgeFactory(perRepoForge(ws, t));
       // Idempotency: a re-run must not open a second PR for a branch that
       // already has one open against the same base. Reuse it as-is —
       // re-titling or re-bodying an existing PR is a decision, not a
@@ -282,10 +313,11 @@ async function createPrs(args, deps) {
         .find((p) => p.headRefName === args.branch && p.baseRefName === t.defaultBranch);
       const title = issueTitle ?? firstCommitSubject(deps.gitFn, t, args.branch);
       let body = readFileSync(args.bodyFiles.get(t.repo), 'utf8').replace(/\s*$/, '');
-      if (issueRefs) body = `${body}\n\nCloses ${issueRefs.get(t.repo)}\n`;
+      if (closingLines) body = `${body}\n\n${closingLines.get(t.repo)}\n`;
       const pr = existing ?? await forge.prCreate({ title, body, head: args.branch, base: t.defaultBranch });
       prs.push({
         repo: t.repo, mode: 'forge', owner: t.owner, name: t.name,
+        forge: t.forge, host: t.host,
         number: pr.number, id: pr.id, url: pr.url, isWorkspace: t.isWorkspace, commits: t.commits,
       });
     }
@@ -375,7 +407,14 @@ async function mergePrs(args, deps) {
     }
   }
   if (prs.some((p) => modeOf(p) === 'forge')) assertForgeEnabled(ws);
-  const forgeFor = (p) => deps.forgeFactory({ ...(ws.workspace?.forge ?? {}), repo: `${p.owner}/${p.name}` });
+  // Entries carry their repo's forge and host since GitLab support landed;
+  // older files predate the fields and fall back to the workspace block —
+  // the GitHub default those runs were built under.
+  const forgeFor = (p) => deps.forgeFactory({
+    ...(ws.workspace?.forge ?? {}),
+    ...(p.forge ? { type: p.forge, host: p.host } : {}),
+    repo: `${p.owner}/${p.name}`,
+  });
 
   // State first, so a re-run knows what an earlier run already finished.
   // A PR the forge reports MERGED is done; anything else is offered to
@@ -552,4 +591,4 @@ if (isMainModule(import.meta.url)) {
 }
 
 export { run, parseArgs };
-export { parseForgeRemote, mergeModeFor } from './merge-mode.mjs';
+export { parseForgeRemote, mergeModeFor, perRepoForge, forgeConfigForRepo } from './merge-mode.mjs';

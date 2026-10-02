@@ -11,6 +11,7 @@
 
 import '../../lib/require-node.mjs';
 import { createGithubAdapter } from './github-issues.mjs';
+import { createGitlabAdapter } from './gitlab-issues.mjs';
 
 export class AlreadyAssignedError extends Error {
   constructor(issueId, assignees) {
@@ -28,6 +29,8 @@ export function createTracker(config, options = {}) {
   switch (config.type) {
     case 'github-issues':
       return createGithubAdapter(config, options);
+    case 'gitlab-issues':
+      return createGitlabAdapter(config, options);
     default:
       throw new Error(`Unknown tracker type: ${config.type}`);
   }

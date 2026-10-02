@@ -56,13 +56,12 @@ console.log('# createForge dispatch');
   else fail(`Explicit github failed: identity=${forge.identity}`);
 }
 
-// Type: 'gitlab' throws NOT_IMPLEMENTED (stub) with a guidance pointer.
+// Type: 'gitlab' constructs a GitLab adapter (repo literal, no git call).
 {
-  let threw = null;
-  try { createForge({ type: 'gitlab' }); } catch (e) { threw = e; }
-  if (threw instanceof ForgeError && threw.code === 'NOT_IMPLEMENTED'
-      && /github|glab/i.test(threw.message)) ok();
-  else fail(`gitlab stub error wrong: ${threw?.message ?? 'did not throw'}`);
+  const spawnFn = (cmd, args) => ({ status: 1, stdout: '', stderr: `unexpected call: ${cmd} ${args.join(' ')}` });
+  const forge = createForge({ type: 'gitlab', repo: 'group/sub/proj' }, { spawnFn });
+  if (forge.identity === 'gitlab:group/sub/proj') ok();
+  else fail(`gitlab dispatch failed: identity=${forge.identity}`);
 }
 
 // Unknown type throws with a specific code.
@@ -88,6 +87,54 @@ console.log('# createForge dispatch');
   try { createForge('github'); } catch (e) { threw = e; }
   if (threw instanceof ForgeError && threw.code === 'INVALID_CONFIG') ok();
   else fail(`Invalid-config error wrong: ${threw?.message ?? 'did not throw'}`);
+}
+
+console.log('# adapter selection by repo host (no explicit type)');
+
+// A gitlab.com origin selects the GitLab adapter — this is what lets a
+// workspace leave `type` unset and still mix hosts per repo.
+{
+  const spawnFn = () => ({ status: 0, stdout: 'git@gitlab.com:group/sub/proj.git\n', stderr: '' });
+  const forge = createForge(undefined, { spawnFn });
+  if (forge.identity === 'gitlab:group/sub/proj') ok();
+  else fail(`gitlab-origin inference failed: identity=${forge.identity}`);
+}
+
+// The configured self-managed host selects the GitLab adapter too.
+{
+  const spawnFn = () => ({ status: 0, stdout: 'https://gitlab.example.com/acme/app.git\n', stderr: '' });
+  const forge = createForge({ host: 'gitlab.example.com' }, { spawnFn });
+  if (forge.identity === 'gitlab:acme/app') ok();
+  else fail(`self-managed inference failed: identity=${forge.identity}`);
+}
+
+// An explicit repo slug does not opt out of host inference — /release
+// passes the repo's own origin-derived slug, so a GitLab repo still lands
+// on the gitlab adapter (gh would then be aimed at a GitLab project).
+{
+  const spawnFn = () => ({ status: 0, stdout: 'git@gitlab.com:group/sub/proj.git\n', stderr: '' });
+  const forge = createForge({ repo: 'group/sub/proj' }, { spawnFn });
+  if (forge.identity === 'gitlab:group/sub/proj') ok();
+  else fail(`explicit-repo gitlab inference failed: identity=${forge.identity}`);
+}
+
+// With no origin to read (or an unparseable one), the GitHub default
+// stands — back-compat for pre-forge-field workspaces.
+{
+  const spawnFn = () => ({ status: 1, stdout: '', stderr: 'not a git repository' });
+  const forge = createForge({ repo: 'explicit/repo' }, { spawnFn });
+  if (forge.identity === 'github:explicit/repo') ok();
+  else fail(`explicit-repo default failed: identity=${forge.identity}`);
+}
+
+// An origin on an unrecognised host keeps the GitHub default; the github
+// adapter then reports the unparseable remote itself.
+{
+  const spawnFn = () => ({ status: 0, stdout: 'git@bitbucket.org:acme/app.git\n', stderr: '' });
+  let threw = null;
+  try { createForge({}, { spawnFn }); } catch (e) { threw = e; }
+  if (threw && /Cannot parse GitHub remote/.test(threw.message)) ok();
+  else fail(`unknown-host default wrong: ${threw?.message ?? 'no throw'}`);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

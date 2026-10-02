@@ -74,6 +74,8 @@ Scripts are Node.js files in `.claude/scripts/` that consolidate mechanical git 
 
 Each script takes explicit arguments, fails loudly on errors, and prints a JSON result for Claude to parse.
 
+Two of these files are adapter layers rather than command sequences: `.claude/scripts/forges/interface.mjs` and `.claude/scripts/trackers/interface.mjs`. Skills never call `gh` or `glab` directly for pull-request, release, workflow-run, or issue operations — they call `createForge()` / `createTracker()`, which dispatch to a `github` or `gitlab` module behind a single method surface. The adapter choice lives in `workspace.json` (`workspace.forge.type`, with `workspace.forge.host` naming a self-managed GitLab), and when no type is set, each repo's own origin host picks its adapter — so one workspace can mix GitHub and GitLab repos.
+
 ### create-work-session.mjs
 
 Creates everything a work session needs: the `work-sessions/{name}/` folder, workspace branch and worktree, project branches and nested worktrees (one per repo) inside the workspace worktree's real `repos/` directory, settings copy, active-session pointer, and the unified `session.md` tracker.

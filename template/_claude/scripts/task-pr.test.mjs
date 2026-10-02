@@ -4,14 +4,16 @@
 //
 // Git runs for real under tmpdir (rev-list, remote get-url, log — the parts
 // users get); push and pull are intercepted so nothing leaves the machine,
-// and the forge and tracker are injected fakes, matching the adapters'
-// spawnFn pattern. Every git call is an argv array, never a shell string.
+// and the forge and tracker are injected — fakes, or the real gitlab adapter
+// over a mocked glab, matching the adapters' spawnFn pattern. Every git call
+// is an argv array, never a shell string.
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run, parseArgs, parseForgeRemote, mergeModeFor } from './task-pr.mjs';
+import { createGitlabAdapter } from './forges/gitlab.mjs';
 import { createTaskWorktree, taskWorktreePath } from './task-worktree.mjs';
 import { reconcile, addTask } from './chat-record.mjs';
 
@@ -129,21 +131,23 @@ const pushNonFF = {
 
 // A forge factory that records every call and can be told to fail merges,
 // report PRs as already merged, hold pre-existing open PRs, or fail PR
-// creation per repo.
+// creation per repo. The per-repo config (type, host, repo) is logged so
+// adapter selection is observable.
 function fakeForgeFactory(log, {
   failMergeIds = [], mergedIds = [], openPrsFor = null, failCreateRepos = [],
 } = {}) {
   let n = 0;
+  const cfg = (config) => ({ type: config.type, host: config.host, repo: config.repo });
   return (config) => ({
     async prCreate({ title, body, head, base }) {
       if (failCreateRepos.includes(config.repo)) throw new Error('create rejected by the forge');
       n += 1;
       const number = 100 + n;
-      log.push({ op: 'prCreate', repo: config.repo, title, body, head, base });
+      log.push({ op: 'prCreate', ...cfg(config), title, body, head, base });
       return { id: `${config.repo}#${number}`, number, url: `https://github.com/${config.repo}/pull/${number}` };
     },
     async prList({ state, head, base }) {
-      log.push({ op: 'prList', repo: config.repo, state, head, base });
+      log.push({ op: 'prList', ...cfg(config), state, head, base });
       return (openPrsFor?.[config.repo] ?? [])
         .filter((p) => p.headRefName === head && (base ? p.baseRefName === base : true))
         .map((p) => ({
@@ -153,26 +157,30 @@ function fakeForgeFactory(log, {
         }));
     },
     async prView({ id }) {
-      log.push({ op: 'prView', repo: config.repo, id });
+      log.push({ op: 'prView', ...cfg(config), id });
       return { id, state: mergedIds.includes(id) ? 'MERGED' : 'OPEN', number: Number(String(id).split('#')[1]) };
     },
     async prMerge({ id, strategy, deleteBranch }) {
       if (failMergeIds.includes(id)) throw new Error('merge rejected by the forge');
-      log.push({ op: 'prMerge', repo: config.repo, id, strategy, deleteBranch });
+      log.push({ op: 'prMerge', ...cfg(config), id, strategy, deleteBranch });
       return { merged: true, url: `https://github.com/${config.repo}/pull/${id.split('#')[1]}` };
     },
   });
 }
 
-// A tracker factory that records calls; issueRef mirrors the github-issues
-// adapter's contract so the closing-line shape is observable end to end.
-function fakeTrackerFactory(log, { repo = 'acme/app', title = 'The issue title' } = {}) {
+// A tracker factory that records calls; issueRef/issueUrl mirror the real
+// adapters' contracts so the closing-line shape is observable end to end.
+// `issueUrl: false` mimics github-issues (no issueUrl method — only the
+// gitlab-issues adapter mints URLs).
+function fakeTrackerFactory(log, { repo = 'acme/app', title = 'The issue title', issueUrl = false } = {}) {
+  const url = (id) => `https://tracker.example/${id.replace(':', '/')}`;
   return () => ({
-    async getIssue(id) { log.push({ op: 'getIssue', id }); return { id, title }; },
+    async getIssue(id) { log.push({ op: 'getIssue', id }); return { id, title, url: url(id) }; },
     issueRef(id, { fromRepo } = {}) {
       log.push({ op: 'issueRef', id, fromRepo });
       return fromRepo && fromRepo !== repo ? `${repo}#${id.slice(3)}` : `#${id.slice(3)}`;
     },
+    ...(issueUrl ? { issueUrl: url } : {}),
     async closeIssue(id, { comment } = {}) { log.push({ op: 'closeIssue', id, comment }); },
   });
 }
@@ -181,13 +189,33 @@ const argvCreate = (extra = []) => ['node', 'task-pr.mjs', '--create', ...extra]
 
 console.log('# parseForgeRemote shapes');
 {
-  assertEq(parseForgeRemote('git@github.com:acme/app.git'), { owner: 'acme', name: 'app' }, 'ssh URL parses');
-  assertEq(parseForgeRemote('https://github.com/acme/app.git'), { owner: 'acme', name: 'app' }, 'https URL parses');
-  assertEq(parseForgeRemote('https://github.com/acme/app'), { owner: 'acme', name: 'app' }, 'https URL without .git parses');
-  assertEq(parseForgeRemote('ssh://git@github.com/acme/app.git'), { owner: 'acme', name: 'app' }, 'ssh scheme URL parses');
+  const gh = { owner: 'acme', name: 'app', slug: 'acme/app', host: 'github.com', forge: 'github' };
+  assertEq(parseForgeRemote('git@github.com:acme/app.git'), gh, 'ssh URL parses');
+  assertEq(parseForgeRemote('https://github.com/acme/app.git'), gh, 'https URL parses');
+  assertEq(parseForgeRemote('https://github.com/acme/app'), gh, 'https URL without .git parses');
+  assertEq(parseForgeRemote('ssh://git@github.com/acme/app.git'), gh, 'ssh scheme URL parses');
+  // GitLab nested groups: the slug keeps the full path, "owner" is the
+  // namespace (any depth), "name" the project.
+  assertEq(parseForgeRemote('git@gitlab.com:group/sub/proj.git'),
+    { owner: 'group/sub', name: 'proj', slug: 'group/sub/proj', host: 'gitlab.com', forge: 'gitlab' }, 'gitlab ssh URL parses nested groups');
+  assertEq(parseForgeRemote('https://gitlab.com/group/sub/proj'),
+    { owner: 'group/sub', name: 'proj', slug: 'group/sub/proj', host: 'gitlab.com', forge: 'gitlab' }, 'gitlab https URL parses');
+  assertEq(parseForgeRemote('ssh://git@gitlab.com/group/proj.git'),
+    { owner: 'group', name: 'proj', slug: 'group/proj', host: 'gitlab.com', forge: 'gitlab' }, 'gitlab ssh scheme URL parses');
+  // A self-managed host parses only when configured.
+  assertEq(parseForgeRemote('git@gitlab.example.com:acme/app.git'), null, 'unconfigured host is not forge-hosted');
+  assertEq(parseForgeRemote('git@gitlab.example.com:acme/app.git', { hosts: ['gitlab.example.com'] }),
+    { owner: 'acme', name: 'app', slug: 'acme/app', host: 'gitlab.example.com', forge: 'gitlab' }, 'configured self-managed host parses');
+  // Ports: an explicit non-default port stays in the host (so a configured
+  // host carries it); a default port drops.
+  assertEq(parseForgeRemote('https://gitlab.example.com:8443/team/deep/inner.git', { hosts: ['gitlab.example.com:8443'] }),
+    { owner: 'team/deep', name: 'inner', slug: 'team/deep/inner', host: 'gitlab.example.com:8443', forge: 'gitlab' }, 'non-default port stays in the host');
+  assertEq(parseForgeRemote('https://gitlab.example.com:8443/team/inner.git', { hosts: ['gitlab.example.com'] }),
+    null, 'a port-carrying host does not match a bare host entry');
+  assertEq(parseForgeRemote('https://github.com:443/acme/app.git'), gh, 'a default port drops');
   assertEq(parseForgeRemote('/tmp/origin.git'), null, 'local path is not forge-hosted');
   assertEq(parseForgeRemote('file:///srv/bare/app.git'), null, 'file URL is not forge-hosted');
-  assertEq(parseForgeRemote('git@gitlab.example.com:acme/app.git'), null, 'unknown host is not forge-hosted');
+  assertEq(parseForgeRemote('git@gitlab.com:solo.git'), null, 'a namespace-less gitlab path is not forge-hosted');
 }
 
 console.log('# mergeModeFor: override, no origin, forge, non-forge origin');
@@ -218,6 +246,76 @@ console.log('# mergeModeFor: override, no origin, forge, non-forge origin');
     delete ws.workspace.merge;
     writeFileSync(wsPath, JSON.stringify(ws, null, 2));
     assertEq(mergeModeFor(root, '.'), 'local', 'the launcher with no origin is local mode');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a mixed GitHub/GitLab workspace: one forge adapter per repo, chosen by its origin');
+{
+  // The workspace block names an explicit github type AND a self-managed
+  // gitlab host — neither can speak for every repo, so each origin wins.
+  const { root, bares } = makeLauncher({
+    app: 'git@github.com:acme/app.git',
+    gl: 'git@gitlab.com:group/sub/gl.git',
+    hosted: 'git@gitlab.example.com:team/deep/inner.git',
+  }, {
+    forge: { type: 'github', host: 'gitlab.example.com' },
+    tracker: { type: 'gitlab-issues', repo: 'group/sub/gl' },
+  });
+  try {
+    assertEq(mergeModeFor(root, 'app'), 'forge', 'a github.com origin is forge mode');
+    assertEq(mergeModeFor(root, 'gl'), 'forge', 'a gitlab.com origin is forge mode');
+    assertEq(mergeModeFor(root, 'hosted'), 'forge', 'the configured self-managed gitlab origin is forge mode');
+
+    for (const repo of ['app', 'gl', 'hosted']) {
+      const wt = createTaskWorktree(root, { repo, branch: 'feature/x' });
+      writeFileSync(join(wt.path, 'work.txt'), 'done\n');
+      git(wt.path, ['add', '-A']);
+      git(wt.path, ['commit', '-q', '-m', 'feat: do the thing']);
+      writeFileSync(join(root, `body-${repo}.md`), `Summary for ${repo}.\n`);
+    }
+
+    const log = [];
+    const out = await run(argvCreate([
+      '--root', root, '--branch', 'feature/x', '--work-item', 'gl:7',
+      '--repo', 'app', '--repo', 'gl', '--repo', 'hosted',
+      '--body-file', `app=${join(root, 'body-app.md')}`,
+      '--body-file', `gl=${join(root, 'body-gl.md')}`,
+      '--body-file', `hosted=${join(root, 'body-hosted.md')}`,
+    ]), { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log, { repo: 'group/sub/gl', issueUrl: true }) });
+
+    const creates = log.filter((e) => e.op === 'prCreate');
+    assertEq(creates.map((c) => [c.repo, c.type, c.host]), [
+      ['acme/app', 'github', 'github.com'],
+      ['group/sub/gl', 'gitlab', 'gitlab.com'],
+      ['team/deep/inner', 'gitlab', 'gitlab.example.com'],
+    ], 'each repo got a forge matching its origin, not the workspace type');
+    // The GitHub PR cannot resolve the GitLab tracker's `group/sub#N`
+    // reference, so its closing line is the issue URL the tracker mints;
+    // the GitLab PR — same project as the issue — keeps the native ref,
+    // and the self-managed one names the tracker project (same forge).
+    assertEq(log.filter((e) => e.op === 'issueRef').map((e) => e.fromRepo),
+      ['acme/app', 'group/sub/gl', 'team/deep/inner'], 'issueRef got each PR repo as fromRepo');
+    assert(creates[0].body.endsWith('Closes https://tracker.example/gl/7\n'), `cross-forge closing line: ${JSON.stringify(creates[0].body)}`);
+    assert(creates[1].body.endsWith('Closes #7\n'), `same-project closing line: ${JSON.stringify(creates[1].body)}`);
+    assert(creates[2].body.endsWith('Closes group/sub/gl#7\n'), `cross-project closing line: ${JSON.stringify(creates[2].body)}`);
+    assertEq(out.prs.map((p) => [p.repo, p.forge, p.host]), [
+      ['app', 'github', 'github.com'],
+      ['gl', 'gitlab', 'gitlab.com'],
+      ['hosted', 'gitlab', 'gitlab.example.com'],
+    ], 'PR entries carry the per-repo forge and host');
+
+    // --merge rebuilds the same per-repo forges from what --create wrote.
+    const file = join(root, 'prs-mixed.json');
+    writeFileSync(file, JSON.stringify(out));
+    const mergeLog = [];
+    const merged = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file],
+      { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(mergeLog), trackerFactory: fakeTrackerFactory(mergeLog) });
+    assertEq(mergeLog.filter((m) => m.op === 'prMerge').map((m) => [m.repo, m.type]), [
+      ['acme/app', 'github'],
+      ['group/sub/gl', 'gitlab'],
+      ['team/deep/inner', 'gitlab'],
+    ], '--merge rebuilds each repo forge from the entry');
+    assertEq(merged.merged.length, 3, 'all three PRs merged');
   } finally { clean(root); bares.forEach(clean); }
 }
 
@@ -296,7 +394,9 @@ console.log('# --create with a work item: push, PR, closing line (same-repo ref)
     assertEq(out.prs.length, 1, 'one PR created');
     assertEq([out.prs[0].repo, out.prs[0].owner, out.prs[0].name, out.prs[0].isWorkspace],
       ['app', 'acme', 'app', false], 'PR entry carries repo identity');
-    assert(typeof out.prs[0].number === 'number' && out.prs[0].url.startsWith('https://'), 'PR entry carries number and url');
+    let urlParses = false;
+    try { urlParses = new URL(out.prs[0].url).protocol === 'https:'; } catch { /* not a URL */ }
+    assert(typeof out.prs[0].number === 'number' && urlParses, 'PR entry carries number and url');
     assertEq(out.prs[0].commits, 1, 'the forge entry carries its commit count');
     const create = log.find((e) => e.op === 'prCreate');
     assertEq(create.title, 'The issue title', 'title comes from the linked issue');
@@ -330,6 +430,52 @@ console.log('# --create cross-repo ref: the closing line names the tracker repo'
     const create = log.find((e) => e.op === 'prCreate');
     assert(create.body.endsWith('Closes acme/tracker#163\n'), `cross-repo closing line: ${JSON.stringify(create.body)}`);
   } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --create cross-forge: the closing line carries the issue URL, not an unresolvable reference');
+{
+  // GitHub tracker + GitLab repo: `owner/repo#N` cannot resolve on GitLab,
+  // and github-issues has no issueUrl — the line falls back to Refs with
+  // the URL getIssue returned.
+  const gh = makeLauncher({ app: 'git@gitlab.com:group/sub/app.git' }, {
+    tracker: { type: 'github-issues', repo: 'acme/tracker' }, forge: { type: 'gitlab' },
+  });
+  try {
+    const wt = createTaskWorktree(gh.root, { repo: 'app', branch: 'feature/x' });
+    writeFileSync(join(wt.path, 'work.txt'), 'done\n');
+    git(wt.path, ['add', '-A']);
+    git(wt.path, ['commit', '-q', '-m', 'feat: do the thing']);
+    const bodyFile = join(gh.root, 'body-app.md');
+    writeFileSync(bodyFile, 'Summary.\n');
+    const log = [];
+    await run(argvCreate(['--root', gh.root, '--branch', 'feature/x', '--work-item', 'gh:163',
+      '--repo', 'app', '--body-file', `app=${bodyFile}`]),
+      { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log, { repo: 'acme/tracker' }) });
+    const create = log.find((e) => e.op === 'prCreate');
+    assert(create.body.endsWith('Refs https://tracker.example/gh/163\n'),
+      `cross-forge fallback line: ${JSON.stringify(create.body)}`);
+  } finally { clean(gh.root); gh.bares.forEach(clean); }
+
+  // GitLab tracker + GitHub repo: the gitlab-issues adapter mints URLs
+  // (issueUrl), so the same situation still closes — by URL.
+  const gl = makeLauncher({ app: 'git@github.com:acme/app.git' }, {
+    tracker: { type: 'gitlab-issues', repo: 'group/tracker' },
+  });
+  try {
+    const wt = createTaskWorktree(gl.root, { repo: 'app', branch: 'feature/x' });
+    writeFileSync(join(wt.path, 'work.txt'), 'done\n');
+    git(wt.path, ['add', '-A']);
+    git(wt.path, ['commit', '-q', '-m', 'feat: do the thing']);
+    const bodyFile = join(gl.root, 'body-app.md');
+    writeFileSync(bodyFile, 'Summary.\n');
+    const log = [];
+    await run(argvCreate(['--root', gl.root, '--branch', 'feature/x', '--work-item', 'gl:7',
+      '--repo', 'app', '--body-file', `app=${bodyFile}`]),
+      { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log, { repo: 'group/tracker', issueUrl: true }) });
+    const create = log.find((e) => e.op === 'prCreate');
+    assert(create.body.endsWith('Closes https://tracker.example/gl/7\n'),
+      `cross-forge URL close line: ${JSON.stringify(create.body)}`);
+  } finally { clean(gl.root); gl.bares.forEach(clean); }
 }
 
 console.log('# --create without a work item: title is the first commit subject');
@@ -750,6 +896,14 @@ function prsFile(dir, prs) {
   return p;
 }
 
+// The "repo: url" entries of a merge-stopped error's Still-open clause,
+// parsed out so tests compare the list exactly — a substring check against
+// a URL is what CodeQL's incomplete-url-substring-sanitization flags.
+function stillOpenFrom(err) {
+  const clause = err?.message.split('Still open: ')[1]?.split('. The workspace repo')[0] ?? '';
+  return clause.split(', ').filter(Boolean);
+}
+
 console.log('# --merge: projects first, workspace last, then pull and close');
 {
   // launcherOrigin: true — the launcher tracks its origin, so the post-merge
@@ -825,13 +979,66 @@ console.log('# a failed workspace merge still reports the PRs left open');
       { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
       { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace#3', url: 'https://github.com/acme/workspace/pull/3', isWorkspace: true },
     ];
-    await rejects(
-      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs)],
-        { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log, { failMergeIds: ['acme/workspace#3'] }), trackerFactory: fakeTrackerFactory(log) }),
-      'failed workspace merge errors',
-      'https://github.com/acme/workspace/pull/3',
-    );
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs)],
+        { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log, { failMergeIds: ['acme/workspace#3'] }), trackerFactory: fakeTrackerFactory(log) });
+    } catch (e) { err = e; }
+    assert(err && /merge stopped/.test(err.message), `failed workspace merge errors: ${err?.message}`);
+    assertEq(stillOpenFrom(err), ['.: https://github.com/acme/workspace/pull/3'],
+      'the workspace PR is reported as still open');
     assertEq(log.filter((e) => e.op === 'prMerge').length, 1, 'only the project PR merged');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a queued GitLab MR merge (glab exits 0, MR still open) stops the whole run — e2e');
+{
+  // The real gitlab adapter runs against a mocked glab: the project MR's
+  // merge only queues behind a running pipeline (glab exits 0, the MR stays
+  // OPEN), so --merge must stop before the workspace MR, close nothing, and
+  // report both PRs as still open — the CLI exits non-zero on this
+  // rejection.
+  const { root, bares } = makeLauncher({});
+  try {
+    const mr = (n, repo) => JSON.stringify({
+      iid: n, title: 'The MR', state: 'opened', draft: false,
+      source_branch: 'feature/x', target_branch: 'main',
+      web_url: `https://gitlab.com/${repo}/-/merge_requests/${n}`,
+      detailed_merge_status: 'ci_still_running', merged_at: null, has_conflicts: false,
+    });
+    const glabCalls = [];
+    const spawnFn = (cmd, args) => {
+      const key = args.join(' ');
+      glabCalls.push(key);
+      if (key === 'mr view 1 --repo acme/app --output json') return { status: 0, stdout: mr(1, 'acme/app'), stderr: '' };
+      // The queued merge: glab exits 0, but the MR never landed.
+      if (key === 'mr merge 1 --repo acme/app --yes --auto-merge=false --squash --remove-source-branch') {
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      if (key === 'mr view 3 --repo acme/workspace --output json') return { status: 0, stdout: mr(3, 'acme/workspace'), stderr: '' };
+      return { status: 1, stdout: '', stderr: `unexpected glab call: ${key}` };
+    };
+    const prs = [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app!1',
+        url: 'https://gitlab.com/acme/app/-/merge_requests/1', isWorkspace: false, forge: 'gitlab' },
+      { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace!3',
+        url: 'https://gitlab.com/acme/workspace/-/merge_requests/3', isWorkspace: true, forge: 'gitlab' },
+    ];
+    const log = [];
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
+        { gitFn: gitWith(), forgeFactory: (config) => createGitlabAdapter(config, { spawnFn }), trackerFactory: fakeTrackerFactory(log) });
+    } catch (e) { err = e; }
+    assert(err && /queued, not applied/.test(err.message), `the queued merge stops the run: ${err?.message}`);
+    assertEq(stillOpenFrom(err), [
+      'app: https://gitlab.com/acme/app/-/merge_requests/1',
+      '.: https://gitlab.com/acme/workspace/-/merge_requests/3',
+    ], 'both PRs are listed as still open');
+    assertEq(glabCalls.filter((c) => c.startsWith('mr merge')),
+      ['mr merge 1 --repo acme/app --yes --auto-merge=false --squash --remove-source-branch'],
+      'only the project MR merge was attempted — the workspace MR was never touched');
+    assertEq(log.filter((e) => e.op === 'closeIssue').length, 0, 'the issue was not closed');
   } finally { clean(root); bares.forEach(clean); }
 }
 

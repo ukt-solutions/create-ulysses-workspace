@@ -21,18 +21,26 @@
 //     → [{ id, number, title, url, headRefName, baseRefName, mergedAt, state }]
 //     `base`/`head` filter by target/source branch (e.g. the open PR for a
 //     task branch); `search` passes through the forge's own search syntax
-//     (e.g. 'merged:>2026-01-01'), so callers can bound a window without
-//     this interface growing a date vocabulary.
+//     (e.g. 'merged:>2026-01-01T00:00:00Z'), so callers can bound a window
+//     without this interface growing a date vocabulary. Two guarantees ride
+//     on that: an adapter translating `merged:>X` client-side (the GitLab
+//     adapter does — pass a full timestamp) throws on an unparseable X
+//     rather than silently listing unbounded, and when a full page means
+//     older results may exist beyond it the returned array carries a
+//     non-enumerable `truncated: true` (callers that only map the list
+//     never see it).
 //   releaseView({ tag, repo? })
 //     → { tag, url, name, publishedAt }
 //     throws ReleaseNotFound if the tag has no release
-//   releaseCreate({ tag, target?, title?, generateNotes = true, repo? })
+//   releaseCreate({ tag, target?, title?, generateNotes = true, notes?, repo? })
 //     → { url, tag }
 //     target: commitish the tag points at (default: the repo's default
 //     branch head); title: release name (default: the tag)
 //     generateNotes: when true (the default) the forge generates the
 //     release notes from merged PRs — this is the only notes mechanism
-//     the workspace ships.
+//     the workspace ships. GitLab has no such generation; its adapter
+//     throws NOT_SUPPORTED for generateNotes: true and takes the notes
+//     text via `notes` with generateNotes: false.
 //   workflowRunFind({ workflow, branch, repo?, limit = 1 })
 //     → { runId, status, conclusion, url } | null
 //   workflowRunWatch({ runId, repo?, exitStatus = false })
@@ -49,8 +57,10 @@
 // adapter-detectable failures. Raw spawn failures throw `Error`.
 
 import '../../lib/require-node.mjs';
+import { spawnSync as nodeSpawnSync } from 'node:child_process';
 import { createGithubAdapter } from './github.mjs';
 import { createGitlabAdapter } from './gitlab.mjs';
+import { parseForgeRemote } from '../merge-mode.mjs';
 
 export class ForgeError extends Error {
   constructor(message, code) {
@@ -100,6 +110,18 @@ export class MergeRejected extends ForgeError {
 // "behave as you always have." A workspace that wants to opt out of
 // forge operations entirely should set `workspace.forge: false`;
 // callers passing `false` will get a no-op throw on every method.
+//
+// With no explicit `type`, the adapter is picked from the repo's host: the
+// origin remote is parsed, and a gitlab.com (or configured self-managed
+// `host`) origin selects GitLab, anything else stays GitHub. An explicit
+// `repo` slug does not opt out of that — callers like /release pass the
+// repo's own origin-derived slug, so the origin remains the right signal
+// (a GitLab repo must not land on the gh adapter because its slug alone
+// names no host). Only a workspace with no origin at all — or an
+// unparseable one — keeps the GitHub default, and the adapter then
+// surfaces the git failure itself. This is also what lets one workspace
+// mix GitHub and GitLab repos: each repo's origin names where its PRs
+// live.
 export function createForge(config, options = {}) {
   if (config === false) {
     throw new ForgeError(
@@ -107,14 +129,14 @@ export function createForge(config, options = {}) {
       'FORGE_DISABLED',
     );
   }
-  const resolved = config ?? { type: 'github' };
+  const resolved = config ?? {};
   if (typeof resolved !== 'object') {
     throw new ForgeError(
       `Invalid workspace.forge config: expected object, got ${typeof resolved}`,
       'INVALID_CONFIG',
     );
   }
-  const type = resolved.type ?? 'github';
+  const type = resolved.type ?? inferForgeType(resolved, options);
   switch (type) {
     case 'github':
       return createGithubAdapter(resolved, options);
@@ -123,4 +145,15 @@ export function createForge(config, options = {}) {
     default:
       throw new ForgeError(`Unknown forge type: ${type}`, 'UNKNOWN_TYPE');
   }
+}
+
+// Resolve the adapter type from where the repo actually lives. The remote
+// is read once here; the adapter re-reads it when resolving its own repo,
+// keeping the two consistent (same spawnFn, same origin).
+function inferForgeType(config, options) {
+  const spawnFn = options.spawnFn ?? nodeSpawnSync;
+  const result = spawnFn('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8' });
+  if (result.status !== 0) return 'github'; // the adapter surfaces the failure
+  const hosts = config?.host ? [config.host] : [];
+  return parseForgeRemote(String(result.stdout || '').trim(), { hosts })?.forge ?? 'github';
 }
