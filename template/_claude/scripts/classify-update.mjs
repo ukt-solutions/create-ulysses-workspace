@@ -3,14 +3,20 @@
 // can batch the safe cases and ask only where a decision is needed.
 //
 // Usage:
-//   node classify-update.mjs [--root <dir>] [--payload <dir>]
+//   node classify-update.mjs [--root <dir>] [--payload <dir>] [--baseline <file>]
 //   node classify-update.mjs --root <dir> --payload <dir> --write-baseline
 //   node classify-update.mjs --root <dir> --payload <dir> --merge-claude-md
 //
-// --root    workspace root; defaults to the current working directory (never
-//           derived from this script's location — the upgrade payload runs
-//           this file from <workspace>/.workspace-update/.claude/scripts/)
-// --payload the staged payload; defaults to <root>/.workspace-update
+// --root     workspace root; defaults to the current working directory (never
+//            derived from this script's location — the upgrade payload runs
+//            this file from <workspace>/.workspace-update/.claude/scripts/)
+// --payload  the staged payload; defaults to <root>/.workspace-update
+// --baseline the baseline to classify against; defaults to
+//            <root>/.claude/.template-baseline.json, falling back to
+//            <payload>/.template-baseline.reconstructed.json (what --upgrade
+//            reconstructs for pre-baseline workspaces) when the root has none.
+//            Pass it explicitly in the worktree flow, where <root> is the
+//            worktree and the launcher's baseline may not be reachable.
 //
 // The default mode prints JSON with these lists:
 //   new        — no installed counterpart and no baseline entry; safe to
@@ -32,9 +38,15 @@
 //                `workspaceOnly`, keys `changed` in both, nested paths joined
 //                with '/'), and /workspace-update merges key by key: add
 //                template keys, keep workspace-only keys, ask on conflicting
-//                keys. Entries flag `notInstalled` (no workspace file — the
-//                payload's copy can be installed as-is) or `unparseable`
-//                (broken JSON on either side — ask, never merge blind).
+//                keys. Array-valued keys (hooks event lists,
+//                permissions.allow/deny) diff by ELEMENT instead of whole:
+//                each `arrays` entry is { path, added, workspaceOnly } with
+//                the element lists, and the skill merges arrays as a union —
+//                the workspace's elements kept, the template's new ones
+//                appended — so only true scalar conflicts ask. Entries flag
+//                `notInstalled` (no workspace file — ask once whether to
+//                install the payload's copy) or `unparseable` (broken JSON on
+//                either side — ask, never merge blind).
 //   localOnly  — installed file differs from the payload, but the payload
 //                equals the baseline: the template hasn't touched the file
 //                since the last update, so the difference is purely local.
@@ -61,11 +73,13 @@
 //                checkout and are never updated by /workspace-update; the
 //                skill offers to remove them (tests live in the template repo)
 //
-// Plus `hasBaseline`: whether .claude/.template-baseline.json exists. Without
-// it (workspaces older than the baseline's introduction) template changes
-// cannot be told from local edits, so they land in `differs` — the first
-// update after v0.21 asks per file; once it writes the baseline, later updates
-// won't.
+// Plus `hasBaseline`: whether a usable baseline was found, `baselineSource`
+// (which file it came from) and `baselineReconstructed`. The default
+// resolution is <root>/.claude/.template-baseline.json, then the payload's
+// .template-baseline.reconstructed.json (both unparseable-as-absent); without
+// either, template changes cannot be told from local edits, so they land in
+// `differs` — the first update asks per file; once it writes the baseline,
+// later updates won't.
 //
 // Content comparisons hash with CRLF normalized to LF on both sides (binary
 // files hash byte-exact), so a git autocrlf checkout that stores CRLF where
@@ -104,7 +118,13 @@ import {
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitIgnoredPaths } from './build-workspace-context.mjs';
-import { BASELINE_PATH, hashBytes, readBaseline, writeBaseline } from './template-baseline.mjs';
+import {
+  BASELINE_PATH,
+  RECONSTRUCTED_BASELINE_NAME,
+  hashBytes,
+  readBaselineFile,
+  writeBaseline,
+} from './template-baseline.mjs';
 
 function isMainModule(metaUrl) {
   if (!process.argv[1]) return false;
@@ -114,11 +134,12 @@ function isMainModule(metaUrl) {
 }
 
 function parseArgs(argv) {
-  const args = { root: process.cwd(), payload: null, writeBaseline: false, mergeClaudeMd: false };
+  const args = { root: process.cwd(), payload: null, baseline: null, writeBaseline: false, mergeClaudeMd: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--root') args.root = argv[++i];
     else if (a === '--payload') args.payload = argv[++i];
+    else if (a === '--baseline') args.baseline = argv[++i];
     else if (a === '--write-baseline') args.writeBaseline = true;
     else if (a === '--merge-claude-md') args.mergeClaudeMd = true;
     else throw new Error(`Unknown arg: ${a}`);
@@ -148,16 +169,27 @@ function isPlainObject(value) {
  * Paths join keys with '/' (mcpServers/playwright) and stop at two
  * segments: these configs are maps of named units — mcpServers/{server},
  * permissions/{allow} — and a unit's own internals (a server's args vs
- * command) merge as one decision, not as separate asks. Anything below
- * that depth, and any non-object value (arrays included), compares by JSON
- * value and reports at its unit's path.
+ * command) merge as one decision, not as separate asks. Arrays the key
+ * carries on both sides diff by ELEMENT (a union merge needs no decision),
+ * and any other non-object value compares by JSON value and reports at its
+ * unit's path.
  */
 const CONFIG_DIFF_DEPTH = 2;
+
+function arrayElementDiff(payloadArr, workspaceArr) {
+  const wsSet = new Set(workspaceArr.map((e) => JSON.stringify(e)));
+  const plSet = new Set(payloadArr.map((e) => JSON.stringify(e)));
+  return {
+    added: payloadArr.filter((e) => !wsSet.has(JSON.stringify(e))),
+    workspaceOnly: workspaceArr.filter((e) => !plSet.has(JSON.stringify(e))),
+  };
+}
 
 function configKeyDiff(payloadObj, workspaceObj, prefix = '') {
   const added = [];
   const workspaceOnly = [];
   const changed = [];
+  const arrays = [];
   const keys = new Set([...Object.keys(payloadObj), ...Object.keys(workspaceObj)]);
   for (const key of [...keys].sort()) {
     const path = prefix ? `${prefix}/${key}` : key;
@@ -175,19 +207,27 @@ function configKeyDiff(payloadObj, workspaceObj, prefix = '') {
       added.push(...sub.added);
       workspaceOnly.push(...sub.workspaceOnly);
       changed.push(...sub.changed);
+      arrays.push(...sub.arrays);
+    } else if (Array.isArray(pv) && Array.isArray(wv)) {
+      // An array both sides hold is a set the workspace extends: element
+      // lists let the skill union-merge instead of choosing one side whole.
+      const diff = arrayElementDiff(pv, wv);
+      if (diff.added.length > 0 || diff.workspaceOnly.length > 0) {
+        arrays.push({ path, ...diff });
+      }
     } else if (JSON.stringify(pv) !== JSON.stringify(wv)) {
       changed.push(path);
     }
   }
-  return { added, workspaceOnly, changed };
+  return { added, workspaceOnly, changed, arrays };
 }
 
 /**
  * One `config` entry: the key-level diff for a payload-shipped config file
  * against the workspace's copy, or a flag when no diff is possible —
- * `notInstalled` (no workspace file; the payload's copy can be installed
- * as-is, nothing of the workspace's is at risk) and `unparseable` (broken
- * JSON on either side; the skill asks rather than merging blind).
+ * `notInstalled` (no workspace file; the skill asks once whether to install
+ * the payload's copy) and `unparseable` (broken JSON on either side; the
+ * skill asks rather than merging blind).
  */
 function configEntry(absRoot, absPayload, rel) {
   let payloadJson;
@@ -290,7 +330,31 @@ function isOwnedByWorkspace(rel, localFiles) {
   return localFiles.some((pattern) => globMatches(pattern, claudeRel));
 }
 
-export function classifyUpdate({ root, payload }) {
+/**
+ * Which baseline the classification runs against. An explicit --baseline
+ * wins; otherwise the workspace's own <root>/.claude/.template-baseline.json
+ * is tried first, then the payload's .template-baseline.reconstructed.json
+ * (staged by --upgrade for workspaces that predate baselines). The fallback
+ * matters in the worktree flow: <root> is the task worktree, which cannot
+ * see launcher-only files, while the payload travels there by absolute path.
+ * A file that exists but does not parse counts as absent — a corrupt
+ * baseline must not block the reconstructed one (gh:186).
+ */
+export function resolveBaseline({ root, payload, baseline = null }) {
+  const candidates = baseline !== null
+    ? [{ path: resolve(baseline), label: baseline }]
+    : [
+      { path: join(resolve(root), BASELINE_PATH), label: BASELINE_PATH },
+      { path: join(resolve(payload), RECONSTRUCTED_BASELINE_NAME), label: `.workspace-update/${RECONSTRUCTED_BASELINE_NAME}` },
+    ];
+  for (const candidate of candidates) {
+    const parsed = readBaselineFile(candidate.path);
+    if (parsed !== null) return { baseline: parsed, source: candidate.label };
+  }
+  return { baseline: null, source: null };
+}
+
+export function classifyUpdate({ root, payload, baseline: baselineArg = null }) {
   const absRoot = resolve(root);
   const absPayload = resolve(payload ?? join(absRoot, '.workspace-update'));
   if (!existsSync(absPayload)) {
@@ -299,7 +363,7 @@ export function classifyUpdate({ root, payload }) {
 
   const payloadFiles = [...walkFiles(absPayload)].filter(isClassified);
   const payloadSet = new Set(payloadFiles);
-  const baseline = readBaseline(absRoot);
+  const { baseline, source } = resolveBaseline({ root: absRoot, payload: absPayload, baseline: baselineArg });
 
   const result = {
     new: [],
@@ -313,6 +377,8 @@ export function classifyUpdate({ root, payload }) {
     removed: [],
     staleTests: [],
     hasBaseline: baseline !== null,
+    baselineSource: source,
+    baselineReconstructed: baseline !== null && baseline.reconstructed === true,
   };
   for (const rel of payloadFiles) {
     // Jointly-owned JSON configs never compare by content — the config
@@ -521,7 +587,17 @@ function resolvePayload(args) {
 }
 
 function writeBaselineMode(args) {
-  const baseline = writeBaseline(args.root, resolvePayload(args));
+  const absPayload = resolvePayload(args);
+  // The previous baseline decides which declined updates keep their old
+  // entry — resolve it exactly as classification does, so the worktree flow
+  // (no baseline of its own yet) carries over from the payload's
+  // reconstructed one instead of starting from nothing.
+  const { baseline: previous } = resolveBaseline({
+    root: args.root,
+    payload: absPayload,
+    baseline: args.baseline,
+  });
+  const baseline = writeBaseline(args.root, absPayload, { previous });
   process.stdout.write(JSON.stringify({
     written: true,
     path: BASELINE_PATH,
@@ -557,7 +633,7 @@ function main() {
   } else if (args.mergeClaudeMd) {
     mergeClaudeMdMode(args);
   } else {
-    const result = classifyUpdate({ root: args.root, payload: args.payload });
+    const result = classifyUpdate({ root: args.root, payload: args.payload, baseline: args.baseline });
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
   }
 }

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Unit tests for template-baseline.mjs
 // Run: node template/_claude/scripts/template-baseline.test.mjs
-import { buildBaseline, writeBaseline, readBaseline, hashBytes, LIVE_PAIRS, INERT_PAIRS, BASELINE_PATH } from './template-baseline.mjs';
+import {
+  buildBaseline, writeBaseline, readBaseline, readBaselineFile, hashBytes,
+  LIVE_PAIRS, INERT_PAIRS, BASELINE_PATH, RECONSTRUCTED_BASELINE_NAME,
+} from './template-baseline.mjs';
 import { createHash } from 'node:crypto';
 import {
   mkdtempSync,
@@ -121,6 +124,33 @@ console.log('# template-baseline');
   writeFileSync(join(root, BASELINE_PATH), '{ not json\n');
   assertTrue(readBaseline(root) === null, 'corrupt baseline reads as null, not a crash');
   rmSync(root, { recursive: true, force: true });
+}
+
+// 4b. readBaselineFile reads any baseline path — the payload's reconstructed
+//     copy included — surfacing the `reconstructed` flag and treating absent
+//     or unparseable files exactly like readBaseline does (gh:186).
+{
+  assertEq(RECONSTRUCTED_BASELINE_NAME, '.template-baseline.reconstructed.json',
+    'the reconstructed baseline rides inside the payload');
+  const dir = mkdtempSync(join(tmpdir(), 'baseline-file-'));
+  try {
+    const file = join(dir, RECONSTRUCTED_BASELINE_NAME);
+    assertTrue(readBaselineFile(file) === null, 'an absent file reads as null');
+    writeFileSync(file, JSON.stringify({
+      templateVersion: '0.15.0',
+      reconstructed: true,
+      files: { '.claudeignore': sha('x/\n') },
+    }) + '\n');
+    const parsed = readBaselineFile(file);
+    assertEq(parsed.templateVersion, '0.15.0', 'an explicit path parses');
+    assertEq(parsed.reconstructed, true, 'the reconstructed flag survives parsing');
+    writeFileSync(file, '[]\n');
+    assertTrue(readBaselineFile(file) === null, 'a baseline without a files object reads as null');
+    writeFileSync(file, '{ broken\n');
+    assertTrue(readBaselineFile(file) === null, 'an unparseable file reads as null, not a crash');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // 5. the baseline's own path and LIVE_PAIRS default

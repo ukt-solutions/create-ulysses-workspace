@@ -460,12 +460,13 @@ console.log('# classify-update');
 
   const result = classifyUpdate({ root });
   assertEq(result.config, [
-    { path: '.claude/settings.json', added: [], workspaceOnly: [], changed: [] },
+    { path: '.claude/settings.json', added: [], workspaceOnly: [], changed: [], arrays: [] },
     {
       path: '.mcp.json',
       added: ['enableAllProjectMcpServers', 'mcpServers/brandnew'],
       workspaceOnly: ['customTopLevel', 'mcpServers/mine'],
       changed: ['mcpServers/playwright'],
+      arrays: [],
     },
   ], 'config carries the key-level diff at unit depth, sorted paths');
   for (const list of [result.new, result.updated, result.differs, result.identical, result.localOnly, result.removed]) {
@@ -503,6 +504,146 @@ console.log('# classify-update');
     { path: '.mcp.json', unparseable: true },
   ], 'unparseable configs are flagged, one per side');
   assertTrue(!result.differs.includes('.mcp.json'), 'an unparseable config is still never differs');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 12d. Array-valued config keys diff by ELEMENT: hooks event lists and
+//      permissions.allow/deny are sets both sides extend, so the skill
+//      union-merges them (keep the workspace's elements, add the template's)
+//      instead of choosing one side whole — never a `changed` ask (gh:186).
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.claude', 'settings.json'), JSON.stringify({
+    hooks: {
+      PreToolUse: [
+        { matcher: 'Bash', hooks: [{ type: 'command', command: 'a.mjs' }] },
+        { matcher: 'Edit', hooks: [] },
+      ],
+    },
+    permissions: { allow: ['Bash(node:*)', 'WebFetch'], deny: ['Bash(rm:*)'] },
+  }) + '\n');
+  writeFileSync(join(root, '.claude', 'settings.json'), JSON.stringify({
+    hooks: {
+      PreToolUse: [
+        { matcher: 'Bash', hooks: [{ type: 'command', command: 'a.mjs' }] },
+        { matcher: 'Read', hooks: [] },
+      ],
+    },
+    permissions: { allow: ['Bash(node:*)', 'Bash(git:*)'], deny: [] },
+  }) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.config, [{
+    path: '.claude/settings.json',
+    added: [],
+    workspaceOnly: [],
+    changed: [],
+    arrays: [
+      {
+        path: 'hooks/PreToolUse',
+        added: [{ matcher: 'Edit', hooks: [] }],
+        workspaceOnly: [{ matcher: 'Read', hooks: [] }],
+      },
+      { path: 'permissions/allow', added: ['WebFetch'], workspaceOnly: ['Bash(git:*)'] },
+      { path: 'permissions/deny', added: ['Bash(rm:*)'], workspaceOnly: [] },
+    ],
+  }], 'arrays diff by element with the key path, never as changed');
+}
+
+// 13. Baseline resolution order (gh:186): the workspace's own baseline
+//     wins, the payload's .template-baseline.reconstructed.json (staged by
+//     --upgrade for pre-baseline workspaces) is the fallback an explicit
+//     --baseline overrides, and a corrupt root baseline counts as absent.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v2\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// template v1\n');
+  writeFileSync(join(payload, '.template-baseline.reconstructed.json'), JSON.stringify({
+    templateVersion: '0.20.0',
+    reconstructed: true,
+    files: { '.claude/hooks/session-start.mjs': sha('// template v1\n') },
+  }) + '\n');
+
+  // no root baseline: the payload's reconstructed one drives three-way
+  // classification — the worktree-flow case, where <root> is a worktree
+  // that cannot see the launcher's files
+  let result = classifyUpdate({ root });
+  assertTrue(result.hasBaseline, 'the payload reconstructed baseline is found without a root one');
+  assertEq(result.baselineSource, '.workspace-update/.template-baseline.reconstructed.json',
+    'baselineSource names the reconstructed file');
+  assertTrue(result.baselineReconstructed, 'baselineReconstructed flags a reconstructed baseline');
+  assertEq(result.updated, ['.claude/hooks/session-start.mjs'],
+    'the reconstructed baseline drives three-way classification (updated, not differs)');
+
+  // a root baseline wins over the payload fallback
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.19.0',
+    files: { '.claude/hooks/session-start.mjs': sha('// something else\n') },
+  }) + '\n');
+  result = classifyUpdate({ root });
+  assertEq(result.baselineSource, '.claude/.template-baseline.json',
+    'the root baseline wins over the payload fallback');
+  assertTrue(!result.baselineReconstructed, 'the root baseline is not flagged reconstructed');
+  assertEq(result.differs, ['.claude/hooks/session-start.mjs'],
+    'the root baseline hashes drive classification, not the reconstructed ones');
+
+  // an explicit --baseline beats both, on the CLI as in the API
+  const explicit = join(root, 'explicit-baseline.json');
+  writeFileSync(explicit, JSON.stringify({
+    templateVersion: '0.20.0',
+    files: { '.claude/hooks/session-start.mjs': sha('// template v1\n') },
+  }) + '\n');
+  result = classifyUpdate({ root, baseline: explicit });
+  assertEq(result.baselineSource, explicit, 'an explicit baseline wins');
+  assertEq(result.updated, ['.claude/hooks/session-start.mjs'], 'the explicit baseline drives classification');
+  const cli = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', root, '--payload', payload, '--baseline', explicit],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(cli.status, 0, `CLI accepts --baseline (stderr: ${cli.stderr.trim().slice(0, 200)})`);
+  assertEq(JSON.parse(cli.stdout).baselineSource, explicit, 'CLI --baseline drives classification');
+
+  // a corrupt root baseline counts as absent — the fallback applies
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), '{ broken\n');
+  result = classifyUpdate({ root });
+  assertEq(result.baselineSource, '.workspace-update/.template-baseline.reconstructed.json',
+    'a corrupt root baseline falls through to the reconstructed one');
+  assertEq(result.updated, ['.claude/hooks/session-start.mjs'],
+    'the reconstructed baseline classifies after a corrupt root file');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 15. --write-baseline resolves its previous baseline the same way: in the
+//     worktree flow (root has no baseline yet) a declined update keeps its
+//     old entry from the payload's reconstructed baseline, instead of the
+//     change being silently filed away as applied.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v2\n');
+  writeFileSync(join(payload, '.manifest.json'), JSON.stringify({ templateVersion: '0.22.0' }) + '\n');
+  // the user declined the update: the workspace keeps the old content
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// template v1\n');
+  writeFileSync(join(payload, '.template-baseline.reconstructed.json'), JSON.stringify({
+    templateVersion: '0.20.0',
+    reconstructed: true,
+    files: { '.claude/hooks/session-start.mjs': sha('// template v1\n') },
+  }) + '\n');
+
+  const r = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', root, '--payload', payload, '--write-baseline'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r.status, 0, `--write-baseline exits 0 with a reconstructed previous (stderr: ${r.stderr.trim().slice(0, 200)})`);
+  const baseline = JSON.parse(readFileSync(join(root, '.claude', '.template-baseline.json'), 'utf8'));
+  assertEq(baseline.files['.claude/hooks/session-start.mjs'], sha('// template v1\n'),
+    'a declined update keeps its old hash from the payload reconstructed baseline');
   rmSync(root, { recursive: true, force: true });
 }
 

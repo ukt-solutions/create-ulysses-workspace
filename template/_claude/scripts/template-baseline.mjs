@@ -57,6 +57,14 @@ import { dirname, join, resolve } from 'node:path';
 
 export const BASELINE_PATH = '.claude/.template-baseline.json';
 
+// Where --upgrade stages a RECONSTRUCTED baseline (built from the installed
+// version's npm tarball) inside the payload. It never lands in the launcher:
+// with a remote, /workspace-update classifies inside a task worktree that
+// cannot see launcher-only files, and an untracked launcher baseline would
+// also dirty the launcher against the incoming PR. The payload travels to
+// the worktree by absolute path, so the baseline rides along.
+export const RECONSTRUCTED_BASELINE_NAME = '.template-baseline.reconstructed.json';
+
 // [source name, installed name] pairs for the verbatim-installed roots. The
 // staged payload carries the live names; the template tree stores .claude/ and
 // .mcp.json under the inert names _claude/ and _mcp.json, so scaffold passes
@@ -118,23 +126,36 @@ function* walkFiles(dir, prefix = '') {
 }
 
 /**
- * Read the baseline at <root>/.claude/.template-baseline.json. Returns
- * { templateVersion, files } or null when absent (workspaces older than the
- * baseline's introduction) or unparseable — classification then falls back to
- * the two-way behavior rather than failing the update.
+ * Read a baseline JSON file at an explicit path. Returns
+ * { templateVersion, files, reconstructed } or null when absent or
+ * unparseable — a corrupt baseline is treated exactly like a missing one
+ * (gh:186) so classification falls back to the two-way behavior rather than
+ * failing the update, and reconstruction is not blocked by a broken file.
  */
-export function readBaseline(root) {
-  const path = join(resolve(root), BASELINE_PATH);
+export function readBaselineFile(path) {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     if (!parsed || typeof parsed !== 'object' || typeof parsed.files !== 'object' || parsed.files === null) {
       return null;
     }
-    return { templateVersion: typeof parsed.templateVersion === 'string' ? parsed.templateVersion : null, files: parsed.files };
+    return {
+      templateVersion: typeof parsed.templateVersion === 'string' ? parsed.templateVersion : null,
+      files: parsed.files,
+      reconstructed: parsed.reconstructed === true,
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the baseline at <root>/.claude/.template-baseline.json. Returns the
+ * parsed baseline or null when absent (workspaces older than the baseline's
+ * introduction) or unparseable.
+ */
+export function readBaseline(root) {
+  return readBaselineFile(join(resolve(root), BASELINE_PATH));
 }
 
 /**
@@ -186,7 +207,10 @@ export function buildBaseline(sourceDir, { pairs = LIVE_PAIRS, version = null } 
  * they were for unapplied updates: a file whose workspace content still
  * matches the old baseline while the payload ships something new (a declined
  * `updated` batch) keeps the OLD entry, so the next update still offers the
- * change instead of filing the file away as a local edit.
+ * change instead of filing the file away as a local edit. The previous
+ * baseline defaults to <root>/.claude/.template-baseline.json; pass
+ * opts.previous to override (the worktree flow reads the payload's
+ * reconstructed baseline when the root has none of its own).
  */
 export function writeBaseline(root, sourceDir, opts = {}) {
   const absRoot = resolve(root);
@@ -196,7 +220,7 @@ export function writeBaseline(root, sourceDir, opts = {}) {
       `No verbatim template files found under ${resolve(sourceDir)} — refusing to write an empty baseline`,
     );
   }
-  const previous = readBaseline(absRoot);
+  const previous = 'previous' in opts ? opts.previous : readBaseline(absRoot);
   if (previous) {
     for (const rel of Object.keys(baseline.files)) {
       const oldHash = previous.files[rel];
