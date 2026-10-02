@@ -67,11 +67,23 @@
 //                (machine-local), paths under .claude/worktrees/, and entries
 //                of workspace.json → workspace.localFiles (array of
 //                .claude/-relative paths or globs for files this workspace
-//                owns) (gh:180)
+//                owns) (gh:180). Two markers refine the per-file offer
+//                (gh:190): `{ file, referencedBy }` — a removed hook that a
+//                workspace-only settings.json entry still registers (the
+//                config-diff paths); the skill removes file and settings
+//                entry together. `{ file, userOwned: true }` — no baseline
+//                entry, so the template never shipped it: the workspace's
+//                own, offered a workspace.localFiles entry, not deletion.
 //   staleTests — *.test.mjs files under .claude/ with no payload counterpart.
 //                The npm tarball ships no tests, so these came from a dev
 //                checkout and are never updated by /workspace-update; the
 //                skill offers to remove them (tests live in the template repo)
+//   implicitDefaults — workspace.json keys whose ABSENCE used to carry a
+//                default and now doesn't: canonicalBudgetBytes meant a
+//                40960-byte budget before v0.19 and means off since. An
+//                upgrade crossing that boundary into a workspace.json without
+//                the key reports { key, value, reason } so the skill writes
+//                the value explicitly (gh:190).
 //
 // Plus `hasBaseline`: whether a usable baseline was found, `baselineSource`
 // (which file it came from) and `baselineReconstructed`. The default
@@ -118,6 +130,7 @@ import {
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitIgnoredPaths } from './build-workspace-context.mjs';
+import { compareVersions } from '../lib/registry-check.mjs';
 import {
   BASELINE_PATH,
   RECONSTRUCTED_BASELINE_NAME,
@@ -354,6 +367,42 @@ export function resolveBaseline({ root, payload, baseline = null }) {
   return { baseline: null, source: null };
 }
 
+/**
+ * workspace.json keys whose absence carried a default in the version being
+ * upgraded FROM but not in the payload's. The canonical budget flipped in
+ * v0.19.0-beta.0 (gh:164): absent used to mean a 40960-byte budget, since
+ * then absent means off — a workspace upgraded across that boundary that
+ * never wrote the key silently stops trimming. The skill writes the
+ * explicit value and says so (gh:190).
+ */
+const CANONICAL_BUDGET_OPT_IN = '0.19.0-beta.0';
+const CANONICAL_BUDGET_DEFAULT = 40960;
+
+function implicitDefaults(absRoot, absPayload) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(absPayload, '.manifest.json'), 'utf8'));
+  } catch {
+    return []; // no manifest — the payload path is wrong; nothing to infer
+  }
+  const { fromVersion } = manifest;
+  if (typeof fromVersion !== 'string' || fromVersion === 'unknown') return [];
+  if (compareVersions(fromVersion, CANONICAL_BUDGET_OPT_IN) >= 0) return [];
+  let config;
+  try {
+    config = JSON.parse(readFileSync(join(absRoot, 'workspace.json'), 'utf8'));
+  } catch {
+    return []; // no workspace.json to preserve a default in
+  }
+  const ws = config?.workspace && typeof config.workspace === 'object' ? config.workspace : null;
+  if (!ws || Object.prototype.hasOwnProperty.call(ws, 'canonicalBudgetBytes')) return [];
+  return [{
+    key: 'canonicalBudgetBytes',
+    value: CANONICAL_BUDGET_DEFAULT,
+    reason: `absent meant a ${CANONICAL_BUDGET_DEFAULT}-byte canonical budget before v0.19 and means off since — write the value explicitly or trimming silently stops`,
+  }];
+}
+
 export function classifyUpdate({ root, payload, baseline: baselineArg = null }) {
   const absRoot = resolve(root);
   const absPayload = resolve(payload ?? join(absRoot, '.workspace-update'));
@@ -376,6 +425,7 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
     activated: [],
     removed: [],
     staleTests: [],
+    implicitDefaults: [],
     hasBaseline: baseline !== null,
     baselineSource: source,
     baselineReconstructed: baseline !== null && baseline.reconstructed === true,
@@ -451,9 +501,64 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
       continue;
     }
     if (isOwnedByWorkspace(rel, localFiles)) continue;
-    result.removed.push(rel);
+    // No baseline record means the template never shipped the file here —
+    // the workspace's own, not a template removal. Marked so the skill
+    // offers a workspace.localFiles entry instead of deletion; only a real
+    // baseline can prove the negative (gh:190).
+    if (baseline && typeof baseline.files[rel] !== 'string') {
+      result.removed.push({ file: rel, userOwned: true });
+    } else {
+      result.removed.push(rel);
+    }
   }
+  linkRemovedHooks(result, absRoot);
+  result.implicitDefaults = implicitDefaults(absRoot, absPayload);
   return result;
+}
+
+/**
+ * A removed hook that a workspace-only settings.json entry still registers
+ * must not be deleted while its registration stays: mark the removal with
+ * `referencedBy` — the config-diff paths (`settings.json hooks.{Event}`) —
+ * so the skill removes the file and the settings entry together (gh:190).
+ * References are looked for where the config diff shows the workspace
+ * holding what the payload doesn't: `arrays[].workspaceOnly` elements and
+ * `workspaceOnly` keys (whose value is read from its settings.json).
+ */
+function linkRemovedHooks(result, absRoot) {
+  const settings = result.config.find((c) => c.path === '.claude/settings.json');
+  if (!settings || settings.notInstalled || settings.unparseable) return;
+  const removedHooks = result.removed.filter(
+    (entry) => typeof entry === 'string' && entry.startsWith('.claude/hooks/'),
+  );
+  if (removedHooks.length === 0) return;
+  let wsHooks = null;
+  try {
+    const wsSettings = JSON.parse(readFileSync(join(absRoot, '.claude', 'settings.json'), 'utf8'));
+    if (isPlainObject(wsSettings?.hooks)) wsHooks = wsSettings.hooks;
+  } catch {
+    return; // the config entry already flagged it unparseable
+  }
+  for (let i = 0; i < result.removed.length; i++) {
+    const rel = result.removed[i];
+    if (typeof rel !== 'string' || !rel.startsWith('.claude/hooks/')) continue;
+    const referencedBy = [];
+    for (const arr of settings.arrays) {
+      if (arr.path.startsWith('hooks/') && arr.workspaceOnly.some((el) => JSON.stringify(el).includes(rel))) {
+        referencedBy.push(`settings.json ${arr.path.split('/').join('.')}`);
+      }
+    }
+    for (const path of settings.workspaceOnly) {
+      if (!path.startsWith('hooks/')) continue;
+      const event = wsHooks && wsHooks[path.split('/')[1]];
+      if (event !== undefined && JSON.stringify(event).includes(rel)) {
+        referencedBy.push(`settings.json ${path.split('/').join('.')}`);
+      }
+    }
+    if (referencedBy.length > 0) {
+      result.removed[i] = { file: rel, referencedBy };
+    }
+  }
 }
 
 // ---------- CLAUDE.md merge ----------
