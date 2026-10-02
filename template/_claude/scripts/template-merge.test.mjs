@@ -257,6 +257,67 @@ console.log('# template-merge');
   }
 }
 
+// 7. Non-UTF-8 bytes survive a clean merge: the merged output holds the
+//    exact latin1 byte (0xe9), not its UTF-8 replacement (U+FFFD).
+{
+  const root = mkdtempSync(join(tmpdir(), 'template-merge-latin1-'));
+  const payload = join(root, '.workspace-update');
+  const base = join(payload, TEMPLATE_BASE_DIR);
+  const rel = '.claude/skills/demo/latin1.md';
+  const baseBytes = Buffer.from('line caf\xe9\nmiddle\nline3\n', 'latin1');
+  try {
+    writeRel(root, rel, Buffer.from('// local caf\xe9 top\nline caf\xe9\nmiddle\nline3\n', 'latin1'));
+    writeRel(payload, rel, Buffer.from('line caf\xe9\nmiddle\nline3\n// template tail\n', 'latin1'));
+    writeRel(base, rel, baseBytes);
+    writeRel(root, '.claude/.template-baseline.json', JSON.stringify({
+      templateVersion: '0.22.0',
+      files: { [rel]: sha(baseBytes) },
+    }, null, 2) + '\n');
+
+    const result = mergeTemplateFiles({ root });
+    assertEq(result.merged.map((e) => e.path), [rel], 'non-UTF-8 file merges cleanly');
+    const merged = readFileSync(at(join(payload, MERGED_DIR), rel));
+    assertTrue(merged.equals(
+      Buffer.from('// local caf\xe9 top\nline caf\xe9\nmiddle\nline3\n// template tail\n', 'latin1'),
+    ), 'merged output keeps the exact latin1 bytes');
+    assertTrue(merged.includes(0xe9), 'the 0xe9 byte is preserved');
+    assertTrue(!merged.includes(Buffer.from([0xef, 0xbf, 0xbd])), 'no U+FFFD replacement bytes');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 8. A CRLF working copy against LF base/template would conflict on every
+//    line under byte-exact merge: the merge runs on LF-folded copies and
+//    the result comes back in the local CRLF style, both edits applied.
+{
+  const root = mkdtempSync(join(tmpdir(), 'template-merge-crlf-'));
+  const payload = join(root, '.workspace-update');
+  const base = join(payload, TEMPLATE_BASE_DIR);
+  const rel = '.claude/skills/demo/crlf.md';
+  const baseText = 'line1\nline2\nline3\n';
+  try {
+    writeRel(root, rel, Buffer.from('local edit\r\nline2\r\nline3\r\n'));
+    writeRel(payload, rel, 'line1\nline2\nline3 template\n');
+    writeRel(base, rel, baseText);
+    writeRel(root, '.claude/.template-baseline.json', JSON.stringify({
+      templateVersion: '0.22.0',
+      files: { [rel]: sha(baseText) },
+    }, null, 2) + '\n');
+
+    const result = mergeTemplateFiles({ root });
+    assertEq(result.merged.map((e) => e.path), [rel], 'CRLF local merges cleanly against LF inputs');
+    assertEq(result.merged[0].conflicts, 0, 'line-ending difference alone raises no conflict');
+    const merged = readFileSync(at(join(payload, MERGED_DIR), rel), 'utf8');
+    assertEq(merged, 'local edit\r\nline2\r\nline3 template\r\n', 'both edits present, CRLF style restored');
+    // The folded copies were temp files: nothing landed inside the payload
+    // besides .merged/, and the workspace file keeps its CRLF bytes.
+    assertEq(readFileSync(at(root, rel), 'utf8'), 'local edit\r\nline2\r\nline3\r\n', 'workspace file untouched');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 if (failed > 0) {
   console.error(`${failed} check(s) failed, ${passed} passed`);
   process.exit(1);

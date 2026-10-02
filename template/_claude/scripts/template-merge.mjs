@@ -32,7 +32,10 @@
 // against it would fabricate conflicts or silently drop local edits. With a
 // base, `git merge-file` merges local vs base vs template; its exit status
 // is the conflict count (0 = clean merge, >0 = conflicts, anything else =
-// error).
+// error). The merged bytes pass through untouched — a file that isn't
+// valid UTF-8 survives a clean merge byte-exact — and a CRLF local copy is
+// folded to LF for the merge and restored to CRLF after, so a Windows
+// checkout neither conflicts wholesale nor loses its line-ending style.
 //
 // Prints JSON:
 //   { "merged":       [{ path, conflicts: 0, out }],
@@ -50,10 +53,13 @@
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -94,19 +100,73 @@ function gitMergeFile(local, base, template) {
   // -p prints the merged text to stdout instead of overwriting <local> —
   // the workspace file is never touched. The -L labels name the three sides
   // in the order the files follow, so conflict hunks read
-  // `<<<<<<< local` … `>>>>>>> template`.
+  // `<<<<<<< local` … `>>>>>>> template`. Buffers end to end (no encoding):
+  // decoding to a string would turn every non-UTF-8 byte into U+FFFD and
+  // corrupt a "clean" merge's output.
   const r = spawnSync('git', [
     'merge-file', '-p',
     '-L', 'local', '-L', 'base', '-L', 'template',
     local, base, template,
-  ], { encoding: 'utf8', maxBuffer: MERGE_BUFFER });
+  ], { maxBuffer: MERGE_BUFFER });
   if (r.error || r.status === null || r.status < 0 || r.status > MAX_CONFLICT_STATUS) {
-    const detail = (r.stderr && r.stderr.trim())
+    const detail = (r.stderr && r.stderr.toString('utf8').trim())
       || (r.error && r.error.message)
       || `git merge-file exited with status ${r.status}`;
     return { error: detail };
   }
-  return { conflicts: r.status, text: r.stdout ?? '' };
+  return { conflicts: r.status, bytes: r.stdout ?? Buffer.alloc(0) };
+}
+
+// ---------- line endings ----------
+//
+// The baseline's hashes fold CRLF to LF, but git merge-file compares bytes:
+// a CRLF working copy against LF base and template inputs conflicts on
+// every line of the file. When the local copy is CRLF text, fold all three
+// inputs to LF in temp files for the merge, then restore the local style on
+// the result. Binary (NUL-bearing) and LF-local files take the byte-exact
+// path with no temp files.
+
+// latin1 round-trips bytes 1:1 — the same trick hashBytes uses — so the
+// fold never mangles bytes that aren't valid UTF-8.
+function foldCrLf(bytes) {
+  if (bytes.includes(0)) return bytes;
+  return Buffer.from(bytes.toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
+}
+
+function isCrlfText(bytes) {
+  return !bytes.includes(0) && bytes.includes('\r\n');
+}
+
+function writeTempInput(tmpDir, name, bytes) {
+  const p = join(tmpDir, name);
+  writeFileSync(p, bytes);
+  return p;
+}
+
+/**
+ * Merge one file trio, returning { conflicts, bytes } or { error }. When
+ * the local copy is CRLF text the merge runs on LF-folded copies under a
+ * temp dir (removed afterwards) and the result comes back in the local
+ * CRLF style — every `\n` in the folded output stood for a line the local
+ * file ends with CRLF. The payload's base and template files, and the
+ * workspace file, are only ever read here.
+ */
+function mergeTrio(local, base, template) {
+  const localBytes = readFileSync(local);
+  if (!isCrlfText(localBytes)) return gitMergeFile(local, base, template);
+  const tmpDir = mkdtempSync(join(tmpdir(), 'template-merge-'));
+  try {
+    const merged = gitMergeFile(
+      writeTempInput(tmpDir, 'local', foldCrLf(localBytes)),
+      writeTempInput(tmpDir, 'base', foldCrLf(readFileSync(base))),
+      writeTempInput(tmpDir, 'template', foldCrLf(readFileSync(template))),
+    );
+    if (merged.error) return merged;
+    const crlf = Buffer.from(merged.bytes.toString('latin1').replace(/\n/g, '\r\n'), 'latin1');
+    return { conflicts: merged.conflicts, bytes: crlf };
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -164,14 +224,14 @@ export function mergeTemplateFiles({ root, payload = null, baseline = null, out 
       result.noBase.push(rel);
       continue;
     }
-    const merge = gitMergeFile(local, base, template);
+    const merge = mergeTrio(local, base, template);
     if (merge.error) {
       result.errors.push({ path: rel, message: merge.error });
       continue;
     }
     const outFile = join(result.out, rel);
     mkdirSync(dirname(outFile), { recursive: true });
-    writeFileSync(outFile, merge.text);
+    writeFileSync(outFile, merge.bytes);
     const entry = { path: rel, conflicts: merge.conflicts, out: outFile };
     if (merge.conflicts === 0) result.merged.push(entry);
     else result.conflicted.push(entry);
