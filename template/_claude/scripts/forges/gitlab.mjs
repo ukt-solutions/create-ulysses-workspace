@@ -103,7 +103,17 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
     const m = stdout.match(/\/-\/merge_requests\/(\d+)/);
     if (!m) throw new Error(`Could not parse MR number from glab output: ${stdout}`);
     const number = parseInt(m[1], 10);
-    const url = stdout.split('\n').filter(Boolean).find((l) => l.includes(`/-/merge_requests/${number}`)) || webUrl(target, 'merge_requests', number);
+    // The URL glab printed wins over the constructed one when it names
+    // exactly this MR — compared as a parsed URL's path, never by a
+    // substring test against a URL (CodeQL:
+    // incomplete-url-substring-sanitization); trailing punctuation is
+    // stripped so sentence-embedded URLs still parse.
+    const printedUrl = stdout.split('\n').flatMap((l) => l.match(/https?:\/\/\S+/g) ?? [])
+      .find((u) => {
+        try { return new URL(u.replace(/[),.;]+$/, '')).pathname === `/${target}/-/merge_requests/${number}`; }
+        catch { return false; }
+      });
+    const url = printedUrl || webUrl(target, 'merge_requests', number);
     return { id: `${target}!${number}`, url, number };
   }
 

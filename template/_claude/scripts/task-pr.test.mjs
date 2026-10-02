@@ -394,7 +394,9 @@ console.log('# --create with a work item: push, PR, closing line (same-repo ref)
     assertEq(out.prs.length, 1, 'one PR created');
     assertEq([out.prs[0].repo, out.prs[0].owner, out.prs[0].name, out.prs[0].isWorkspace],
       ['app', 'acme', 'app', false], 'PR entry carries repo identity');
-    assert(typeof out.prs[0].number === 'number' && out.prs[0].url.startsWith('https://'), 'PR entry carries number and url');
+    let urlParses = false;
+    try { urlParses = new URL(out.prs[0].url).protocol === 'https:'; } catch { /* not a URL */ }
+    assert(typeof out.prs[0].number === 'number' && urlParses, 'PR entry carries number and url');
     assertEq(out.prs[0].commits, 1, 'the forge entry carries its commit count');
     const create = log.find((e) => e.op === 'prCreate');
     assertEq(create.title, 'The issue title', 'title comes from the linked issue');
@@ -894,6 +896,14 @@ function prsFile(dir, prs) {
   return p;
 }
 
+// The "repo: url" entries of a merge-stopped error's Still-open clause,
+// parsed out so tests compare the list exactly — a substring check against
+// a URL is what CodeQL's incomplete-url-substring-sanitization flags.
+function stillOpenFrom(err) {
+  const clause = err?.message.split('Still open: ')[1]?.split('. The workspace repo')[0] ?? '';
+  return clause.split(', ').filter(Boolean);
+}
+
 console.log('# --merge: projects first, workspace last, then pull and close');
 {
   // launcherOrigin: true — the launcher tracks its origin, so the post-merge
@@ -969,12 +979,14 @@ console.log('# a failed workspace merge still reports the PRs left open');
       { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
       { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace#3', url: 'https://github.com/acme/workspace/pull/3', isWorkspace: true },
     ];
-    await rejects(
-      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs)],
-        { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log, { failMergeIds: ['acme/workspace#3'] }), trackerFactory: fakeTrackerFactory(log) }),
-      'failed workspace merge errors',
-      'https://github.com/acme/workspace/pull/3',
-    );
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs)],
+        { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log, { failMergeIds: ['acme/workspace#3'] }), trackerFactory: fakeTrackerFactory(log) });
+    } catch (e) { err = e; }
+    assert(err && /merge stopped/.test(err.message), `failed workspace merge errors: ${err?.message}`);
+    assertEq(stillOpenFrom(err), ['.: https://github.com/acme/workspace/pull/3'],
+      'the workspace PR is reported as still open');
     assertEq(log.filter((e) => e.op === 'prMerge').length, 1, 'only the project PR merged');
   } finally { clean(root); bares.forEach(clean); }
 }
@@ -1019,10 +1031,10 @@ console.log('# a queued GitLab MR merge (glab exits 0, MR still open) stops the 
         { gitFn: gitWith(), forgeFactory: (config) => createGitlabAdapter(config, { spawnFn }), trackerFactory: fakeTrackerFactory(log) });
     } catch (e) { err = e; }
     assert(err && /queued, not applied/.test(err.message), `the queued merge stops the run: ${err?.message}`);
-    assert(err && /Still open/.test(err.message)
-      && err.message.includes('https://gitlab.com/acme/app/-/merge_requests/1')
-      && err.message.includes('https://gitlab.com/acme/workspace/-/merge_requests/3'),
-      `both PRs are listed as still open: ${err?.message}`);
+    assertEq(stillOpenFrom(err), [
+      'app: https://gitlab.com/acme/app/-/merge_requests/1',
+      '.: https://gitlab.com/acme/workspace/-/merge_requests/3',
+    ], 'both PRs are listed as still open');
     assertEq(glabCalls.filter((c) => c.startsWith('mr merge')),
       ['mr merge 1 --repo acme/app --yes --auto-merge=false --squash --remove-source-branch'],
       'only the project MR merge was attempted — the workspace MR was never touched');
