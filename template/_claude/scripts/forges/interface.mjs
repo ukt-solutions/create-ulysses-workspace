@@ -21,8 +21,14 @@
 //     → [{ id, number, title, url, headRefName, baseRefName, mergedAt, state }]
 //     `base`/`head` filter by target/source branch (e.g. the open PR for a
 //     task branch); `search` passes through the forge's own search syntax
-//     (e.g. 'merged:>2026-01-01'), so callers can bound a window without
-//     this interface growing a date vocabulary.
+//     (e.g. 'merged:>2026-01-01T00:00:00Z'), so callers can bound a window
+//     without this interface growing a date vocabulary. Two guarantees ride
+//     on that: an adapter translating `merged:>X` client-side (the GitLab
+//     adapter does — pass a full timestamp) throws on an unparseable X
+//     rather than silently listing unbounded, and when a full page means
+//     older results may exist beyond it the returned array carries a
+//     non-enumerable `truncated: true` (callers that only map the list
+//     never see it).
 //   releaseView({ tag, repo? })
 //     → { tag, url, name, publishedAt }
 //     throws ReleaseNotFound if the tag has no release

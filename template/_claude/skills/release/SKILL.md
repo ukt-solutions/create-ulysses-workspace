@@ -23,10 +23,11 @@ Release notes come from the forge. GitHub's generated notes (merged PR titles) a
 Ask which repo to release — read `repos` from `workspace.json` and default to the entry with `"primary": true`. If no version was given, ask the bump kind (patch/minor/major) after showing the merged PRs since the last tag, so the operator can judge the impact:
 
 ```bash
-git -C repos/{repo} describe --tags --abbrev=0
+git -C repos/{repo} describe --tags --abbrev=0        # v{previous}
+git -C repos/{repo} log -1 --format=%cI v{previous}   # the previous tag's commit time
 ```
 
-Then call the forge adapter's `prList` with a merged-after search bounded by that tag's date (e.g. `merged:>{date}`). Pre-v1.0 breaking changes are a minor bump.
+Then call the forge adapter's `prList` with `state: 'merged'`, `base:` the repo's default branch, and a merged-after search bounded by that tag's commit time — the full `%cI` timestamp (e.g. `merged:>2026-05-01T10:00:00Z`), never a bare date, which would sweep in every PR merged later the same day. `base` matters because PRs merged into other branches are not this release. If the returned list carries `truncated: true`, older PRs may sit beyond the fetched page — say so and re-query with a higher `limit` before judging the bump. Pre-v1.0 breaking changes are a minor bump.
 
 **Step 2: Preflight the tag and the forge**
 
@@ -69,13 +70,16 @@ Who creates the release depends on the repo, and the CI check is per-forge:
 
 Either way, confirm the release exists with `forge.releaseView({ tag: 'v{version}', repo })`.
 
-Otherwise the skill creates the release itself — on GitHub the forge generates the notes; on GitLab it cannot (`NOT_SUPPORTED`), so the notes are assembled from the same merged-MR list Step 1 gathered:
+Otherwise the skill creates the release itself — on GitHub the forge generates the notes; on GitLab it cannot (`NOT_SUPPORTED`), so the notes come from the same query Step 1 ran:
 
 ```js
 // GitHub
 await forge.releaseCreate({ tag: 'v{version}', repo, generateNotes: true });
-// GitLab — notes come from the skill, not the forge
-const merged = await forge.prList({ state: 'merged', search: `merged:>{previous tag date}`, repo });
+// GitLab — notes come from the skill, not the forge. tagTime is the %cI of
+// v{previous}; base excludes MRs merged into other branches.
+const merged = await forge.prList({ state: 'merged', base: '{default branch}',
+  search: `merged:>${tagTime}`, repo });
+if (merged.truncated) warn('older MRs may be missing — raise limit and re-query');
 await forge.releaseCreate({ tag: 'v{version}', repo, generateNotes: false,
   notes: merged.map((p) => `- ${p.title}`).join('\n') });
 ```

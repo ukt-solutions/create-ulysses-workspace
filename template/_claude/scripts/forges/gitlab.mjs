@@ -16,8 +16,12 @@
 //     callers compare against the vocabulary gh prints; glab's JSON is
 //     lower-case.
 //   - `search` is GitLab's own syntax (a title/description substring) —
-//     except the `merged:>{date}` form the release skill sends, which glab
-//     cannot express and this adapter translates into a merged-at filter.
+//     except the `merged:>{timestamp}` form the release skill sends, which
+//     glab cannot express and this adapter translates into a merged-at
+//     filter. An unparseable timestamp throws (silently dropping the cutoff
+//     would list every MR ever merged), and a full page whose every row
+//     survives the cutoff is flagged `truncated: true` — older in-window
+//     MRs may sit on a page this list never fetched.
 //   - `workflowRunFind`/`workflowRunWatch` map onto pipelines: a GitLab
 //     project runs one pipeline per ref, so the `workflow` name is ignored.
 //     Watching polls the pipeline until it reaches a status that cannot
@@ -178,11 +182,19 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
 
   // Listing merged MRs is how /release proves the unreleased-notes pile is
   // complete rather than merely empty (gh:89). The release skill bounds the
-  // window with GitHub's `merged:>{date}` search syntax; glab has no
-  // equivalent filter, so that form is translated here into merged-MRs-only
-  // plus a client-side mergedAt cutoff. Anything else passes to glab's own
-  // `--search` (a title/description substring) verbatim, per the interface's
-  // "the forge's own search syntax" contract.
+  // window with GitHub's `merged:>{timestamp}` search syntax; glab has no
+  // equivalent filter, so that form is translated here into merged-MRs-only,
+  // newest-first, plus a client-side mergedAt cutoff. Anything else passes to
+  // glab's own `--search` (a title/description substring) verbatim, per the
+  // interface's "the forge's own search syntax" contract.
+  //
+  // glab returns a single page of `limit` rows. A page that is not full, or
+  // one whose oldest rows fall below the cutoff, proves the window's far
+  // edge was reached — the list is complete. A full page whose every row
+  // survives the cutoff does not: older in-window MRs could sit on a page
+  // never fetched, and that maybe-incomplete case is flagged with a
+  // non-enumerable `truncated: true` on the returned array, so callers that
+  // just map the list never see it.
   async function prList({ state = 'merged', base, head, search, limit = 100, repo }) {
     const target = repoFor(repo);
     const args = ['mr', 'list', '--repo', target, '--output', 'json', '--per-page', String(limit)];
@@ -191,6 +203,12 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
     if (searchMatch) {
       args.push('--merged', '--order', 'merged_at', '--sort', 'desc');
       mergedAfter = Date.parse(searchMatch[1].trim());
+      // An unparseable bound throws instead of silently listing unbounded —
+      // the release notes assembled from this list would quietly cover the
+      // project's entire history.
+      if (Number.isNaN(mergedAfter)) {
+        throw new Error(`prList: merged:> needs a parseable timestamp (e.g. merged:>2026-07-01T00:00:00Z), got: ${searchMatch[1].trim()}`);
+      }
     } else {
       switch (state) {
         case 'open':
@@ -206,10 +224,14 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
     if (head) args.push('--source-branch', head);
     const stdout = glabOrThrow(args).trim();
     let raw = stdout ? JSON.parse(stdout) : [];
-    if (mergedAfter !== null && !Number.isNaN(mergedAfter)) {
-      raw = raw.filter((p) => p.merged_at && Date.parse(p.merged_at) > mergedAfter);
+    const pageFull = raw.length === limit;
+    let truncated = pageFull;
+    if (mergedAfter !== null) {
+      const kept = raw.filter((p) => p.merged_at && Date.parse(p.merged_at) > mergedAfter);
+      truncated = pageFull && kept.length === raw.length;
+      raw = kept;
     }
-    return raw.map((p) => ({
+    const list = raw.map((p) => ({
       id: p.references?.full ?? `${target}!${p.iid}`,
       number: p.iid,
       title: p.title,
@@ -219,6 +241,8 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
       mergedAt: p.merged_at,
       state: mrState(p.state),
     }));
+    if (truncated) Object.defineProperty(list, 'truncated', { value: true });
+    return list;
   }
 
   async function releaseView({ tag, repo }) {

@@ -4,14 +4,16 @@
 //
 // Git runs for real under tmpdir (rev-list, remote get-url, log — the parts
 // users get); push and pull are intercepted so nothing leaves the machine,
-// and the forge and tracker are injected fakes, matching the adapters'
-// spawnFn pattern. Every git call is an argv array, never a shell string.
+// and the forge and tracker are injected — fakes, or the real gitlab adapter
+// over a mocked glab, matching the adapters' spawnFn pattern. Every git call
+// is an argv array, never a shell string.
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run, parseArgs, parseForgeRemote, mergeModeFor } from './task-pr.mjs';
+import { createGitlabAdapter } from './forges/gitlab.mjs';
 import { createTaskWorktree, taskWorktreePath } from './task-worktree.mjs';
 import { reconcile, addTask } from './chat-record.mjs';
 
@@ -974,6 +976,57 @@ console.log('# a failed workspace merge still reports the PRs left open');
       'https://github.com/acme/workspace/pull/3',
     );
     assertEq(log.filter((e) => e.op === 'prMerge').length, 1, 'only the project PR merged');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a queued GitLab MR merge (glab exits 0, MR still open) stops the whole run — e2e');
+{
+  // The real gitlab adapter runs against a mocked glab: the project MR's
+  // merge only queues behind a running pipeline (glab exits 0, the MR stays
+  // OPEN), so --merge must stop before the workspace MR, close nothing, and
+  // report both PRs as still open — the CLI exits non-zero on this
+  // rejection.
+  const { root, bares } = makeLauncher({});
+  try {
+    const mr = (n, repo) => JSON.stringify({
+      iid: n, title: 'The MR', state: 'opened', draft: false,
+      source_branch: 'feature/x', target_branch: 'main',
+      web_url: `https://gitlab.com/${repo}/-/merge_requests/${n}`,
+      detailed_merge_status: 'ci_still_running', merged_at: null, has_conflicts: false,
+    });
+    const glabCalls = [];
+    const spawnFn = (cmd, args) => {
+      const key = args.join(' ');
+      glabCalls.push(key);
+      if (key === 'mr view 1 --repo acme/app --output json') return { status: 0, stdout: mr(1, 'acme/app'), stderr: '' };
+      // The queued merge: glab exits 0, but the MR never landed.
+      if (key === 'mr merge 1 --repo acme/app --yes --auto-merge=false --squash --remove-source-branch') {
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      if (key === 'mr view 3 --repo acme/workspace --output json') return { status: 0, stdout: mr(3, 'acme/workspace'), stderr: '' };
+      return { status: 1, stdout: '', stderr: `unexpected glab call: ${key}` };
+    };
+    const prs = [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app!1',
+        url: 'https://gitlab.com/acme/app/-/merge_requests/1', isWorkspace: false, forge: 'gitlab' },
+      { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace!3',
+        url: 'https://gitlab.com/acme/workspace/-/merge_requests/3', isWorkspace: true, forge: 'gitlab' },
+    ];
+    const log = [];
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
+        { gitFn: gitWith(), forgeFactory: (config) => createGitlabAdapter(config, { spawnFn }), trackerFactory: fakeTrackerFactory(log) });
+    } catch (e) { err = e; }
+    assert(err && /queued, not applied/.test(err.message), `the queued merge stops the run: ${err?.message}`);
+    assert(err && /Still open/.test(err.message)
+      && err.message.includes('https://gitlab.com/acme/app/-/merge_requests/1')
+      && err.message.includes('https://gitlab.com/acme/workspace/-/merge_requests/3'),
+      `both PRs are listed as still open: ${err?.message}`);
+    assertEq(glabCalls.filter((c) => c.startsWith('mr merge')),
+      ['mr merge 1 --repo acme/app --yes --auto-merge=false --squash --remove-source-branch'],
+      'only the project MR merge was attempted — the workspace MR was never touched');
+    assertEq(log.filter((e) => e.op === 'closeIssue').length, 0, 'the issue was not closed');
   } finally { clean(root); bares.forEach(clean); }
 }
 

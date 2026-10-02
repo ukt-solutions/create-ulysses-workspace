@@ -265,7 +265,9 @@ console.log('# prList');
   else fail(`open state should add no state flag: ${list.join(' ')}`);
 }
 
-// GitHub-style `merged:>{date}` search translates to a merged-at cutoff.
+// GitHub-style `merged:>{timestamp}` search translates to a merged-at
+// cutoff. The bound is a full timestamp — the release skill passes the
+// previous tag's %cI, and a bare date would sweep in same-day MRs.
 {
   const spawnFn = buildSpawn({
     [`mr list --repo ${PROJECT} --output json --per-page 100 --merged --order merged_at --sort desc`]:
@@ -277,12 +279,57 @@ console.log('# prList');
       ]),
   });
   const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
-  const prs = await forge.prList({ search: 'merged:>2026-07-01' });
+  const prs = await forge.prList({ search: 'merged:>2026-07-01T00:00:00Z' });
   if (prs.length === 1 && prs[0]?.number === 78) ok();
   else fail(`merged:> filter wrong: ${JSON.stringify(prs.map((p) => p.number))}`);
   const list = spawnFn.calls[0].args;
   if (list.includes('--order') && list.includes('merged_at')) ok();
   else fail(`merged search should order by merged_at: ${list.join(' ')}`);
+}
+
+// An unparseable merged:> bound throws — silently dropping the cutoff would
+// hand back every MR ever merged, and the release notes built from that
+// list would quietly cover the project's whole history. Validated before
+// glab even runs.
+{
+  const spawnFn = buildSpawn({});
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  let threw = null;
+  try { await forge.prList({ search: 'merged:>whenever' }); } catch (e) { threw = e; }
+  if (threw && /parseable timestamp/.test(threw.message)) ok();
+  else fail(`unparseable merged:> wrong: ${threw?.message ?? 'no throw'}`);
+  if (spawnFn.calls.length === 0) ok();
+  else fail(`the bound should be validated before glab runs: ${JSON.stringify(spawnFn.calls.map((c) => c.args))}`);
+}
+
+// A full page whose every row survives the cutoff is flagged truncated —
+// older in-window MRs may sit on a page never fetched. A row the cutoff
+// dropped, or a partial page, proves the window's far edge was reached.
+{
+  const mr = (iid, mergedAt) => ({ iid, title: `mr ${iid}`, web_url: 'u', source_branch: 'b',
+    target_branch: 'main', merged_at: mergedAt, state: 'merged' });
+  const listKey = (limit) =>
+    `mr list --repo ${PROJECT} --output json --per-page ${limit} --merged --order merged_at --sort desc`;
+
+  const full = buildSpawn({ [listKey(2)]: JSON.stringify([
+    mr(78, '2026-09-06T07:19:52Z'), mr(77, '2026-09-05T07:19:52Z')]) });
+  const a = await createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn: full })
+    .prList({ search: 'merged:>2026-09-01T00:00:00Z', limit: 2 });
+  if (a.truncated === true && a.length === 2) ok();
+  else fail(`full surviving page should be truncated: len=${a.length} truncated=${a.truncated}`);
+
+  const dropped = buildSpawn({ [listKey(2)]: JSON.stringify([
+    mr(78, '2026-09-06T07:19:52Z'), mr(77, '2026-06-01T00:00:00Z')]) });
+  const b = await createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn: dropped })
+    .prList({ search: 'merged:>2026-09-01T00:00:00Z', limit: 2 });
+  if (b.truncated === undefined && b.length === 1) ok();
+  else fail(`a dropped row proves completeness: len=${b.length} truncated=${b.truncated}`);
+
+  const partial = buildSpawn({ [listKey(2)]: JSON.stringify([mr(78, '2026-09-06T07:19:52Z')]) });
+  const c = await createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn: partial })
+    .prList({ search: 'merged:>2026-09-01T00:00:00Z', limit: 2 });
+  if (c.truncated === undefined && c.length === 1) ok();
+  else fail(`a partial page is complete: len=${c.length} truncated=${c.truncated}`);
 }
 
 // Any other search passes to glab's own --search verbatim.
