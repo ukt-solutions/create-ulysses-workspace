@@ -123,7 +123,10 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
   // workspace MR and closes the issue ahead of CI ever publishing).
   // --auto-merge=false makes glab merge now or fail, and the post-merge
   // view verifies the merge actually happened — glab exiting 0 is not
-  // proof on its own.
+  // proof on its own. A project (or a whole group) may also require the
+  // merge to name the MR's current head SHA, so the pre-merge view's SHA
+  // rides along as --sha; when the view reports none the merge proceeds
+  // without it rather than failing — permissive projects still merge.
   async function prMerge({ id, strategy = 'merge', deleteBranch = false, repo }) {
     if (!id) throw new Error('prMerge: id is required');
     const { number, repo: parsedRepo } = parseMrId(id, repoFor(repo));
@@ -132,6 +135,7 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
       throw new MergeRejected(id, 'MR is a draft — mark it ready before merging');
     }
     const args = ['mr', 'merge', String(number), '--repo', parsedRepo, '--yes', '--auto-merge=false'];
+    if (before.headSha) args.push('--sha', before.headSha);
     switch (strategy) {
       case 'merge': break; // plain merge is glab's default
       case 'squash': args.push('--squash'); break;
@@ -183,6 +187,7 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
       mergeStateStatus: raw.detailed_merge_status ?? raw.merge_status ?? null,
       reviewDecision: '',
       headRefName: raw.source_branch,
+      headSha: raw.sha ?? null,
       baseRefName: raw.target_branch,
       isDraft: !!raw.draft,
       mergedAt: raw.merged_at,

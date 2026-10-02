@@ -31,9 +31,11 @@ function buildSpawn(responses) {
 const GL_ORIGIN = 'git@gitlab.com:group/sub/proj.git\n';
 const PROJECT = 'group/sub/proj';
 const MR_URL = `https://gitlab.com/${PROJECT}/-/merge_requests`;
+const HEAD_SHA = 'c0ffee1234567890abcdef1234567890abcdef12';
 
 // A merge request entity as `glab ... --output json` prints it (the raw
-// GitLab API shape).
+// GitLab API shape; `sha` is omitted unless a test adds it, so the default
+// exercises a view that cannot supply the merge's --sha).
 const mrEntity = (over = {}) => JSON.stringify({
   iid: 42,
   title: 'feat: the thing',
@@ -84,9 +86,10 @@ console.log('# prMerge');
 
 // Strategy maps to --squash / --rebase, plain merge adds no flag — and
 // --auto-merge=false is always present (glab's default auto-merge would
-// queue the merge behind a running pipeline and still exit 0). The merge
-// is verified: the MR is viewed before (draft check) and after (it must
-// read MERGED).
+// queue the merge behind a running pipeline and still exit 0). The
+// entity reports no head SHA, so the merge proceeds without --sha rather
+// than failing. The merge is verified: the MR is viewed before (draft
+// check) and after (it must read MERGED).
 for (const [strategy, flag] of [['merge', null], ['squash', '--squash'], ['rebase', '--rebase']]) {
   const key = `mr merge 42 --repo ${PROJECT} --yes --auto-merge=false${flag ? ` ${flag}` : ''}`;
   const spawnFn = buildSpawn({
@@ -101,6 +104,26 @@ for (const [strategy, flag] of [['merge', null], ['squash', '--squash'], ['rebas
   const views = spawnFn.calls.filter((c) => c.args[1] === 'view');
   if (views.length === 2) ok();
   else fail(`prMerge ${strategy} should view the MR before and after glab: ${views.length} views`);
+  const merge = spawnFn.calls.find((c) => c.args[1] === 'merge');
+  if (!merge.args.includes('--sha')) ok();
+  else fail(`prMerge ${strategy} passed --sha without a known SHA: ${merge.args.join(' ')}`);
+}
+
+// A view that reports the head SHA passes it as --sha — projects (or
+// whole groups) can require the merge to name the exact head it expects.
+{
+  const spawnFn = buildSpawn({
+    'remote get-url origin': GL_ORIGIN,
+    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity({ sha: HEAD_SHA, state: 'merged', merged_at: '2026-09-06T07:19:52Z' }),
+    [`mr merge 42 --repo ${PROJECT} --yes --auto-merge=false --sha ${HEAD_SHA}`]: '',
+  });
+  const forge = createForge({ type: 'gitlab' }, { spawnFn });
+  const res = await forge.prMerge({ id: `${PROJECT}!42` });
+  if (res.merged === true && res.url === `${MR_URL}/42`) ok();
+  else fail(`prMerge with sha wrong: ${JSON.stringify(res)}`);
+  const merge = spawnFn.calls.find((c) => c.args[1] === 'merge');
+  if (merge.args.includes('--sha') && merge.args[merge.args.indexOf('--sha') + 1] === HEAD_SHA) ok();
+  else fail(`--sha not passed with the view's SHA: ${merge.args.join(' ')}`);
 }
 
 // A queued merge fools glab (exit 0) but not the post-merge view: the MR
@@ -181,11 +204,12 @@ for (const [strategy, flag] of [['merge', null], ['squash', '--squash'], ['rebas
 
 console.log('# prView');
 
-// Returns normalized fields (upper-cased state) plus a _raw escape hatch.
+// Returns normalized fields (upper-cased state, head SHA) plus a _raw
+// escape hatch.
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GL_ORIGIN,
-    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity(),
+    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity({ sha: HEAD_SHA }),
   });
   const forge = createForge({ type: 'gitlab' }, { spawnFn });
   const view = await forge.prView({ id: `${PROJECT}!42` });
@@ -193,11 +217,14 @@ console.log('# prView');
       && view.headRefName === 'feature/x' && view.baseRefName === 'main'
       && view._raw.source_branch === 'feature/x') ok();
   else fail(`prView wrong: ${JSON.stringify(view)}`);
+  if (view.headSha === HEAD_SHA) ok();
+  else fail(`prView headSha wrong: ${view.headSha}`);
   if (view.mergeable === 'MERGEABLE') ok();
   else fail(`prView mergeable wrong: ${view.mergeable}`);
 }
 
-// Conflicts and draft surface through the same fields.
+// Conflicts and draft surface through the same fields; a view without a
+// sha yields headSha null (the merge then runs without --sha).
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GL_ORIGIN,
@@ -210,6 +237,8 @@ console.log('# prView');
   if (view.mergeable === 'CONFLICTING' && view.isDraft === true && view.state === 'MERGED'
       && view.mergedAt === '2026-09-06T07:19:52Z') ok();
   else fail(`prView conflict/draft wrong: ${JSON.stringify(view)}`);
+  if (view.headSha === null) ok();
+  else fail(`prView headSha should be null without a sha: ${view.headSha}`);
 }
 
 // not-found surfaces as PrNotFound.
