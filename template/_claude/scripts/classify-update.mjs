@@ -78,12 +78,14 @@
 //                The npm tarball ships no tests, so these came from a dev
 //                checkout and are never updated by /workspace-update; the
 //                skill offers to remove them (tests live in the template repo)
-//   implicitDefaults — workspace.json keys whose ABSENCE used to carry a
-//                default and now doesn't: canonicalBudgetBytes meant a
-//                40960-byte budget before v0.19 and means off since. An
-//                upgrade crossing that boundary into a workspace.json without
-//                the key reports { key, value, reason } so the skill writes
-//                the value explicitly (gh:190).
+//   implicitDefaults — workspace.json keys whose ABSENCE carried a default
+//                in the version being upgraded FROM but not in the payload's:
+//                canonicalBudgetBytes meant a 40960-byte budget when absent
+//                from v0.15.0-beta.1 until v0.19.0-beta.0 made it opt-in
+//                (absent since means off; before v0.15 there was no budget).
+//                An upgrade from inside that window into a workspace.json
+//                without the key reports { key, value, reason } so the skill
+//                writes the value explicitly (gh:190).
 //
 // Plus `hasBaseline`: whether a usable baseline was found, `baselineSource`
 // (which file it came from) and `baselineReconstructed`. The default
@@ -115,10 +117,15 @@
 //                     present as `updated` again next time; see
 //                     template-baseline.mjs. Throws rather than writing an
 //                     empty baseline.
-//   --merge-claude-md print CLAUDE.md with the payload's CLAUDE.md.tmpl
-//                     merged in: template lines updated, the workspace's own
-//                     lines (custom skill entries, sections) kept. The skill
-//                     shows the diff against the current file before writing.
+//   --merge-claude-md print JSON { claudeMd, missingIncludes }: CLAUDE.md
+//                     with the payload's CLAUDE.md.tmpl merged in — template
+//                     lines updated, the workspace's own lines (custom skill
+//                     entries, sections) kept — plus the `@{path}` include
+//                     lines the merged file carries whose targets don't
+//                     exist at the root (machine-local local-only-* targets
+//                     exempt). The skill shows the diff against the current
+//                     file before writing, and asks on each missing include
+//                     instead of leaving it dangling (gh:190).
 
 import {
   existsSync,
@@ -369,12 +376,16 @@ export function resolveBaseline({ root, payload, baseline = null }) {
 
 /**
  * workspace.json keys whose absence carried a default in the version being
- * upgraded FROM but not in the payload's. The canonical budget flipped in
- * v0.19.0-beta.0 (gh:164): absent used to mean a 40960-byte budget, since
- * then absent means off — a workspace upgraded across that boundary that
- * never wrote the key silently stops trimming. The skill writes the
- * explicit value and says so (gh:190).
+ * upgraded FROM but not in the payload's. The canonical budget existed as an
+ * implicit default only between v0.15.0-beta.1 (gh:97, which introduced it:
+ * absent meant a 40960-byte budget) and v0.19.0-beta.0 (gh:164, which made
+ * it opt-in: absent means off since). Before v0.15 there was no budget at
+ * all, so a workspace upgrading from there also has none to preserve —
+ * reporting the key would turn trimming ON. Only an upgrade from inside
+ * that window into a workspace.json that never wrote the key reports it,
+ * and the skill writes the explicit value and says so (gh:190).
  */
+const CANONICAL_BUDGET_INTRODUCED = '0.15.0-beta.1';
 const CANONICAL_BUDGET_OPT_IN = '0.19.0-beta.0';
 const CANONICAL_BUDGET_DEFAULT = 40960;
 
@@ -387,6 +398,7 @@ function implicitDefaults(absRoot, absPayload) {
   }
   const { fromVersion } = manifest;
   if (typeof fromVersion !== 'string' || fromVersion === 'unknown') return [];
+  if (compareVersions(fromVersion, CANONICAL_BUDGET_INTRODUCED) < 0) return [];
   if (compareVersions(fromVersion, CANONICAL_BUDGET_OPT_IN) >= 0) return [];
   let config;
   try {
@@ -504,8 +516,13 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
     // No baseline record means the template never shipped the file here —
     // the workspace's own, not a template removal. Marked so the skill
     // offers a workspace.localFiles entry instead of deletion; only a real
-    // baseline can prove the negative (gh:190).
-    if (baseline && typeof baseline.files[rel] !== 'string') {
+    // baseline can prove the negative. An activated optional rule is the
+    // exception: the baseline records its .skip twin, which proves the
+    // template shipped it, so its removal stays plain (gh:190).
+    const templateShipped = typeof baseline?.files[rel] === 'string'
+      || (rel.startsWith('.claude/rules/') && rel.endsWith('.md')
+        && typeof baseline?.files[`${rel}.skip`] === 'string');
+    if (baseline && !templateShipped) {
       result.removed.push({ file: rel, userOwned: true });
     } else {
       result.removed.push(rel);
@@ -711,6 +728,25 @@ function writeBaselineMode(args) {
   }, null, 2) + '\n');
 }
 
+/**
+ * `@{path}` include lines in a CLAUDE.md body whose target file does not
+ * exist at the workspace root. Machine-local targets (`local-only-*`
+ * basenames) are expected absent on machines that never wrote them — the
+ * same exemption the maintenance audit gives those imports — so they never
+ * report. The include-line shape mirrors context-footprint's resolveImports:
+ * a line whose trimmed content is exactly `@` plus a path.
+ */
+function missingIncludes(absRoot, text) {
+  const missing = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const m = /^@(\S+)$/.exec(rawLine.trim());
+    if (!m) continue;
+    if (m[1].split('/').pop().startsWith('local-only-')) continue;
+    if (!existsSync(resolve(absRoot, m[1]))) missing.push(m[1]);
+  }
+  return missing;
+}
+
 function mergeClaudeMdMode(args) {
   const absRoot = resolve(args.root);
   const absPayload = resolvePayload(args);
@@ -728,7 +764,14 @@ function mergeClaudeMdMode(args) {
   const next = readFileSync(tmplPath, 'utf8').replace(/\{\{project-name\}\}/g, name);
   const claudeMdPath = join(absRoot, 'CLAUDE.md');
   const current = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf8') : '';
-  process.stdout.write(mergeClaudeMd(current, next));
+  const claudeMd = mergeClaudeMd(current, next);
+  // The gained-@include check is deterministic, not something to eyeball in
+  // the diff: every include line whose target is absent here is reported so
+  // the skill asks (stub or omit) instead of writing it silently (gh:190).
+  process.stdout.write(JSON.stringify({
+    claudeMd,
+    missingIncludes: missingIncludes(absRoot, claudeMd),
+  }, null, 2) + '\n');
 }
 
 function main() {
