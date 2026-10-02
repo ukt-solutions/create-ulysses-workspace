@@ -688,6 +688,81 @@ console.log('# maintenance-audit');
   cleanup(root);
 }
 
+// 18. auditing from a linked worktree (a task worktree of the workspace repo):
+//     launcher-level checks — manifest repos cloned, the launcher's branch,
+//     the launcher's dirty tracked tree — resolve against the launcher; the
+//     worktree's own feature branch and dirty tree are in-flight work,
+//     reported as info, never false warnings (gh:183). Uses a real repo with
+//     a real worktree.
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.repos['my-app'] = { remote: 'x', branch: 'main' };
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    // cloned at the launcher only — the worktree will not carry it
+    mkdirSync(join(r, 'repos', 'my-app'), { recursive: true });
+    // a real file so the directory materializes in the worktree checkout
+    // (git does not track empty directories)
+    writeFileSync(join(r, '.claude', 'scripts', 'noop.mjs'), '// noop\n');
+    writeCatalogs(r);
+  });
+  const wt = join(root, 'wt-update');
+  const added = git(root, ['worktree', 'add', '-b', 'chore/template-update-0.21.0', wt]);
+  assertEq(added.status, 0, `worktree created (stderr: ${added.stderr.trim().slice(0, 200)})`);
+  // mid-update worktree: a modified tracked file and an untracked path
+  writeFileSync(join(wt, '.claude', 'rules', 'keep.md'), 'Be tidy. (updating)\n');
+  writeFileSync(join(wt, 'untracked.txt'), 'x\n');
+
+  const result = await audit(wt);
+  const g = bySection(result, 'git');
+  const st = bySection(result, 'structure');
+  assertTrue(g.some((f) => f.severity === 'info' && f.message.includes('worktree')),
+    'an info names the worktree context');
+  assertTrue(g.some((f) => f.severity === 'info' && f.message.includes('uncommitted-changes check skipped')),
+    'the skipped dirty check is reported as info');
+  assertTrue(
+    !g.some((f) => f.message.includes('uncommitted changes:')),
+    'a dirty worktree raises no uncommitted-changes warning',
+  );
+  assertTrue(
+    !g.some((f) => f.message.includes("on branch 'chore/template-update-0.21.0'")),
+    'the worktree feature branch is not a launcher-branch warning',
+  );
+  assertTrue(!st.some((f) => f.message.includes('my-app')), 'a repo cloned at the launcher is not reported missing');
+  assertEq(result.summary.warnings, 0, 'a healthy launcher audited through a worktree has no warnings');
+
+  // an unhealthy launcher still warns from inside the worktree
+  git(root, ['checkout', '-b', 'feature/oops']);
+  const result2 = await audit(wt);
+  assertTrue(
+    bySection(result2, 'git').some((f) => f.severity === 'warning' && f.message.includes("launcher is on branch 'feature/oops'")),
+    'a launcher off its default branch warns even when audited from a worktree',
+  );
+
+  // a dirty launcher tracked tree warns too — the worktree's own dirty files
+  // above raised nothing, the launcher's are drift
+  writeFileSync(join(root, 'CLAUDE.md'), '## Workspace: fixture (uncommitted edit)\n');
+  const result2b = await audit(wt);
+  assertTrue(
+    bySection(result2b, 'git').some(
+      (f) => f.severity === 'warning' && f.message.includes('launcher has 1 tracked file(s) with uncommitted changes: CLAUDE.md'),
+    ),
+    'a dirty launcher tree warns even when audited from a worktree',
+  );
+
+  // a repo missing at the launcher still warns too
+  const wsPath = join(wt, 'workspace.json');
+  const config = JSON.parse(readFileSync(wsPath, 'utf8'));
+  config.repos['ghost'] = { remote: 'x', branch: 'main' };
+  writeFileSync(wsPath, JSON.stringify(config, null, 2) + '\n');
+  const result3 = await audit(wt);
+  assertTrue(
+    bySection(result3, 'structure').some((f) => f.message.includes('ghost')),
+    'a repo missing at the launcher warns from a worktree',
+  );
+  cleanup(root);
+}
+
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

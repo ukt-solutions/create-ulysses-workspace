@@ -126,6 +126,12 @@ Also install these top-level files from the payload:
 
 **Per-repo CLAUDE.md stubs:** For each repo in `workspace.json`, check if `repos/{repo}/CLAUDE.md` exists. If not, ask "Scaffold a CLAUDE.md for {repo}? [Y/n]". If yes, write a blank stub from `.workspace-update/repo-claude.md.tmpl`, substituting `{{repo-name}}` with the repo name. The stub body is comment text only — no workspace-specific content — and its `## Commands` section is where you will add repo-specific test, lint, and build commands.
 
+**Write the template baseline** now that the components are installed, so future `/workspace-update` runs can tell template changes from local edits (three-way classification):
+```bash
+node .claude/scripts/classify-update.mjs --root . --write-baseline --payload .workspace-update
+```
+It hashes the payload's verbatim files — run it before Step 15 deletes the payload.
+
 **Commit:** `git commit -m "feat: install template components from payload"`
 
 ### Step 6: Activate optional rules

@@ -78,12 +78,16 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // 245 kB fails and 250 kB is the smallest passing multiple → 260 kB after
 // the gh:180 fix round (signal-over-noise scoping, dedupe, report collapse
 // + their tests): 256,922 bytes — 250 kB fails and 260 kB is the smallest
-// passing multiple.
+// passing multiple → 265 kB after the gh:183 fix round (localOnly and
+// deletedLocally buckets, CRLF-normalized hashing, baseline write guards,
+// mergeClaudeMd fence/CRLF handling, NUL-free audit key + launcher dirty
+// check): 267,497 bytes — 260 kB fails and 265 kB is the smallest passing
+// multiple.
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 260 * 1024;
+const SIZE_LIMIT_BYTES = 265 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -241,6 +245,11 @@ function checkRequiredFiles(files) {
     // completion falls back to hand-written adapter blocks.
     'template/_claude/scripts/task-pr.mjs',
     'template/_claude/scripts/classify-update.mjs',
+    // The template baseline behind three-way update classification (gh:183):
+    // classify-update.mjs imports it, and lib/init.mjs + lib/scaffold.mjs
+    // write the baseline through it. Without it every update treats template
+    // changes as local edits and asks per file.
+    'template/_claude/scripts/template-baseline.mjs',
     // The scripted audit behind /maintenance audit and the post-update
     // verification in /workspace-update (gh:180). Without it both skills fall
     // back to hand-walking seven sections of prose checks per run.
