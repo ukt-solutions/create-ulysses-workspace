@@ -45,7 +45,11 @@
 //                 folder is renamed into {sessions}/.archived/ and git's
 //                 worktree links are repaired to follow it. Refuses when a
 //                 worktree holds uncommitted changes (an edited session.md
-//                 counts) unless --allow-uncommitted says leave them be.
+//                 counts) unless --allow-uncommitted says leave them be,
+//                 and when a worktree tip holds commits no remote backs
+//                 (they exist only on this machine) unless --allow-unbacked
+//                 records that the operator saw the counts and declined
+//                 the backup.
 //   --enable-task-model
 //                 flip workspace.sessionModel to "task" (accepts a task
 //                 worktree root — the one mode allowed off the launcher)
@@ -585,8 +589,9 @@ function readTracker(wsDir) {
       : rawRepos == null || rawRepos === '' ? [] : [String(rawRepos)];
     // A chat session with ended: null may still be open — session-start
     // records one per chat and session-end fills ended in. Counting them
-    // is how the inventory flags "a chat may be working in this session
-    // right now" before anyone proposes archiving it.
+    // is the raw material for the chat-open flag; whether the count means
+    // "a chat may be working here right now" is decided against the
+    // session's recency in inspectSession, not here.
     const chats = Array.isArray(fields.chatSessions) ? fields.chatSessions : [];
     const openChats = chats.filter((c) => c && typeof c === 'object' && (c.ended == null || c.ended === '')).length;
     return {
@@ -873,6 +878,14 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now, fetc
   // mid-completion), while an unparseable file is tracker damage the
   // operator should hear about. Neither ever crashes the inspection.
   const trackerStripped = !existsSync(join(wsDir, 'session.md'));
+  // The tracker file's own mtime: a chat resuming the session rewrites
+  // session.md (the session-start hook registers it in chatSessions), so a
+  // fresh mtime is live-chat evidence even when no commit or reflog entry
+  // followed. It feeds only the chat-open question below, never
+  // lastActivity — an uncommitted tracker edit is bookkeeping, not work
+  // (same line dirtyContentMtimeMs draws).
+  let trackerMtimeMs = null;
+  try { trackerMtimeMs = statSync(join(wsDir, 'session.md')).mtimeMs; } catch { /* absent or unreadable — no signal */ }
   const rawWorktrees = collectSessionWorktrees(gitFn, rootDir, folder);
   const worktrees = rawWorktrees
     .filter((w) => w.kind !== 'foreign')
@@ -905,11 +918,36 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now, fetc
 
   const { proposal, reasons } = classify({ name, worktrees, lastActivity, trackerStripped }, activeDays, now);
   const warnings = collectWarnings(gitFn, rootDir, worktrees, proposal === 'ACTIVE', tracker?.branch ?? null);
+  // A chat with no recorded end only means "may still be open" while
+  // something in the session is also recent: session-end misses often
+  // enough (a crashed chat, a skipped hook) that an entry sitting on a
+  // session idle for months is a stale record, not a live chat. Recency is
+  // the newest of the session's own activity signals (lastActivity —
+  // own-branch commits, reflog, dirty content, the tracker's updated
+  // field) and the tracker file's mtime. When no signal can establish
+  // either answer, the cautious reading stands.
+  let chatOpen = false;
+  let chatIdleDays = null;
   if (tracker && tracker.openChats > 0) {
-    warnings.push({
-      kind: 'chat-open',
-      message: `${tracker.openChats} chat session(s) recorded with no end time — a chat may still be working in this session; confirm with the operator before archiving it`,
-    });
+    const newestChatSignal = Math.max(
+      Number.isFinite(lastMs) ? lastMs : -Infinity,
+      trackerMtimeMs ?? -Infinity,
+    );
+    if (!Number.isFinite(newestChatSignal) || now - newestChatSignal <= activeDays * DAY_MS) {
+      chatOpen = true;
+      warnings.push({
+        kind: 'chat-open',
+        message: `${tracker.openChats} chat session(s) recorded with no end time — a chat may still be working in this session; confirm with the operator before archiving it`,
+      });
+    } else {
+      chatIdleDays = Math.floor((now - newestChatSignal) / DAY_MS);
+      warnings.push({
+        kind: 'chat-open-idle',
+        info: true,
+        idleDays: chatIdleDays,
+        message: `${tracker.openChats} chat session(s) recorded with no end time, but nothing in the session has moved for ${chatIdleDays} day(s) — the end was most likely never recorded; treat the chat as closed unless the operator knows otherwise`,
+      });
+    }
   }
   if (!trackerStripped && !tracker) {
     warnings.push({
@@ -922,7 +960,8 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now, fetc
     kind: 'session',
     status: tracker?.status ?? null,
     workItem: tracker?.workItem ?? null,
-    chatOpen: tracker ? tracker.openChats > 0 : false,
+    chatOpen,
+    ...(chatIdleDays != null ? { chatIdleDays } : {}),
     lastActivity,
     proposal,
     reasons,
@@ -1753,12 +1792,17 @@ function repairAndVerify(gitFn, owned, worktreePaths, prunableBefore) {
  * find; a worktree holds uncommitted or untracked changes — an edited
  * session.md counts (unless allowUncommitted: they would ride along
  * fine, but they deserve a decision: commit them to the session branch,
- * or explicitly accept archiving them mid-edit); or the archive
- * directory is a symlink or resolves outside the workspace. If anything
- * fails after the rename, the folder is renamed back and repaired, and
- * the result reports the verified state.
+ * or explicitly accept archiving them mid-edit); or a worktree tip holds
+ * commits no remote backs — they exist only on this machine, and the
+ * archive is safe for them but the moment it is deleted they are gone
+ * (unless allowUnbacked, the operator's recorded decline after seeing
+ * the per-repo counts; the refusal names them, and a successful archive
+ * that carried unbacked tips reports them in `unbacked`). Also refused
+ * when the archive directory is a symlink or resolves outside the
+ * workspace. If anything fails after the rename, the folder is renamed
+ * back and repaired, and the result reports the verified state.
  */
-function archiveSession(root, { session, allowUncommitted = false, gitFn = spawnSync, cwd = process.cwd(), now = Date.now() } = {}) {
+function archiveSession(root, { session, allowUncommitted = false, allowUnbacked = false, gitFn = spawnSync, cwd = process.cwd(), now = Date.now() } = {}) {
   const rootDir = resolveRoot(root);
   if (!isSessionSegment(session)) {
     throw new Error(`session name must be a single path segment not starting with ".", got: ${session}`);
@@ -1824,6 +1868,30 @@ function archiveSession(root, { session, allowUncommitted = false, gitFn = spawn
       }
     }
   }
+  // Unpushed commits ride along safely too — but "safely" holds only as
+  // long as the archive exists, and deleting it later is the operator's
+  // own call. A tip whose commits no remote backs (the inventory's
+  // `unbacked` evidence, recomputed here at archive time) exists only on
+  // this machine, so the archive moves only once a remote holds every
+  // such tip — the backup step's push mode --remote with an allow — or
+  // after --allow-unbacked records that the operator saw these counts and
+  // declined it. allowUnbacked still reports what rode along.
+  const unbacked = [];
+  for (const f of found) {
+    const wtPath = f.rel === '.' ? folder : join(folder, f.rel);
+    const info = inspectWorktree(
+      gitFn, rootDir,
+      f.owner.repo === WORKSPACE_REPO ? 'workspace' : 'project',
+      f.owner.repo, wtPath, null,
+    );
+    if (info.ahead > 0 && !info.backedBy) unbacked.push(info);
+  }
+  if (unbacked.length > 0 && !allowUnbacked) {
+    reasons.push(
+      ...unbacked.map((wt) => unbackedMessage(gitFn, rootDir, wt)),
+      `${unbacked.length} worktree tip(s) above hold commits that exist only on this machine — this clears only when a remote holds them (--backup --remote with the operator's allow pushes backup tags there), or re-run with --allow-unbacked once the operator has seen these counts and explicitly declined the backup`,
+    );
+  }
   if (reasons.length > 0) return { refused: true, reasons };
 
   const archiveDir = join(sessionsDir, '.archived');
@@ -1867,6 +1935,9 @@ function archiveSession(root, { session, allowUncommitted = false, gitFn = spawn
     from: relative(rootDir, folder),
     to: relative(rootDir, dest),
     worktrees: at(dest).map((m) => ({ repo: m.owner.repo, path: relative(rootDir, m.path) })),
+    // What the operator accepted riding along unbacked — the same
+    // repos and counts the refusal would have named.
+    ...(unbacked.length > 0 ? { unbacked: unbacked.map((wt) => ({ repo: wt.repo, branch: wt.branch, commits: wt.ahead })) } : {}),
     warnings: scan.outwardLinks.map((l) => `relative symlink ${relative(rootDir, join(dest, relative(folder, l)))} pointed outside the session and no longer resolves after the move — it was kept as-is`),
   };
 }
@@ -1927,7 +1998,7 @@ function renderTable(result) {
       : s.kind === 'foreign' ? 'foreign entry' : s.proposal;
     const detail = s.kind === 'broken' || s.kind === 'foreign'
       ? ''
-      : `  (status ${s.status ?? '—'}, last activity ${s.lastActivity ?? '—'}, work item ${s.workItem ?? '—'}${s.chatOpen ? ', chat open?' : ''})`;
+      : `  (status ${s.status ?? '—'}, last activity ${s.lastActivity ?? '—'}, work item ${s.workItem ?? '—'}${s.chatOpen ? ', chat open?' : s.chatIdleDays != null ? `, chat: no end recorded (idle ${s.chatIdleDays}d)` : ''})`;
     lines.push(`${s.name}  ${header}${detail}`);
     for (const w of s.worktrees || []) {
       const remotes = Object.entries(w.remotes)
@@ -1952,7 +2023,9 @@ function renderTable(result) {
       }
     }
     for (const r of s.reasons || []) lines.push(`    · ${r}`);
-    for (const w of s.warnings || []) lines.push(`    ! ${w.message}`);
+    // `!` marks something to act on; an entry carrying info: true is
+    // context (a stale record explained, not a live risk).
+    for (const w of s.warnings || []) lines.push(`    ${w.info ? 'i' : '!'} ${w.message}`);
   }
   if (Array.isArray(result.externalWorktrees) && result.externalWorktrees.length > 0) {
     lines.push('');
@@ -1976,6 +2049,7 @@ const BOOL_FLAGS = new Map([
   ['--remote', 'remote'],
   ['--remote-allow-all', 'remoteAllowAll'],
   ['--allow-uncommitted', 'allowUncommitted'],
+  ['--allow-unbacked', 'allowUnbacked'],
   ['--fetch', 'fetch'],
 ]);
 
@@ -1990,6 +2064,7 @@ function parseArgs(argv) {
     remote: false,
     remoteAllowAll: false,
     allowUncommitted: false,
+    allowUnbacked: false,
     fetch: false,
   };
   const rest = argv.slice(2);
@@ -2045,6 +2120,9 @@ function parseArgs(argv) {
   if (args.allowUncommitted && args.mode !== 'archive') {
     throw new Error('--allow-uncommitted is only valid with --archive');
   }
+  if (args.allowUnbacked && args.mode !== 'archive') {
+    throw new Error('--allow-unbacked is only valid with --archive');
+  }
   if (args.dryRun && args.mode !== 'backup') {
     throw new Error('--dry-run is only valid with --backup');
   }
@@ -2073,7 +2151,11 @@ function main() {
       dryRun: args.dryRun,
     });
   } else if (args.mode === 'archive') {
-    out = archiveSession(rootDir, { session: args.session, allowUncommitted: args.allowUncommitted });
+    out = archiveSession(rootDir, {
+      session: args.session,
+      allowUncommitted: args.allowUncommitted,
+      allowUnbacked: args.allowUnbacked,
+    });
   } else {
     out = enableTaskModel(rootDir);
   }
