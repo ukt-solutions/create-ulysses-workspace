@@ -25,7 +25,11 @@
 //                         of the git common dir), while the worktree's own
 //                         branch is only named in an info line and its dirty
 //                         tracked tree is skipped as info: in-flight work, not
-//                         drift (gh:183)
+//                         drift (gh:183). The launcher's
+//                         .claude/skills/workspace-update/ modification an
+//                         --upgrade leaves when its content equals the staged
+//                         payload's is the expected bootstrap, reported as
+//                         info, never a dirty-tree warning (gh:190)
 //   5. auto-files       — workspace-context catalogs current (the same
 //                         semantics as build-workspace-context.mjs --check)
 //   6. budget           — always-loaded context within
@@ -82,6 +86,7 @@ import {
   readIgnorePrefixes,
   isIgnored,
 } from './build-workspace-context.mjs';
+import { hashBytes } from './template-baseline.mjs';
 import { refreshIfStale } from '../lib/freshness.mjs';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
 
@@ -157,7 +162,10 @@ export async function runAudit({
   // array — a structural delimiter, never a byte that could appear in the
   // values (NUL separators made git treat this file as binary).
   const seenFindings = new Set();
-  const add = (section, severity, file, message) => {
+  // opts.noFromUpdate: expected-absent findings (a machine-local import
+  // missing inside a task worktree) stay ambient info even when their file
+  // is on the --changed list — the update did not cause them (gh:190).
+  const add = (section, severity, file, message, opts = {}) => {
     const key = JSON.stringify([section, severity, file, message]);
     if (seenFindings.has(key)) return;
     seenFindings.add(key);
@@ -166,7 +174,7 @@ export async function runAudit({
       severity,
       file,
       message,
-      ...(changedSet.has(file) ? { fromUpdate: true } : {}),
+      ...(changedSet.has(file) && !opts.noFromUpdate ? { fromUpdate: true } : {}),
     });
   };
 
@@ -323,7 +331,10 @@ export async function runAudit({
       const posix = toPosix(spec);
       const base = posix.split('/').pop();
       if (base.startsWith('local-only-')) {
-        add('cross-reference', 'info', 'CLAUDE.md', `@${posix} is absent — machine-local, expected on other machines`);
+        // Machine-local files never materialize inside a task worktree (the
+        // update flow audits from one), so this is ambient, never something
+        // the update caused (gh:190).
+        add('cross-reference', 'info', 'CLAUDE.md', `@${posix} is absent — machine-local, expected on other machines`, { noFromUpdate: true });
       } else if (posix === 'CODEBASE.md') {
         add('cross-reference', 'info', 'CLAUDE.md', '@CODEBASE.md is absent — optional stub, /workspace-init generates it on request');
       } else if (isAutoFileRel(posix, wcDir)) {
@@ -379,6 +390,9 @@ export async function runAudit({
       return relToWC.split('/').includes('archive');
     };
 
+    // Resolved lifecycles are closed out, not defects — however many there
+    // are, they surface as ONE info line, not one per file (gh:190).
+    const resolvedFiles = [];
     for (let i = 0; i < files.length; i++) {
       const rel = rels[i];
       if (ignored.has(rel) || isHistorical(rel)) continue;
@@ -435,11 +449,16 @@ export async function runAudit({
         }
       }
       if (f.lifecycle === 'resolved') {
-        add('frontmatter', 'info', rel, 'lifecycle resolved — confirm /complete-work has processed it');
+        resolvedFiles.push(rel);
       }
       if ('confidence' in f && !['high', 'medium', 'low'].includes(f.confidence)) {
         add('frontmatter', 'warning', rel, `confidence '${f.confidence}' is not one of high, medium, low`);
       }
+    }
+    if (resolvedFiles.length > 0) {
+      const names = resolvedFiles.slice(0, 3).map((rel) => rel.split('/').pop());
+      add('frontmatter', 'info', wcDir,
+        `${resolvedFiles.length} lifecycle resolved file(s) — confirm /complete-work has processed them (${names.join(', ')}${resolvedFiles.length > 3 ? ', …' : ''})`);
     }
   })();
 
@@ -463,11 +482,31 @@ export async function runAudit({
         add('git', 'warning', '.',
           `launcher is on branch '${gitInfo.launcherBranch}' — it stays on its default branch ('${gitInfo.defaultBranch}')`);
       }
+      // --upgrade replaces the launcher's workspace-update skill before the
+      // payload is applied, and the merged PR delivers the same content back:
+      // a modification that equals the staged payload's copy is the expected
+      // bootstrap, not drift — info, and out of the dirty warning (gh:190).
+      const porcelainPath = (line) => line.slice(line.indexOf(' ') + 1).split(' -> ')[0];
       const launcherDirty = gitInfo.launcherPorcelain.filter((l) => !l.startsWith('??'));
-      if (launcherDirty.length > 0) {
-        const paths = launcherDirty.slice(0, 5).map((l) => l.slice(l.indexOf(' ') + 1).replace(/ -> /, ' → '));
+      const bootstrap = launcherDirty.filter((l) => {
+        const p = porcelainPath(l);
+        if (!p.startsWith('.claude/skills/workspace-update/')) return false;
+        try {
+          return hashBytes(readFileSync(join(gitInfo.launcherRoot, p)))
+            === hashBytes(readFileSync(join(gitInfo.launcherRoot, '.workspace-update', p)));
+        } catch {
+          return false; // no staged payload copy to compare against
+        }
+      });
+      if (bootstrap.length > 0) {
+        add('git', 'info', '.',
+          "launcher's .claude/skills/workspace-update/ replaced by --upgrade (matches the staged payload) — expected until the update merges");
+      }
+      const drift = launcherDirty.filter((l) => !bootstrap.includes(l));
+      if (drift.length > 0) {
+        const paths = drift.slice(0, 5).map((l) => l.slice(l.indexOf(' ') + 1).replace(/ -> /, ' → '));
         add('git', 'warning', '.',
-          `launcher has ${launcherDirty.length} tracked file(s) with uncommitted changes: ${paths.join(', ')}${launcherDirty.length > 5 ? ', …' : ''}`);
+          `launcher has ${drift.length} tracked file(s) with uncommitted changes: ${paths.join(', ')}${drift.length > 5 ? ', …' : ''}`);
       }
       add('git', 'info', '.',
         'uncommitted-changes check skipped — the worktree is expected to carry in-flight changes');

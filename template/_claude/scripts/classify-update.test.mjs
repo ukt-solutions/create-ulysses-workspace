@@ -137,10 +137,12 @@ console.log('# classify-update');
     readFileSync(join(here, 'template-baseline.mjs'), 'utf8'),
   );
   mkdirSync(join(payload, '.claude', 'lib'), { recursive: true });
-  writeFileSync(
-    join(payload, '.claude', 'lib', 'session-frontmatter.mjs'),
-    readFileSync(join(here, '..', 'lib', 'session-frontmatter.mjs'), 'utf8'),
-  );
+  for (const f of ['session-frontmatter.mjs', 'registry-check.mjs', 'require-node.mjs']) {
+    writeFileSync(
+      join(payload, '.claude', 'lib', f),
+      readFileSync(join(here, '..', 'lib', f), 'utf8'),
+    );
+  }
   const nestedScript = join(nestedScripts, 'classify-update.mjs');
 
   const r = spawnSync(
@@ -155,6 +157,8 @@ console.log('# classify-update');
   assertEq(
     parsed.new,
     [
+      '.claude/lib/registry-check.mjs',
+      '.claude/lib/require-node.mjs',
       '.claude/lib/session-frontmatter.mjs',
       '.claude/scripts/build-workspace-context.mjs',
       '.claude/scripts/classify-update.mjs',
@@ -265,6 +269,97 @@ console.log('# classify-update');
   const result = classifyUpdate({ root });
   assertEq(result.removed, [], 'a payload-dropped .mcp.json is never removed');
   assertEq(result.config, [], 'a payload-dropped .mcp.json carries no config entry');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 7d. removed-entry markers (gh:190): a removed hook that a workspace-only
+//     settings.json entry still registers is linked to the config-diff paths
+//     (so the skill removes the pair, never leaves the entry dangling), and
+//     a removed file the baseline never recorded is the workspace's own —
+//     userOwned, offered a workspace.localFiles entry instead of deletion.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  // a real template removal: baseline records it, payload dropped it
+  writeFileSync(join(root, '.claude', 'hooks', 'old-hook.mjs'), '// template v1\n');
+  // a removed hook the workspace's settings.json still registers — once via
+  // a workspace-only event key, once via a workspace-only element of an
+  // event both sides carry
+  writeFileSync(join(root, '.claude', 'hooks', 'worktree-create.mjs'), '// template v1\n');
+  writeFileSync(join(payload, '.claude', 'settings.json'), JSON.stringify({
+    hooks: {
+      PreToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'node .claude/hooks/guard.mjs' }] }],
+    },
+  }) + '\n');
+  writeFileSync(join(root, '.claude', 'settings.json'), JSON.stringify({
+    hooks: {
+      WorktreeCreate: [{ type: 'command', command: 'node .claude/hooks/worktree-create.mjs' }],
+      PreToolUse: [
+        { matcher: 'Edit', hooks: [{ type: 'command', command: 'node .claude/hooks/guard.mjs' }] },
+        { matcher: 'Bash', hooks: [{ type: 'command', command: 'node .claude/hooks/worktree-create.mjs' }] },
+      ],
+    },
+  }) + '\n');
+  // the workspace's own skill: no baseline entry, no payload counterpart
+  mkdirSync(join(root, '.claude', 'skills', 'custom'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'skills', 'custom', 'SKILL.md'), '# Mine\n');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.20.0',
+    files: {
+      '.claude/hooks/old-hook.mjs': sha('// template v1\n'),
+      '.claude/hooks/worktree-create.mjs': sha('// template v1\n'),
+    },
+  }) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.removed, [
+    '.claude/hooks/old-hook.mjs',
+    { file: '.claude/hooks/worktree-create.mjs', referencedBy: ['settings.json hooks.PreToolUse', 'settings.json hooks.WorktreeCreate'] },
+    { file: '.claude/skills/custom/SKILL.md', userOwned: true },
+  ], 'removed hooks link their settings references; unrecorded files are userOwned; recorded ones stay plain');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 7e. without a baseline nothing can be inferred: every removal stays a
+//     plain path, never a userOwned claim (test 7's case, made explicit).
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  mkdirSync(join(root, '.claude', 'skills', 'custom'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'skills', 'custom', 'SKILL.md'), '# Mine\n');
+  writeFileSync(join(payload, '.claude', 'settings.json'), '{"hooks":{}}\n');
+  writeFileSync(join(root, '.claude', 'settings.json'), '{"hooks":{}}\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.removed, ['.claude/skills/custom/SKILL.md'], 'no baseline means plain removals, no userOwned markers');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 7f. an activated optional rule is template-shipped even though its baseline
+//     entry is the .skip twin: when the payload drops the rule entirely, the
+//     removal stays plain — never a userOwned/localFiles suggestion (gh:190).
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  mkdirSync(join(root, '.claude', 'rules'), { recursive: true });
+  // activated here, optional in the template this workspace came from
+  writeFileSync(join(root, '.claude', 'rules', 'optional.md'), '# Activated\n');
+  // contrast: a rule with no baseline entry at all is the workspace's own
+  writeFileSync(join(root, '.claude', 'rules', 'mine.md'), '# Mine\n');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.20.0',
+    files: { '.claude/rules/optional.md.skip': sha('# Optional\n') },
+  }) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.removed, [
+    { file: '.claude/rules/mine.md', userOwned: true },
+    '.claude/rules/optional.md',
+  ], 'the .skip baseline twin proves the template shipped an activated rule; unrecorded files stay userOwned');
   rmSync(root, { recursive: true, force: true });
 }
 
@@ -617,6 +712,44 @@ console.log('# classify-update');
   rmSync(root, { recursive: true, force: true });
 }
 
+// 14. implicitDefaults (gh:190): the canonical budget was an implicit default
+//     only between v0.15.0-beta.1 (which introduced it — absent meant a
+//     40960-byte budget) and v0.19.0-beta.0 (which made it opt-in — absent
+//     means off since). An upgrade from inside that window into a workspace
+//     that never wrote the key reports it, so the skill writes the value
+//     explicitly instead of letting trimming silently stop. Outside the window
+//     nothing reports: before v0.15 there was no budget to preserve, and
+//     reporting one would turn trimming ON. Prerelease ordering must hold on
+//     both edges: 0.15.0-beta.1 is inside, 0.19.0-beta.0 is not.
+{
+  const mk = (fromVersion, workspace) => {
+    const root = setupWorkspace();
+    const payload = setupPayload(root);
+    if (fromVersion !== null) {
+      writeFileSync(join(payload, '.manifest.json'), JSON.stringify({ fromVersion, templateVersion: '0.23.0-beta.0' }) + '\n');
+    }
+    if (workspace !== undefined) {
+      writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace }, null, 2) + '\n');
+    }
+    return classifyUpdate({ root }).implicitDefaults;
+  };
+  const expected = [{
+    key: 'canonicalBudgetBytes',
+    value: 40960,
+    reason: 'absent meant a 40960-byte canonical budget before v0.19 and means off since — write the value explicitly or trimming silently stops',
+  }];
+  assertEq(mk('0.14.0-beta.3', { name: 'demo' }), [], 'fromVersion 0.14.0-beta.3 does not — no budget existed to preserve');
+  assertEq(mk('0.15.0-beta.1', { name: 'demo' }), expected, 'fromVersion 0.15.0-beta.1 reports the lost implicit default');
+  assertEq(mk('0.17.2', { name: 'demo' }), expected, 'fromVersion 0.17.2 reports it too');
+  assertEq(mk('0.18.2', { name: 'demo' }), expected, 'fromVersion 0.18.2 reports it too — still inside the window');
+  assertEq(mk('0.19.0', { name: 'demo' }), [], 'fromVersion 0.19.0 does not — absent already meant off');
+  assertEq(mk('0.19.0-beta.0', { name: 'demo' }), [], 'fromVersion 0.19.0-beta.0 does not — the beta that shipped the change');
+  assertEq(mk('0.15.0-beta.1', { name: 'demo', canonicalBudgetBytes: 40960 }), [],
+    'an explicit key is never reported, whatever the fromVersion');
+  assertEq(mk(null, { name: 'demo' }), [], 'no manifest means nothing to infer');
+  assertEq(mk('0.15.0-beta.1', undefined), [], 'no workspace.json means nowhere to write the key');
+}
+
 // 15. --write-baseline resolves its previous baseline the same way: in the
 //     worktree flow (root has no baseline yet) a declined update keeps its
 //     old entry from the payload's reconstructed baseline, instead of the
@@ -821,7 +954,10 @@ console.log('# classify-update');
 }
 
 // 11. CLI --merge-claude-md — substitutes {{project-name}}, merges with the
-//     workspace's CLAUDE.md, prints the result
+//     workspace's CLAUDE.md, and prints JSON { claudeMd, missingIncludes }:
+//     the merged text plus every `@{path}` include it carries whose target
+//     is absent at the root, minus machine-local local-only-* targets
+//     (gh:190).
 {
   const root = setupWorkspace();
   const payload = setupPayload(root);
@@ -835,10 +971,35 @@ console.log('# classify-update');
     { cwd: tmpdir(), encoding: 'utf8' },
   );
   assertEq(r.status, 0, `--merge-claude-md exits 0 (stderr: ${r.stderr.trim().slice(0, 200)})`);
-  assertTrue(r.stdout.includes('## Workspace: acme'), '{{project-name}} substituted from workspace.json');
-  assertTrue(r.stdout.includes('- `/acme-deploy` — ours'), 'workspace skill entries survive the CLI merge');
+  const parsed = JSON.parse(r.stdout);
+  assertTrue(parsed.claudeMd.includes('## Workspace: acme'), '{{project-name}} substituted from workspace.json');
+  assertTrue(parsed.claudeMd.includes('- `/acme-deploy` — ours'), 'workspace skill entries survive the CLI merge');
+  assertEq(parsed.missingIncludes, [], 'no include lines in the merge, nothing missing');
   assertTrue(readFileSync(join(root, 'CLAUDE.md'), 'utf8').includes('## Workspace: acme'),
     'the mode prints only — the workspace file is untouched until the skill writes it');
+
+  // gained includes: only absent, non-machine-local targets report — the
+  // merged text still carries every line, the decision is the skill's
+  const gained = setupWorkspace();
+  const gainedPayload = setupPayload(gained);
+  writeFileSync(
+    join(gainedPayload, 'CLAUDE.md.tmpl'),
+    '## Workspace: {{project-name}}\n\n@CODEBASE.md\n@workspace.json\n@local-only-draft.md\n',
+  );
+  writeFileSync(join(gained, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
+  writeFileSync(join(gained, 'CLAUDE.md'), '## Workspace: acme\n');
+  const r3 = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', gained, '--payload', gainedPayload, '--merge-claude-md'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r3.status, 0, `--merge-claude-md with gained includes exits 0 (stderr: ${r3.stderr.trim().slice(0, 200)})`);
+  const parsed3 = JSON.parse(r3.stdout);
+  assertEq(parsed3.missingIncludes, ['CODEBASE.md'],
+    'only the absent non-machine-local include reports, in line order');
+  for (const line of ['@CODEBASE.md', '@workspace.json', '@local-only-draft.md']) {
+    assertTrue(parsed3.claudeMd.includes(line), `the merged text carries ${line} — reporting never drops it`);
+  }
 
   // no template in the payload → named error
   const bare = setupWorkspace();
@@ -851,6 +1012,7 @@ console.log('# classify-update');
   assertEq(r2.status, 1, 'missing CLAUDE.md.tmpl exits 1');
   assertTrue(r2.stderr.includes('CLAUDE.md.tmpl'), 'error names the missing template');
   rmSync(root, { recursive: true, force: true });
+  rmSync(gained, { recursive: true, force: true });
   rmSync(bare, { recursive: true, force: true });
 }
 

@@ -193,8 +193,8 @@ console.log('# maintenance-audit');
     'missing frontmatter is a warning');
   assertTrue(fm.some((f) => f.severity === 'warning' && f.file === 'workspace-context/shared/stale.md' && f.message.includes('stale')),
     'active and untouched past the staleness window is a warning');
-  assertTrue(fm.some((f) => f.severity === 'info' && f.file === 'workspace-context/shared/done.md'),
-    'resolved lifecycle is info');
+  assertTrue(fm.some((f) => f.severity === 'info' && f.message.includes('1 lifecycle resolved file(s)') && f.message.includes('done.md')),
+    'resolved lifecycles collapse into one info line naming the file (gh:190)');
   assertTrue(fm.some((f) => f.severity === 'warning' && f.file === 'workspace-context/shared/unsure.md' && f.message.includes('confidence')),
     'invalid confidence value is a warning');
   const tracker = 'work-sessions/demo/workspace/session.md';
@@ -418,6 +418,35 @@ console.log('# maintenance-audit');
   cleanup(root);
 }
 
+// 9b. gh:190 audit-noise rules: a missing @local-only-* import stays ambient
+//     info even when CLAUDE.md is on the --changed list (machine-local files
+//     never materialize inside an update worktree), and many resolved
+//     lifecycles collapse into one info line, not one per file.
+{
+  const root = makeWorkspace({}, (r) => {
+    writeFileSync(
+      join(r, 'CLAUDE.md'),
+      '## Skills\n- `/demo` — demonstrate\n\n@workspace.json\n@local-only-template-freshness.md\n',
+    );
+    for (const name of ['a', 'b', 'c']) {
+      writeFileSync(
+        join(r, 'workspace-context', 'shared', `done-${name}.md`),
+        '---\ndescription: Done.\nlifecycle: resolved\nupdated: 2026-09-01\n---\nDone.\n',
+      );
+    }
+    writeCatalogs(r);
+  });
+  const result = await audit(root, { changed: ['CLAUDE.md'] });
+  const localOnly = result.issues.find((f) => f.message.includes('local-only-template-freshness.md'));
+  assertTrue(localOnly && localOnly.severity === 'info', 'missing local-only import is info');
+  assertTrue(localOnly && localOnly.fromUpdate === undefined, 'missing local-only import is never "(from this update)"');
+  const resolved = bySection(result, 'frontmatter').filter((f) => f.message.includes('lifecycle resolved'));
+  assertEq(resolved.length, 1, 'three resolved files yield one collapsed info finding');
+  assertTrue(resolved[0].message.includes('3 lifecycle resolved file(s)'), 'the collapsed info carries the count');
+  assertEq(result.summary.infos > 0, true, 'summary still counts infos');
+  cleanup(root);
+}
+
 // 10. renderReport — fromUpdate marker and clean budget line
 {
   const root = makeWorkspace();
@@ -514,7 +543,7 @@ console.log('# maintenance-audit');
   const payloadClaude = join(root, '.workspace-update', '.claude');
   const nestedScripts = join(payloadClaude, 'scripts');
   mkdirSync(nestedScripts, { recursive: true });
-  for (const f of ['maintenance-audit.mjs', 'context-footprint.mjs', 'build-workspace-context.mjs']) {
+  for (const f of ['maintenance-audit.mjs', 'context-footprint.mjs', 'build-workspace-context.mjs', 'template-baseline.mjs']) {
     writeFileSync(join(nestedScripts, f), readFileSync(join(here, f), 'utf8'));
   }
   mkdirSync(join(payloadClaude, 'lib'), { recursive: true });
@@ -621,8 +650,8 @@ console.log('# maintenance-audit');
     'resolved lifecycle does not flag its (deleted) branch',
   );
   assertTrue(
-    fm.some((f) => f.file === 'workspace-context/shared/done.md' && f.severity === 'info'),
-    'resolved lifecycle still reports its info',
+    fm.some((f) => f.severity === 'info' && f.message.includes('1 lifecycle resolved file(s)')),
+    'resolved lifecycle still reports its one collapsed info',
   );
   cleanup(root);
 }
@@ -692,8 +721,11 @@ console.log('# maintenance-audit');
 //     launcher-level checks — manifest repos cloned, the launcher's branch,
 //     the launcher's dirty tracked tree — resolve against the launcher; the
 //     worktree's own feature branch and dirty tree are in-flight work,
-//     reported as info, never false warnings (gh:183). Uses a real repo with
-//     a real worktree.
+//     reported as info, never false warnings (gh:183). The mid-update state
+//     --upgrade leaves in the launcher — .claude/skills/workspace-update/
+//     replaced with the staged payload's copy — is expected bootstrap, info
+//     rather than a dirty-tree warning, unless it diverges from the payload
+//     (gh:190). Uses a real repo with a real worktree.
 {
   const root = makeWorkspace({}, (r) => {
     const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
@@ -704,6 +736,13 @@ console.log('# maintenance-audit');
     // a real file so the directory materializes in the worktree checkout
     // (git does not track empty directories)
     writeFileSync(join(r, '.claude', 'scripts', 'noop.mjs'), '// noop\n');
+    // the installed workspace-update skill the upgrade replaces
+    mkdirSync(join(r, '.claude', 'skills', 'workspace-update'), { recursive: true });
+    writeFileSync(join(r, '.claude', 'skills', 'workspace-update', 'SKILL.md'), '# v0.15 skill\n');
+    writeFileSync(
+      join(r, 'CLAUDE.md'),
+      '## Workspace: fixture\n\n## Skills\n- `/demo` — demonstrate\n- `/workspace-update` — apply updates\n',
+    );
     writeCatalogs(r);
   });
   const wt = join(root, 'wt-update');
@@ -712,6 +751,12 @@ console.log('# maintenance-audit');
   // mid-update worktree: a modified tracked file and an untracked path
   writeFileSync(join(wt, '.claude', 'rules', 'keep.md'), 'Be tidy. (updating)\n');
   writeFileSync(join(wt, 'untracked.txt'), 'x\n');
+  // mid-update launcher: --upgrade staged the payload and replaced its copy
+  // of the skill with the payload's
+  const payloadSkill = join(root, '.workspace-update', '.claude', 'skills', 'workspace-update', 'SKILL.md');
+  mkdirSync(dirname(payloadSkill), { recursive: true });
+  writeFileSync(payloadSkill, '# v0.23 skill\n');
+  writeFileSync(join(root, '.claude', 'skills', 'workspace-update', 'SKILL.md'), '# v0.23 skill\n');
 
   const result = await audit(wt);
   const g = bySection(result, 'git');
@@ -720,6 +765,10 @@ console.log('# maintenance-audit');
     'an info names the worktree context');
   assertTrue(g.some((f) => f.severity === 'info' && f.message.includes('uncommitted-changes check skipped')),
     'the skipped dirty check is reported as info');
+  assertTrue(
+    g.some((f) => f.severity === 'info' && f.message.includes('workspace-update') && f.message.includes('--upgrade')),
+    'the bootstrap skill replacement matching the payload is info',
+  );
   assertTrue(
     !g.some((f) => f.message.includes('uncommitted changes:')),
     'a dirty worktree raises no uncommitted-changes warning',
@@ -730,6 +779,18 @@ console.log('# maintenance-audit');
   );
   assertTrue(!st.some((f) => f.message.includes('my-app')), 'a repo cloned at the launcher is not reported missing');
   assertEq(result.summary.warnings, 0, 'a healthy launcher audited through a worktree has no warnings');
+
+  // a launcher skill copy that diverges from the payload is real drift again
+  writeFileSync(join(root, '.claude', 'skills', 'workspace-update', 'SKILL.md'), '# locally edited\n');
+  const result1b = await audit(wt);
+  assertTrue(
+    bySection(result1b, 'git').some(
+      (f) => f.severity === 'warning' && f.message.includes('workspace-update/SKILL.md'),
+    ),
+    'a skill modification that differs from the payload stays a dirty warning',
+  );
+  // back to the bootstrap state for the launcher checks below
+  writeFileSync(join(root, '.claude', 'skills', 'workspace-update', 'SKILL.md'), '# v0.23 skill\n');
 
   // an unhealthy launcher still warns from inside the worktree
   git(root, ['checkout', '-b', 'feature/oops']);
