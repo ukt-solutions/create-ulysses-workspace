@@ -12,7 +12,7 @@
 //   - success: true iff all of the above hold
 
 import { execFileSync, execSync, spawnSync } from 'child_process';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, mkdtempSync, renameSync, symlinkSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, mkdtempSync, renameSync, symlinkSync, realpathSync } from 'fs';
 import { join, dirname, resolve, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
@@ -512,6 +512,53 @@ console.log('# safety: a worktree nested outside repos/ refuses; Finder junk doe
   writeFileSync(join(fx.wsWt, 'repos', '.DS_Store'), 'junk');
   const again = runCleanupRaw(fx.T, 'nested');
   assertEq(again.status, 0, 'a .DS_Store under repos/ does not block cleanup');
+}
+
+// === gh:187: worktrees registered outside the workspace are never pruned ===
+// A project repo may hold worktree records in unrelated places (a scratch
+// checkout in tmp). `git worktree prune` has no path filter, so a blanket
+// prune during session cleanup would silently drop them. Two shapes: a LIVE
+// external worktree (nothing about it is prunable — prune may run freely)
+// and a PRUNABLE external record (its directory is gone — prune must be
+// skipped and the record left registered for its owner).
+console.log('# gh:187: a live external worktree survives session cleanup untouched');
+{
+  const fx = makeFixture('extlive', 'bugfix/extlive');
+  const outside = mkdtempSync(join(tmpdir(), 'cleanup-ext-'));
+  const extWt = join(outside, 'scratch-wt');
+  git(fx.projRepos.proj, `worktree add -q -b ext/scratch "${extWt}"`);
+  writeFileSync(join(extWt, 'precious.txt'), 'someone else’s work\n');
+  const r = runCleanupRaw(fx.T, 'extlive');
+  assertEq(r.status, 0, 'cleanup succeeds with a live external worktree registered');
+  assertEq(r.json?.success, true, 'success is true');
+  const list = git(fx.projRepos.proj, 'worktree list --porcelain');
+  assert(list.includes(realpathSync(extWt)), 'the external worktree is still registered');
+  assertEq(readFileSync(join(extWt, 'precious.txt'), 'utf8'), 'someone else’s work\n', 'and its files are intact');
+  assert((r.json?.skipped || []).every((s) => s.step !== 'prune'), 'no prune-skip note — a live worktree is nothing to protect against');
+  teardownFixture(fx.T);
+  rmSync(outside, { recursive: true, force: true });
+}
+
+console.log('# gh:187: a prunable external record blocks prune, not cleanup, and is left registered');
+{
+  const fx = makeFixture('extgone', 'bugfix/extgone');
+  const outside = mkdtempSync(join(tmpdir(), 'cleanup-extgone-'));
+  const extWt = join(outside, 'scratch-wt');
+  git(fx.projRepos.proj, `worktree add -q -b ext/scratch "${extWt}"`);
+  writeFileSync(join(extWt, 'precious.txt'), 'someone else’s work\n');
+  // The external directory disappears (the scratch tmp got wiped) — the
+  // record goes prunable while still belonging to no session of ours.
+  rmSync(extWt, { recursive: true, force: true });
+  const r = runCleanupRaw(fx.T, 'extgone');
+  assertEq(r.status, 0, 'cleanup itself still succeeds');
+  assertEq(r.json?.success, true, 'success is true — a foreign prunable record is not this session’s leftover');
+  const skip = (r.json?.skipped || []).find((s) => s.step === 'prune');
+  assert(skip && skip.repo === 'proj', 'a prune skip is recorded for the repo');
+  assert(skip && skip.reason.includes(basename(extWt)), 'naming the outside worktree record');
+  assert(git(fx.projRepos.proj, 'worktree list --porcelain').includes('prunable'), 'the record was left registered for its owner');
+  assert(!existsSync(join(fx.T, 'work-sessions', 'extgone')), 'the session itself was cleaned up completely');
+  teardownFixture(fx.T);
+  rmSync(outside, { recursive: true, force: true });
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

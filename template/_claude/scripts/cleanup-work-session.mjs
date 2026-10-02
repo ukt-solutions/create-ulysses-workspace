@@ -4,7 +4,10 @@
 // Teardown order is MANDATORY:
 //   1. Remove each project worktree from its project repo
 //   2. Remove the workspace worktree from the workspace repo
-//   3. Prune each project repo (belt-and-suspenders)
+//   3. Prune each project repo (belt-and-suspenders — and only when every
+//      prunable record in the repo belongs to this session; a repo also
+//      holding an unrelated external worktree is never pruned, so its
+//      record survives gh:187)
 //   4. Delete all local branches
 //   5. Remove the whole work-sessions/{name}/ folder
 //
@@ -81,6 +84,25 @@ function isRepoSegment(name) {
   const segs = name.split(/[\\/]/);
   if (segs.length !== 1) return false;
   return !/^\.+$/.test(segs[0]);
+}
+
+// `worktree list --porcelain` stanzas reduced to what prune scoping needs:
+// each stanza's worktree path and whether git marked it prunable. Paths
+// are kept exactly as git printed them (realOf is applied by callers, so
+// a record whose directory is gone survives the comparison).
+function worktreeStanzas(porcelain) {
+  const stanzas = [];
+  let cur = null;
+  for (const line of String(porcelain).split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      if (cur) stanzas.push(cur);
+      cur = { path: line.slice(9), prunable: false };
+    } else if (cur && line.startsWith('prunable')) {
+      cur.prunable = true;
+    }
+  }
+  if (cur) stanzas.push(cur);
+  return stanzas;
 }
 
 const args = process.argv.slice(2);
@@ -335,9 +357,42 @@ if (existsSync(wsWorktree)) {
 }
 
 // === Step 3: Prune each project repo to mop up orphans ===
+//
+// `git worktree prune` has no path filter: one invocation drops EVERY
+// prunable record the repo holds, including records of worktrees that
+// have nothing to do with this workspace — a scratch checkout in tmp, a
+// directory on another drive (gh:187). Those belong to no session, so
+// prune runs only when every prunable record in the repo sits under this
+// session's folder; otherwise it is skipped and the records are named in
+// the output, left registered for whoever owns them.
+const sessionFolderReal = realOf(sessionFolder);
+const sessionFolderAbs = resolve(sessionFolder);
+const underSessionFolder = (recordedPath) => {
+  const normalized = realOf(recordedPath);
+  return [sessionFolderReal, sessionFolderAbs].some(
+    (base) => normalized === base || normalized.startsWith(base + sep)
+      || recordedPath === base || recordedPath.startsWith(base + sep),
+  );
+};
 for (const repo of repos) {
   const repoDir = join(reposDir, repo);
   if (!existsSync(repoDir)) continue;
+  const listRes = git(repoDir, ['worktree', 'list', '--porcelain']);
+  if (!listRes.ok) {
+    errors.push(`Could not list worktrees in ${repo}: ${listRes.err || listRes.out}`);
+    continue;
+  }
+  const foreign = worktreeStanzas(listRes.out)
+    .filter((s) => s.prunable && !underSessionFolder(s.path))
+    .map((s) => s.path);
+  if (foreign.length > 0) {
+    skipped.push({
+      step: 'prune',
+      repo,
+      reason: `prune skipped: ${repo} has prunable worktree records outside this session (${foreign.join(', ')}) — a blanket prune would drop them; they were left registered for their owner`,
+    });
+    continue;
+  }
   const res = git(repoDir, ['worktree', 'prune']);
   if (!res.ok) {
     // Prune is a safety net, but if it fails on a repo we touched, surface
@@ -407,8 +462,14 @@ for (const repo of repos) {
     continue;
   }
   const wtList = listRes.out;
-  if (wtList.includes('prunable')) {
-    errors.push(`Prunable worktree record remains in ${repo} after cleanup (gh:119 symptom)`);
+  // Only this session's own prunable records are a leftover gh:119 orphan;
+  // a prunable record elsewhere in the repo is someone else's worktree and
+  // stays exactly as found (step 3 refused to prune it for that reason).
+  const leftover = worktreeStanzas(wtList)
+    .filter((s) => s.prunable && underSessionFolder(s.path))
+    .map((s) => s.path);
+  if (leftover.length > 0) {
+    errors.push(`Prunable worktree record(s) remain in ${repo} after cleanup (${leftover.join(', ')}) — the gh:119 symptom; inspect them, then run git -C ${repoDir} worktree prune yourself`);
   }
   if (wtList.includes(wsPath)) {
     errors.push(`${repo} still has a worktree record referencing the session path`);

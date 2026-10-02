@@ -1,6 +1,6 @@
 ---
 name: migrate-sessions
-description: Migrate this workspace from the session lifecycle to the task lifecycle — inventory old work sessions, decide each one with the operator, finish or archive them, and switch workspace.json to the task model. Runs only inside the current workspace; never deletes anything.
+description: Migrate this workspace from the session lifecycle to the task lifecycle — inventory old work sessions, decide each one with the operator, finish or archive them (empty orphan shells only: remove), and switch workspace.json to the task model. Runs only inside the current workspace; the script never deletes anything.
 ---
 
 # Migrate Sessions
@@ -19,12 +19,18 @@ node .claude/scripts/migrate-sessions.mjs --inventory
 
 Read-only. Present the stderr table plus each session's proposal with its reasons and warnings. Say plainly that the proposals are proposals — evidence and a starting point, not decisions. Pay particular attention to the per-remote state shown per worktree (`same`, `ahead +N`, `behind -N`, `diverged +N/-M`, `not-fetched`, `unknown`) and to `unbacked` warnings: they change what Finish and Archive mean for that session. Each worktree also lists every configured remote with its exact URL — read those before any backup decision: `origin:none` means only that the remote holds no copy of this branch, never that the repo has no remote, and an `origin` that is really a third-party upstream shows its URL right there. Entries shown as `foreign` (symlinked) are never acted on — surface them for manual reconciliation.
 
+Three more kinds of evidence change what you propose:
+
+- **Fetch age** — every worktree line ends `fetch:…` with the age of its repo's last fetch, and anything over a day draws a `stale-fetch` warning: the commits-ahead and content counts ride on tracking refs frozen at that fetch. Tell the operator to fetch first, or re-run with `--inventory --fetch`, which fetches each touched source clone before inspecting it. A fetch is read-only with respect to the workspace's own state — it moves no local branch and touches no worktree, only refs/remotes/* and the object store — and a repo with no origin or an unreachable one is recorded as skipped or failed, never fatal.
+- **Open chats** — `chat open?` on a session (with a `chat-open` warning) means its tracker records a chat session with no `ended:` — a chat may still be working in it. Confirm with the operator before proposing Archive.
+- **External worktrees** — a trailing section lists worktrees the workspace's repos register outside the workspace root (a scratch checkout in tmp, a directory elsewhere). They belong to no session: nothing in this migration prunes, moves, or removes them, and you never should either — including by hand, because `git worktree prune` has no path filter and would drop their records.
+
 ## 2. Decide per session, with the operator — one at a time
 
 For each session, lay out its evidence and ask the operator which way to go. Never infer the decision from the proposal. The options:
 
-- **Finish** (typical for MERGEABLE) — resume the session with `/start-work`, then run `/complete-work`; its own merge confirmation applies there. But if the inventory shows a **diverged** remote for that session, say so *before* the operator chooses Finish: `/complete-work`'s plain push will be rejected, and pushing the rewritten history needs `--force-with-lease` — which you run only on the operator's explicit yes naming the branch. Never force silently.
-- **Archive** (typical for ABANDONED, a broken shell, or a MERGEABLE the operator gives up on) — take it out of the active lifecycle without destroying anything. Three steps, in this order, each its own decision:
+- **Finish** (typical for MERGEABLE, and the default offer for READY_TO_COMPLETE — a session `/complete-work` stopped partway through: tracker already stripped, worktrees still live, branch often already pushed) — resume it with `/start-work` (its walk lists sessions by their tracker, so a stripped one will not appear — name it and re-create a minimal tracker from the inventory's branch/repos before continuing), then run `/complete-work`; its own merge confirmation applies there. But if the inventory shows a **diverged** remote for that session, say so *before* the operator chooses Finish: `/complete-work`'s plain push will be rejected, and pushing the rewritten history needs `--force-with-lease` — which you run only on the operator's explicit yes naming the branch. Never force silently.
+- **Archive** (typical for ABANDONED, an ORPHAN_SHELL that still holds files, or a MERGEABLE the operator gives up on) — take it out of the active lifecycle without destroying anything. When the inventory shows `chat open?`, confirm with the operator that the chat is really done before offering Archive — a live chat's uncommitted work would ride into the archive unseen. Three steps, in this order, each its own decision:
   1. **Clear uncommitted work.** `--archive` refuses when any of the session's worktrees has uncommitted or untracked changes — an edited `session.md` counts — and names them, because edits buried uncommitted in an archive are invisible to every later merge or PR. Offer the operator: commit them to the session branch first (`git -C {worktree} add -A`, then `git -C {worktree} commit -m "…"` — per dirty worktree), discard them explicitly (`git -C {worktree} restore …` / `git -C {worktree} clean …`), or, on an explicit yes, re-run with `--allow-uncommitted` to archive them mid-edit. Do this before the backup: the backup tags committed tips only, so committing first brings those edits under the backup, while anything archived with `--allow-uncommitted` is NOT in it.
   2. **Offer a backup.** Archiving keeps everything on this machine; a backup adds an off-machine copy of the session's commits, and it is what makes a later deletion safe. It covers the committed tips as they stand after step 1. Plain `--backup` creates `drain/{session}/…` tags locally and pushes nothing — for a repo whose only remote is one the operator does not own, that local tag IS the backup. Pushing is a separate, explicitly allowed step:
      ```bash
@@ -32,6 +38,10 @@ For each session, lay out its evidence and ask the operator which way to go. Nev
      ```
      With no allow flag this pushes nothing and exits non-zero, listing per repo the tag and the exact URL(s) it would push to. Approve against the push URL, not the fetch URL: a remote whose push URL differs from its fetch URL shows both, and the script refuses to push there on `--remote-allow-all` — only an explicit `--remote-allow {repo}={remote}` naming it proceeds. Walk the operator through every URL and ask per repo. **Never push backup tags to a remote the operator does not own — a third-party upstream, a read-only mirror, an unfamiliar push URL; pushing `drain/*` tags there publishes the session's commits somewhere foreign.** On yes for repos they do own, re-run adding `--remote-allow {repo}={remote}` per repo (`.` is the workspace repo; `--remote-allow-all` only when every listed URL is their own) and show what was pushed. Declining is fine — the archive still keeps everything locally.
   3. **Archive after an explicit yes naming the session:** `node .claude/scripts/migrate-sessions.mjs --archive --session {name}`. The whole session folder moves to `{sessions}/.archived/{name}--{timestamp}/` and git's worktree links are repaired to follow it — every commit, uncommitted edit, untracked or ignored file, and embedded repository comes along. If the move or the repair fails, the session is put back and the result says whether every link was verified. The session's branches stay checked out in the archived worktrees, so a new task cannot reuse those branch names until the archive is deleted. The archive refuses, touching nothing, when a directory in the folder cannot be read, when the folder holds a worktree of a repository outside this workspace, or when it holds a submodule checkout (its link cannot be repaired) — surface the reason; for a submodule the options are Finish or Keep. Relay any `warnings` (relative symlinks that pointed outside the session no longer resolve after the move).
+- **Remove** (only an ORPHAN_SHELL the inventory marked empty — no worktree, nothing but empty directories, so there is nothing to archive). The command re-verifies emptiness itself and refuses, touching nothing, if any file or symlink has appeared since the inventory; a refusal means switch to Archive:
+  ```bash
+  node -e "const fs=require('fs');const p=process.argv[1];const empty=d=>fs.readdirSync(d,{withFileTypes:true}).every(e=>e.isDirectory()&&empty(d+'/'+e.name));if(!empty(p)){console.error(p+' is not empty — left alone');process.exit(1)}fs.rmSync(p,{recursive:true});console.log('removed empty shell '+p)" work-sessions/{name}
+  ```
 - **Keep** (typical for ACTIVE, and the only sane answer for UNKNOWN) — leave it; it completes later under the session lifecycle.
 
 Unbacked commits (present on no remote) are safe in an archive — they are only ever at risk when someone deletes one. Say so when you archive such a session, and offer the backup.
@@ -48,7 +58,13 @@ The switch procedure:
    ```bash
    node .claude/scripts/migrate-sessions.mjs --enable-task-model --root .claude/worktrees/chore-enable-task-model
    ```
-3. Land the change. With a forge-hosted remote, commit there, open a PR through the workspace's normal flow, and pull the launcher after merge. Without one (`git -C . remote -v` shows no remote this workspace can open PRs against), land it locally — commit in the worktree, fast-forward the launcher's default branch, remove the worktree:
+3. Land the change the way any task lands. A forge-hosted remote (GitHub, GitLab) means a PR/MR through `task-pr.mjs` — the launcher's default branch is protected on a real forge, so landing directly on it is not an option anyway. Commit in the worktree, write a short PR body (what changed, how it was verified) to a scratch file under `workspace-scratchpad/`, then create, ask before merging, and pull the launcher after the merge:
+   ```bash
+   node .claude/scripts/task-pr.mjs --create --root . --branch chore/enable-task-model \
+     --repo . --body-file .=workspace-scratchpad/switch-pr.md --out workspace-scratchpad/switch-prs.json
+   node .claude/scripts/task-pr.mjs --merge --root . --prs workspace-scratchpad/switch-prs.json
+   ```
+   Only a workspace whose repo has no remote at all (`git -C . remote -v` empty) lands locally — commit in the worktree, fast-forward the launcher's default branch, remove the worktree:
    ```bash
    git -C .claude/worktrees/chore-enable-task-model add workspace.json
    git -C .claude/worktrees/chore-enable-task-model commit -m "chore: switch to the task lifecycle"
