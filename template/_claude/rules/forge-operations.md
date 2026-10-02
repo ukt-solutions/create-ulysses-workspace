@@ -31,15 +31,25 @@ surface. With no `type`, the adapter is picked from the target repo's host: gitl
 configured `host`) selects GitLab, anything else stays GitHub — which is how one workspace can
 mix GitHub and GitLab repos, each origin naming its own forge. Optional `repo` is the project
 slug (`owner/name` on GitHub, `group/sub/project` at any depth on GitLab); unset or `"auto"`
-resolves from the git `origin` remote. A self-managed GitLab sets `host` (glab receives it as
-`GITLAB_HOST`). An absent `workspace.forge` is treated as `{ type: 'github' }`; setting it to
-`false` makes every adapter method throw `FORGE_DISABLED`.
+resolves from the git `origin` remote. A self-managed GitLab sets `host` — glab receives it as
+`GITLAB_HOST` (and `--hostname` on `glab api`), always, so an exported foreign `GITLAB_HOST`
+never leaks in. One host per workspace: the origin-based selection recognizes gitlab.com plus
+exactly this host, so a workspace spanning two self-managed instances can't be expressed. An
+origin with an explicit non-default port keeps the port in its host, so `host` carries it too
+(`gitlab.example.com:8443`); default ports drop (`github.com:443` reads as github.com). An
+absent `workspace.forge` is treated as `{ type: 'github' }`; setting it to `false` makes every
+adapter method throw `FORGE_DISABLED`.
 
 GitLab gaps, by design: `releaseCreate` with `generateNotes: true` throws `NOT_SUPPORTED` —
-GitLab cannot generate notes from merged MRs, so callers pass explicit `notes` with
-`generateNotes: false`. Workflow runs map onto pipelines: `workflowRunFind` ignores the workflow
-name (one pipeline per ref) and `workflowRunWatch` polls instead of streaming. `reviewDecision`
-is always empty — approvals surface through `mergeStateStatus`.
+GitLab cannot generate notes from merged MRs, so callers (the `/release` skill does) assemble
+the merged-MR list themselves and pass it as `notes` with `generateNotes: false`. Workflow runs
+map onto pipelines: `workflowRunFind` ignores the workflow name (one pipeline per ref) and
+`workflowRunWatch` polls instead of streaming, treating a `manual` job as still running —
+approving it resumes the pipeline. `reviewDecision` is always empty, and `mergeStateStatus`
+carries GitLab's `detailed_merge_status` vocabulary (`not_approvable`, `ci_still_running`, …),
+not GitHub's — treat it as opaque rather than comparing GitHub strings. `prMerge` disables
+glab's auto-merge (which queues the merge behind a passing pipeline and still exits 0) and
+verifies the MR actually landed, throwing `MergeRejected` otherwise.
 
 ## Deliberate exceptions — do not "fix" these
 

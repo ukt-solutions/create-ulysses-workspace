@@ -105,13 +105,17 @@ export class MergeRejected extends ForgeError {
 // forge operations entirely should set `workspace.forge: false`;
 // callers passing `false` will get a no-op throw on every method.
 //
-// With no explicit `type`, the adapter is picked from the target repo's
-// host: a gitlab.com (or configured self-managed `host`) origin selects
-// the GitLab adapter, anything else stays GitHub. This is what lets one
-// workspace mix GitHub and GitLab repos — each repo's origin names where
-// its PRs live. An explicit `repo` slug (a bare `owner/name` or
-// `group/sub/project` path) carries no host, so that case keeps the
-// GitHub default; point such a workspace at `type: "gitlab"` explicitly.
+// With no explicit `type`, the adapter is picked from the repo's host: the
+// origin remote is parsed, and a gitlab.com (or configured self-managed
+// `host`) origin selects GitLab, anything else stays GitHub. An explicit
+// `repo` slug does not opt out of that — callers like /release pass the
+// repo's own origin-derived slug, so the origin remains the right signal
+// (a GitLab repo must not land on the gh adapter because its slug alone
+// names no host). Only a workspace with no origin at all — or an
+// unparseable one — keeps the GitHub default, and the adapter then
+// surfaces the git failure itself. This is also what lets one workspace
+// mix GitHub and GitLab repos: each repo's origin names where its PRs
+// live.
 export function createForge(config, options = {}) {
   if (config === false) {
     throw new ForgeError(
@@ -141,7 +145,6 @@ export function createForge(config, options = {}) {
 // is read once here; the adapter re-reads it when resolving its own repo,
 // keeping the two consistent (same spawnFn, same origin).
 function inferForgeType(config, options) {
-  if (config?.repo && config.repo !== 'auto') return 'github';
   const spawnFn = options.spawnFn ?? nodeSpawnSync;
   const result = spawnFn('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8' });
   if (result.status !== 0) return 'github'; // the adapter surfaces the failure

@@ -37,10 +37,11 @@ const issueEntity = (over = {}) => JSON.stringify({
   ...over,
 });
 
-// listAssignedToMe normalizes JSON into Issue[] with gl: ids.
+// listAssignedToMe normalizes JSON into Issue[] with gl: ids. (The api
+// call always carries --hostname, even for gitlab.com.)
 {
   const spawnFn = buildSpawn({
-    'api user': ME,
+    'api user --hostname gitlab.com': ME,
     [`issue list --repo ${PROJECT} --assignee alice -O json --per-page 100`]:
       `[${issueEntity({ iid: 1, assignees: [{ username: 'alice' }], milestone: { title: 'v0.1' } })}]`,
   });
@@ -52,26 +53,45 @@ const issueEntity = (over = {}) => JSON.stringify({
   else fail(`listAssignedToMe normalization wrong: ${JSON.stringify(issues)}`);
 }
 
-// listUnassigned filters out assigned issues client-side (GitLab has no
-// no:assignee search).
+// The paged api walks every list the adapters make.
+const apiPage = (path, params, page) =>
+  `api projects/${encodeURIComponent(PROJECT)}/${path}?${[...params, 'per_page=100', `page=${page}`].join('&')} --hostname gitlab.com`;
+
+// listUnassigned uses the API's server-side assignee_id=None filter —
+// not a client-side filter over `issue list`'s first page.
 {
   const spawnFn = buildSpawn({
-    'api user': ME,
-    [`issue list --repo ${PROJECT} -O json --per-page 100`]: JSON.stringify([
-      JSON.parse(issueEntity({ iid: 2, assignees: [] })),
-      JSON.parse(issueEntity({ iid: 3, assignees: [{ username: 'bob' }] })),
-    ]),
+    [apiPage('issues', ['state=opened', 'assignee_id=None'], 1)]:
+      JSON.stringify([JSON.parse(issueEntity({ iid: 2, assignees: [] }))]),
   });
   const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
   const issues = await t.listUnassigned();
   if (issues.length === 1 && issues[0].id === 'gl:2' && issues[0].body === 'details') ok();
   else fail(`listUnassigned wrong: ${JSON.stringify(issues)}`);
+  const call = spawnFn.calls[0].args.join(' ');
+  if (/assignee_id=None/.test(call) && !spawnFn.calls.some((c) => c.args[1] === 'list')) ok();
+  else fail(`listUnassigned should filter server-side: ${call}`);
+}
+
+// The unassigned walk pages to the end — a full first page is not the
+// whole list.
+{
+  const spawnFn = buildSpawn({
+    [apiPage('issues', ['state=opened', 'assignee_id=None'], 1)]:
+      JSON.stringify(Array.from({ length: 100 }, (_, i) => JSON.parse(issueEntity({ iid: i + 1 })))),
+    [apiPage('issues', ['state=opened', 'assignee_id=None'], 2)]:
+      JSON.stringify([JSON.parse(issueEntity({ iid: 101 }))]),
+  });
+  const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
+  const issues = await t.listUnassigned();
+  if (issues.length === 101 && issues[100].id === 'gl:101') ok();
+  else fail(`listUnassigned pagination wrong: ${issues.length} issues`);
 }
 
 // claim throws AlreadyAssignedError when a different user is assigned.
 {
   const spawnFn = buildSpawn({
-    'api user': ME,
+    'api user --hostname gitlab.com': ME,
     [`issue view 3 --repo ${PROJECT} -F json`]: issueEntity({ iid: 3, assignees: [{ username: 'bob' }] }),
   });
   const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
@@ -82,7 +102,7 @@ const issueEntity = (over = {}) => JSON.stringify({
 // claim is idempotent when already assigned to me.
 {
   const spawnFn = buildSpawn({
-    'api user': ME,
+    'api user --hostname gitlab.com': ME,
     [`issue view 4 --repo ${PROJECT} -F json`]: issueEntity({ iid: 4, assignees: [{ username: 'alice' }] }),
   });
   const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
@@ -95,7 +115,7 @@ const issueEntity = (over = {}) => JSON.stringify({
 // claim assigns when unassigned, then re-reads the issue.
 {
   const spawnFn = buildSpawn({
-    'api user': ME,
+    'api user --hostname gitlab.com': ME,
     [`issue update 5 --repo ${PROJECT} --assignee alice`]: '',
     [`issue view 5 --repo ${PROJECT} -F json`]: () => {
       // The second view (after the update) reports alice assigned.
@@ -160,31 +180,44 @@ const issueEntity = (over = {}) => JSON.stringify({
   else fail(`ensureLabels wrong: ${JSON.stringify(created)}`);
 }
 
-// ensureMilestone returns the existing milestone without creating.
+// ensureMilestone returns the existing milestone without creating — and
+// the list walks pages, so a milestone past the first hundred is still
+// found.
 {
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, title: `m${i + 1}`, description: '', state: 'active', due_date: null, web_url: 'u' }));
   const spawnFn = buildSpawn({
-    [`milestone list --repo ${PROJECT} -F json`]: JSON.stringify([
-      { id: 1, title: 'Backlog', description: 'Triage later', state: 'active', due_date: null, web_url: 'https://x/milestones/1' },
+    [apiPage('milestones', [], 1)]: JSON.stringify(page1),
+    [apiPage('milestones', [], 2)]: JSON.stringify([
+      { id: 101, title: 'Backlog', description: 'Triage later', state: 'active', due_date: null, web_url: 'https://x/milestones/101' },
     ]),
   });
   const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
   const ms = await t.ensureMilestone({ title: 'Backlog' });
   const created = spawnFn.calls.some(c => c.args[1] === 'create');
-  if (ms.title === 'Backlog' && ms.number === 1 && ms.state === 'open' && !created) ok();
-  else fail(`ensureMilestone should return existing without create: created=${created}, ms=${JSON.stringify(ms)}`);
+  if (ms.title === 'Backlog' && ms.number === 101 && ms.state === 'open' && !created) ok();
+  else fail(`ensureMilestone should page to the existing one: created=${created}, ms=${JSON.stringify(ms)}`);
 }
 
-// ensureMilestone creates when the title does not exist.
+// ensureMilestone creates when the title does not exist — and verifies by
+// re-listing, since `glab milestone create` prints human text (no JSON
+// flag exists).
 {
+  let created = false;
+  const msList = () => JSON.stringify(created
+    ? [{ id: 2, title: 'v0.1', description: 'alpha', state: 'active', due_date: '2026-06-01', web_url: 'https://x/milestones/2' }]
+    : []);
   const spawnFn = buildSpawn({
-    [`milestone list --repo ${PROJECT} -F json`]: '[]',
+    [apiPage('milestones', [], 1)]: () => ({ status: 0, stdout: msList(), stderr: '' }),
     [`milestone create --repo ${PROJECT} --title v0.1 --description alpha --due-date 2026-06-01T00:00:00Z`]:
-      JSON.stringify({ id: 2, title: 'v0.1', description: 'alpha', state: 'active', due_date: '2026-06-01', web_url: 'https://x/milestones/2' }),
+      () => { created = true; return { status: 0, stdout: 'Created milestone v0.1', stderr: '' }; },
   });
   const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
   const ms = await t.ensureMilestone({ title: 'v0.1', description: 'alpha', dueOn: '2026-06-01T00:00:00Z' });
   if (ms.title === 'v0.1' && ms.number === 2 && ms.dueOn === '2026-06-01') ok();
   else fail(`ensureMilestone should create when absent: ${JSON.stringify(ms)}`);
+  const lists = spawnFn.calls.filter(c => c.args[0] === 'api').length;
+  if (lists === 2) ok(); // before create and after, to verify
+  else fail(`ensureMilestone should verify by re-listing: ${lists} api calls`);
 }
 
 // ensureMilestone rejects a missing title.
@@ -195,13 +228,16 @@ const issueEntity = (over = {}) => JSON.stringify({
 }
 
 // issueRef renders "#N" for the adapter's own project, the full
-// group/sub/project#N path for any other MR project.
+// group/sub/project#N path for any other MR project; issueUrl mints the
+// canonical URL a cross-forge reference needs.
 {
   const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn: buildSpawn({}) });
   if (t.issueRef('gl:42', { fromRepo: PROJECT }) === '#42'
       && t.issueRef('gl:42', { fromRepo: 'group/sub/other' }) === `${PROJECT}#42`
       && t.issueRef('gl:42') === '#42') ok();
   else fail(`issueRef shapes wrong: ${t.issueRef('gl:42', { fromRepo: 'group/sub/other' })}`);
+  if (t.issueUrl('gl:42') === `https://gitlab.com/${PROJECT}/-/issues/42`) ok();
+  else fail(`issueUrl wrong: ${t.issueUrl('gl:42')}`);
   try { t.issueRef('not-an-id'); fail('issueRef should reject a non-gl id'); }
   catch (e) { if (/Not a GitLab issue ID/.test(e.message)) ok(); else fail(`wrong error: ${e.message}`); }
 }
@@ -250,6 +286,27 @@ console.log('# repo resolution and self-managed host');
   const api = spawnFn.calls.find(c => c.args[0] === 'api');
   if (api?.args.includes('--hostname')) ok();
   else fail(`--hostname not passed to glab api: ${api?.args.join(' ')}`);
+}
+
+// An exported GITLAB_HOST for some other instance never leaks into a
+// gitlab.com tracker run — the adapter always names its own host.
+{
+  const spawnFn = buildSpawn({
+    'api user --hostname gitlab.com': ME,
+    [`issue list --repo ${PROJECT} --assignee alice -O json --per-page 100`]: '[]',
+  });
+  const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
+  const prev = process.env.GITLAB_HOST;
+  process.env.GITLAB_HOST = 'elsewhere.example.com';
+  try {
+    await t.listAssignedToMe();
+    const list = spawnFn.calls.find((c) => c.args.includes('list'));
+    if (list?.env?.GITLAB_HOST === 'gitlab.com') ok();
+    else fail(`foreign GITLAB_HOST leaked: ${JSON.stringify(list?.env?.GITLAB_HOST)}`);
+  } finally {
+    if (prev === undefined) delete process.env.GITLAB_HOST;
+    else process.env.GITLAB_HOST = prev;
+  }
 }
 
 // An origin on an unconfigured host is a construction error.

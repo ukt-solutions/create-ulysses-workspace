@@ -82,21 +82,63 @@ console.log('# prCreate');
 
 console.log('# prMerge');
 
-// Strategy maps to --squash / --rebase, plain merge adds no flag.
+// Strategy maps to --squash / --rebase, plain merge adds no flag — and
+// --auto-merge=false is always present (glab's default auto-merge would
+// queue the merge behind a running pipeline and still exit 0). The merge
+// is verified: the MR is viewed before (draft check) and after (it must
+// read MERGED).
 for (const [strategy, flag] of [['merge', null], ['squash', '--squash'], ['rebase', '--rebase']]) {
-  const key = `mr merge 42 --repo ${PROJECT} --yes${flag ? ` ${flag}` : ''}`;
-  const spawnFn = buildSpawn({ 'remote get-url origin': GL_ORIGIN, [key]: '' });
+  const key = `mr merge 42 --repo ${PROJECT} --yes --auto-merge=false${flag ? ` ${flag}` : ''}`;
+  const spawnFn = buildSpawn({
+    'remote get-url origin': GL_ORIGIN,
+    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity({ state: 'merged', merged_at: '2026-09-06T07:19:52Z' }),
+    [key]: '',
+  });
   const forge = createForge({ type: 'gitlab' }, { spawnFn });
   const res = await forge.prMerge({ id: `${PROJECT}!42`, strategy });
   if (res.merged === true && res.url === `${MR_URL}/42`) ok();
   else fail(`prMerge ${strategy} wrong: ${JSON.stringify(res)}`);
+  const views = spawnFn.calls.filter((c) => c.args[1] === 'view');
+  if (views.length === 2) ok();
+  else fail(`prMerge ${strategy} should view the MR before and after glab: ${views.length} views`);
+}
+
+// A queued merge fools glab (exit 0) but not the post-merge view: the MR
+// still reads OPEN, so the merge did not happen.
+{
+  const spawnFn = buildSpawn({
+    'remote get-url origin': GL_ORIGIN,
+    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity(), // still opened
+    [`mr merge 42 --repo ${PROJECT} --yes --auto-merge=false`]: '',
+  });
+  const forge = createForge({ type: 'gitlab' }, { spawnFn });
+  let threw = null;
+  try { await forge.prMerge({ id: '42' }); } catch (e) { threw = e; }
+  if (threw instanceof MergeRejected && /queued/i.test(threw.reason)) ok();
+  else fail(`queued merge wrong: ${threw?.message ?? 'no throw'}`);
+}
+
+// A draft MR is refused before glab merge is ever called.
+{
+  const spawnFn = buildSpawn({
+    'remote get-url origin': GL_ORIGIN,
+    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity({ draft: true }),
+  });
+  const forge = createForge({ type: 'gitlab' }, { spawnFn });
+  let threw = null;
+  try { await forge.prMerge({ id: '42' }); } catch (e) { threw = e; }
+  if (threw instanceof MergeRejected && /draft/i.test(threw.reason)) ok();
+  else fail(`draft refusal wrong: ${threw?.message ?? 'no throw'}`);
+  if (!spawnFn.calls.some((c) => c.args[1] === 'merge')) ok();
+  else fail('glab mr merge ran for a draft MR');
 }
 
 // deleteBranch adds --remove-source-branch.
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GL_ORIGIN,
-    [`mr merge 9 --repo ${PROJECT} --yes --squash --remove-source-branch`]: '',
+    [`mr view 9 --repo ${PROJECT} --output json`]: mrEntity({ iid: 9, state: 'merged' }),
+    [`mr merge 9 --repo ${PROJECT} --yes --auto-merge=false --squash --remove-source-branch`]: '',
   });
   const forge = createForge({ type: 'gitlab' }, { spawnFn });
   await forge.prMerge({ id: '!9', strategy: 'squash', deleteBranch: true });
@@ -109,7 +151,8 @@ for (const [strategy, flag] of [['merge', null], ['squash', '--squash'], ['rebas
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GL_ORIGIN,
-    [`mr merge 99 --repo ${PROJECT} --yes`]: () => ({
+    [`mr view 99 --repo ${PROJECT} --output json`]: mrEntity({ iid: 99 }),
+    [`mr merge 99 --repo ${PROJECT} --yes --auto-merge=false`]: () => ({
       status: 1, stdout: '', stderr: '404 Not Found',
     }),
   });
@@ -124,7 +167,8 @@ for (const [strategy, flag] of [['merge', null], ['squash', '--squash'], ['rebas
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GL_ORIGIN,
-    [`mr merge 5 --repo ${PROJECT} --yes`]: () => ({
+    [`mr view 5 --repo ${PROJECT} --output json`]: mrEntity({ iid: 5 }),
+    [`mr merge 5 --repo ${PROJECT} --yes --auto-merge=false`]: () => ({
       status: 1, stdout: '', stderr: '405 Method Not Allowed: Merge request is not yet ready to be merged',
     }),
   });
@@ -390,12 +434,15 @@ for (const [gl, status, conclusion] of [
 
 console.log('# workflowRunWatch');
 
+// The pipeline poll always names the host (--hostname) — even gitlab.com.
+const pipelineApi = (id) => `api projects/${encodeURIComponent(PROJECT)}/pipelines/${id} --hostname gitlab.com`;
+
 // Success after one running poll: exit 0. pollMs is shrunk so the test
 // never actually waits.
 {
   let polls = 0;
   const spawnFn = buildSpawn({
-    [`api projects/${encodeURIComponent(PROJECT)}/pipelines/999`]: () => {
+    [pipelineApi(999)]: () => {
       polls += 1;
       return { status: 0, stdout: JSON.stringify({ id: 999, status: polls === 1 ? 'running' : 'success', web_url: 'u' }), stderr: '' };
     },
@@ -409,8 +456,7 @@ console.log('# workflowRunWatch');
 // A failed pipeline with exitStatus → exitCode 1 plus the failure URL.
 {
   const spawnFn = buildSpawn({
-    [`api projects/${encodeURIComponent(PROJECT)}/pipelines/999`]:
-      JSON.stringify({ id: 999, status: 'failed', web_url: 'https://x/-/pipelines/999' }),
+    [pipelineApi(999)]: JSON.stringify({ id: 999, status: 'failed', web_url: 'https://x/-/pipelines/999' }),
   });
   const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn, pollMs: 1 });
   const res = await forge.workflowRunWatch({ runId: '999', exitStatus: true });
@@ -421,13 +467,41 @@ console.log('# workflowRunWatch');
 // Without exitStatus a failed run still reports 0 (gh watch's default).
 {
   const spawnFn = buildSpawn({
-    [`api projects/${encodeURIComponent(PROJECT)}/pipelines/999`]:
-      JSON.stringify({ id: 999, status: 'failed', web_url: 'u' }),
+    [pipelineApi(999)]: JSON.stringify({ id: 999, status: 'failed', web_url: 'u' }),
   });
   const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn, pollMs: 1 });
   const res = await forge.workflowRunWatch({ runId: '999' });
   if (res.exitCode === 0) ok();
   else fail(`workflowRunWatch no-exitStatus wrong: ${JSON.stringify(res)}`);
+}
+
+// `manual` is not terminal for a watch — approving the manual job resumes
+// the pipeline, so polling continues past it.
+{
+  let polls = 0;
+  const spawnFn = buildSpawn({
+    [pipelineApi(11)]: () => {
+      polls += 1;
+      return { status: 0, stdout: JSON.stringify({ id: 11, status: polls === 1 ? 'manual' : 'success', web_url: 'u' }), stderr: '' };
+    },
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn, pollMs: 1 });
+  const res = await forge.workflowRunWatch({ runId: '11', exitStatus: true });
+  if (res.exitCode === 0 && polls === 2) ok();
+  else fail(`workflowRunWatch manual-through wrong: ${JSON.stringify(res)} polls=${polls}`);
+}
+
+// A pipeline stuck on manual until the bound: the timeout names what it
+// waited on.
+{
+  const spawnFn = buildSpawn({
+    [pipelineApi(12)]: JSON.stringify({ id: 12, status: 'manual', web_url: 'u' }),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn, pollMs: 1, maxPolls: 2 });
+  let threw = null;
+  try { await forge.workflowRunWatch({ runId: '12' }); } catch (e) { threw = e; }
+  if (threw && /manual job/.test(threw.message)) ok();
+  else fail(`workflowRunWatch manual timeout wrong: ${threw?.message ?? 'no throw'}`);
 }
 
 console.log('# repo resolution and self-managed hosts');
@@ -476,6 +550,43 @@ for (const [url, expected] of [
   const api = spawnFn.calls.find(c => c.args[0] === 'api');
   if (api?.args.includes('--hostname') && api?.args[api?.args.indexOf('--hostname') + 1] === host) ok();
   else fail(`--hostname not passed to glab api: ${api?.args.join(' ')}`);
+}
+
+// A self-managed origin on a non-default port: the port stays in the
+// host, so config.host carries it too (and GITLAB_HOST names it).
+{
+  const host = 'gitlab.example.com:8443';
+  const spawnFn = buildSpawn({
+    'remote get-url origin': `https://${host}/acme/team/app.git\n`,
+    [`mr list --repo acme/team/app --output json --per-page 100 --merged`]: '[]',
+  });
+  const forge = createForge({ type: 'gitlab', host, repo: 'auto' }, { spawnFn });
+  if (forge.identity === 'gitlab:acme/team/app') ok();
+  else fail(`port host identity wrong: ${forge.identity}`);
+  await forge.prList({});
+  const list = spawnFn.calls.find((c) => c.args.includes('list'));
+  if (list?.env?.GITLAB_HOST === host) ok();
+  else fail(`port not kept in GITLAB_HOST: ${JSON.stringify(list?.env?.GITLAB_HOST)}`);
+}
+
+// An exported GITLAB_HOST for some other instance never leaks into a
+// gitlab.com run — the adapter always names its own host.
+{
+  const spawnFn = buildSpawn({
+    [`mr list --repo ${PROJECT} --output json --per-page 100 --merged`]: '[]',
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const prev = process.env.GITLAB_HOST;
+  process.env.GITLAB_HOST = 'elsewhere.example.com';
+  try {
+    await forge.prList({});
+    const list = spawnFn.calls.find((c) => c.args.includes('list'));
+    if (list?.env?.GITLAB_HOST === 'gitlab.com') ok();
+    else fail(`foreign GITLAB_HOST leaked: ${JSON.stringify(list?.env?.GITLAB_HOST)}`);
+  } finally {
+    if (prev === undefined) delete process.env.GITLAB_HOST;
+    else process.env.GITLAB_HOST = prev;
+  }
 }
 
 // An origin that is not a GitLab host is a construction error, not a

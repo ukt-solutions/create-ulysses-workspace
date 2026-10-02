@@ -62,14 +62,24 @@ function parseForgeRemote(url, { hosts = [] } = {}) {
 
 // Split any remote URL into host + path segments, or null when it is not a
 // forge-shaped remote at all (local path, file:// URL, …).
+const DEFAULT_PORTS = { https: 443, http: 80, ssh: 22, git: 9418 };
+const SCHEME_URL_RE = /^(?<scheme>https?|ssh|git):\/\/(?:[^@/]+@)?(?<host>[^:/]+)(?::(?<port>\d+))?\/(?<path>.+)$/;
+
 function parseRemoteUrl(url) {
   const s = String(url).trim().replace(/\/+$/, '');
   // scp-style: user@host:path — the colon separator, no scheme.
-  let m = s.match(/^[^@/]+@([^:/]+):(.+)$/);
-  if (m) return { host: m[1].toLowerCase(), path: splitRemotePath(m[2]) };
-  // scheme://[user@]host[:port]/path
-  m = s.match(/^(?:ssh|https?|git):\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+)$/);
-  if (m) return { host: m[1].toLowerCase(), path: splitRemotePath(m[2]) };
+  const scp = s.match(/^[^@/]+@([^:/]+):(.+)$/);
+  if (scp) return { host: scp[1].toLowerCase(), path: splitRemotePath(scp[2]) };
+  // scheme://[user@]host[:port]/path — an explicit non-default port stays
+  // part of the host so a configured self-managed host can carry it
+  // (gitlab.example.com:8443); a default port drops, so github.com:443
+  // still reads as github.com.
+  const m = s.match(SCHEME_URL_RE);
+  if (m) {
+    const { scheme, host, port, path } = m.groups;
+    const hostWithPort = port && Number(port) !== DEFAULT_PORTS[scheme] ? `${host}:${port}` : host;
+    return { host: hostWithPort.toLowerCase(), path: splitRemotePath(path) };
+  }
   return null;
 }
 
@@ -82,6 +92,31 @@ function splitRemotePath(p) {
 // reads (a mixed workspace may leave type unset entirely).
 function forgeHosts(ws) {
   return [ws?.workspace?.forge?.host].filter(Boolean);
+}
+
+// The per-repo forge config: the workspace block (host, any shared
+// settings) with the repo's own identity layered on. The origin's host and
+// slug win over any workspace-level `type` — a workspace may mix GitHub
+// and GitLab repos, and each repo's origin names where its PRs live, so
+// one global type cannot speak for both. `parsed` is parseForgeRemote's
+// result; a null (unparseable origin) yields the workspace block as-is.
+function perRepoForge(ws, parsed) {
+  if (!parsed) return { ...(ws?.workspace?.forge ?? {}) };
+  return { ...(ws?.workspace?.forge ?? {}), type: parsed.forge, host: parsed.host, repo: parsed.slug };
+}
+
+// Everything a caller outside task-pr needs to build one repo's forge:
+// read the repo's origin, parse it, and hand back a config createForge can
+// take. The adapter type comes from the repo's own host, so a GitLab repo
+// gets the gitlab adapter even when workspace.forge names no type (or a
+// different one) — this is the helper the /release skill uses, so its
+// forge always matches the repo being released.
+function forgeConfigForRepo(rootDir, repo, ws, deps = {}) {
+  const gitFn = deps.gitFn ?? spawnSync;
+  const res = gitFn('git', ['-C', repoDirFor(rootDir, repo), 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
+  const origin = res.error || res.status !== 0 ? null : String(res.stdout || '').trim();
+  const parsed = origin ? parseForgeRemote(origin, { hosts: forgeHosts(ws) }) : null;
+  return perRepoForge(ws, parsed);
 }
 
 /**
@@ -107,4 +142,4 @@ function mergeModeFor(root, repo, deps = {}) {
   return parseForgeRemote(String(res.stdout || '').trim(), { hosts: forgeHosts(ws) }) ? 'forge' : null;
 }
 
-export { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, mergeModeFor };
+export { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, perRepoForge, forgeConfigForRepo, mergeModeFor };

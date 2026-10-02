@@ -40,7 +40,9 @@
 // body file is required per forge repo alone; one given for a local repo
 // is ignored). The PR title is the linked issue's title when --work-item
 // is given, else the branch's first commit subject; the body is the
-// repo's body file with `Closes <ref>` appended. Prints
+// repo's body file with a closing reference appended — `Closes <ref>`
+// when the tracker's forge matches the PR's, else the issue's URL (a
+// GitHub `owner/repo#N` reference cannot resolve on GitLab). Prints
 // `{ prs, empty, pushed }` — prs holds forge entries (mode "forge") and
 // local entries (mode "local") alike, every entry carrying its commit
 // count — and, with --out, writes the same JSON to a file — a mid-run
@@ -78,7 +80,7 @@ import { resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { taskWorktreePath, defaultBranchFor } from './task-worktree.mjs';
-import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, mergeModeFor } from './merge-mode.mjs';
+import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, perRepoForge, mergeModeFor } from './merge-mode.mjs';
 import { readRecord } from './chat-record.mjs';
 import { createForge } from './forges/interface.mjs';
 import { createTracker } from './trackers/interface.mjs';
@@ -98,13 +100,31 @@ function assertForgeEnabled(ws) {
   }
 }
 
-// The per-repo forge config: the workspace block (host, any shared
-// settings) with the repo's own identity layered on. The origin's host and
-// slug win over any workspace-level `type` — a workspace may mix GitHub
-// and GitLab repos, and each repo's origin names where its PRs live, so
-// one global type cannot speak for both.
-function perRepoForge(ws, { forge, host, slug }) {
-  return { ...(ws.workspace?.forge ?? {}), type: forge, host, repo: slug };
+// perRepoForge (from merge-mode.mjs, re-exported below) builds each repo's
+// forge config; see its definition there for why the origin wins over the
+// workspace-level type.
+
+// Which forge an issues adapter's references resolve on — `owner/repo#N`
+// from github-issues only closes on GitHub, `group/sub#N` from
+// gitlab-issues only on GitLab.
+const TRACKER_FORGE = { 'github-issues': 'github', 'gitlab-issues': 'gitlab' };
+
+// The closing line for a PR body. Same forge as the tracker: the native
+// reference (issueRef). Cross-forge — a GitHub tracker's issue referenced
+// from a GitLab MR, or the reverse — cannot use it, since the target forge
+// cannot resolve the reference; the line carries the issue's URL instead.
+// As `Closes {url}` when the tracker mints canonical URLs (issueUrl —
+// both forges close issues referenced by full URL); otherwise as a bare
+// `Refs {url}` on the URL getIssue already returned, which references the
+// issue without claiming close semantics the target forge may not honor.
+function closingLineFor(tracker, issue, workItem, target, trackerConfig) {
+  const ref = tracker.issueRef(workItem, { fromRepo: `${target.owner}/${target.name}` });
+  const trackerForge = trackerConfig?.type ? TRACKER_FORGE[trackerConfig.type] : undefined;
+  if (!trackerForge || !target.forge || trackerForge === target.forge) {
+    return `Closes ${ref}`;
+  }
+  if (typeof tracker.issueUrl === 'function') return `Closes ${tracker.issueUrl(workItem)}`;
+  return issue?.url ? `Refs ${issue.url}` : `Closes ${ref}`;
 }
 
 // Branch names become refs, refspecs, and (via the slug) paths; git's own
@@ -259,11 +279,12 @@ async function createPrs(args, deps) {
   }
 
   let issueTitle = null;
-  let issueRefs = null;
+  let closingLines = null;
   if (args.workItem && ws.workspace?.tracker) {
     const tracker = deps.trackerFactory(ws.workspace.tracker);
-    issueTitle = (await tracker.getIssue(args.workItem)).title;
-    issueRefs = new Map(forgeActive.map((t) => [t.repo, tracker.issueRef(args.workItem, { fromRepo: `${t.owner}/${t.name}` })]));
+    const issue = await tracker.getIssue(args.workItem);
+    issueTitle = issue.title;
+    closingLines = new Map(forgeActive.map((t) => [t.repo, closingLineFor(tracker, issue, args.workItem, t, ws.workspace.tracker)]));
   }
 
   // Local entries are recorded up front, before anything can fail: they are
@@ -292,7 +313,7 @@ async function createPrs(args, deps) {
         .find((p) => p.headRefName === args.branch && p.baseRefName === t.defaultBranch);
       const title = issueTitle ?? firstCommitSubject(deps.gitFn, t, args.branch);
       let body = readFileSync(args.bodyFiles.get(t.repo), 'utf8').replace(/\s*$/, '');
-      if (issueRefs) body = `${body}\n\nCloses ${issueRefs.get(t.repo)}\n`;
+      if (closingLines) body = `${body}\n\n${closingLines.get(t.repo)}\n`;
       const pr = existing ?? await forge.prCreate({ title, body, head: args.branch, base: t.defaultBranch });
       prs.push({
         repo: t.repo, mode: 'forge', owner: t.owner, name: t.name,
@@ -570,4 +591,4 @@ if (isMainModule(import.meta.url)) {
 }
 
 export { run, parseArgs };
-export { parseForgeRemote, mergeModeFor } from './merge-mode.mjs';
+export { parseForgeRemote, mergeModeFor, perRepoForge, forgeConfigForRepo } from './merge-mode.mjs';

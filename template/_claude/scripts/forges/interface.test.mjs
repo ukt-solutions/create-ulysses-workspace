@@ -108,10 +108,20 @@ console.log('# adapter selection by repo host (no explicit type)');
   else fail(`self-managed inference failed: identity=${forge.identity}`);
 }
 
-// An explicit repo slug carries no host — GitHub stays the default, and
-// no git call is made to guess one.
+// An explicit repo slug does not opt out of host inference — /release
+// passes the repo's own origin-derived slug, so a GitLab repo still lands
+// on the gitlab adapter (gh would then be aimed at a GitLab project).
 {
-  const spawnFn = (cmd, args) => ({ status: 1, stdout: '', stderr: `unexpected call: ${cmd} ${args.join(' ')}` });
+  const spawnFn = () => ({ status: 0, stdout: 'git@gitlab.com:group/sub/proj.git\n', stderr: '' });
+  const forge = createForge({ repo: 'group/sub/proj' }, { spawnFn });
+  if (forge.identity === 'gitlab:group/sub/proj') ok();
+  else fail(`explicit-repo gitlab inference failed: identity=${forge.identity}`);
+}
+
+// With no origin to read (or an unparseable one), the GitHub default
+// stands — back-compat for pre-forge-field workspaces.
+{
+  const spawnFn = () => ({ status: 1, stdout: '', stderr: 'not a git repository' });
   const forge = createForge({ repo: 'explicit/repo' }, { spawnFn });
   if (forge.identity === 'github:explicit/repo') ok();
   else fail(`explicit-repo default failed: identity=${forge.identity}`);

@@ -20,7 +20,9 @@
 //     cannot express and this adapter translates into a merged-at filter.
 //   - `workflowRunFind`/`workflowRunWatch` map onto pipelines: a GitLab
 //     project runs one pipeline per ref, so the `workflow` name is ignored.
-//     Watching polls the pipeline until it reaches a terminal status.
+//     Watching polls the pipeline until it reaches a status that cannot
+//     change on its own — a `manual` job keeps polling, since approving it
+//     resumes the pipeline.
 //   - `releaseCreate` has no forge-generated-notes equivalent on GitLab:
 //     `generateNotes: true` throws NOT_SUPPORTED — callers pass
 //     `generateNotes: false` plus explicit `notes`.
@@ -39,9 +41,10 @@ import {
 
 const GITLAB_DEFAULT_HOST = 'gitlab.com';
 
-// Pipeline statuses that will not change without human action. `manual`
-// waits on an operator, so a watch stops there like gh's action_required.
-const PIPELINE_TERMINAL = new Set(['success', 'failed', 'canceled', 'skipped', 'manual']);
+// Pipeline statuses that cannot change on their own. `manual` deliberately
+// reads as non-terminal here: an operator approving the manual job turns
+// the pipeline running again, so a watch keeps polling past it.
+const PIPELINE_TERMINAL = new Set(['success', 'failed', 'canceled', 'skipped']);
 
 const NOT_FOUND_RE = /404|not\s+found/i;
 
@@ -50,9 +53,10 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
   const host = typeof config?.host === 'string' && config.host ? config.host : GITLAB_DEFAULT_HOST;
 
   function glab(args, { input } = {}) {
-    // GITLAB_HOST aims the -R/--repo slugs at the configured instance;
-    // gitlab.com needs no override, so plain inheritance covers the default.
-    const env = host !== GITLAB_DEFAULT_HOST ? { ...process.env, GITLAB_HOST: host } : process.env;
+    // GITLAB_HOST always names the resolved instance — always, because an
+    // exported foreign value must not leak into a gitlab.com run — and
+    // aims the -R/--repo slugs at it.
+    const env = { ...process.env, GITLAB_HOST: host };
     return spawnFn('glab', args, {
       input,
       encoding: 'utf-8',
@@ -70,11 +74,9 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
   }
 
   // `glab api` resolves its host from the CWD's git remote, not from
-  // GITLAB_HOST, so the configured host is passed explicitly.
+  // GITLAB_HOST, so the resolved host is always passed explicitly.
   function apiArgs(path) {
-    const args = ['api', path];
-    if (host !== GITLAB_DEFAULT_HOST) args.push('--hostname', host);
-    return args;
+    return ['api', path, '--hostname', host];
   }
 
   function repoFor(override) {
@@ -101,10 +103,21 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
     return { id: `${target}!${number}`, url, number };
   }
 
+  // glab's `mr merge` defaults to --auto-merge: with a pipeline still
+  // running it only QUEUES the merge and exits 0, which would read as
+  // success here while the MR stays open (and task-pr then merges the
+  // workspace MR and closes the issue ahead of CI ever publishing).
+  // --auto-merge=false makes glab merge now or fail, and the post-merge
+  // view verifies the merge actually happened — glab exiting 0 is not
+  // proof on its own.
   async function prMerge({ id, strategy = 'merge', deleteBranch = false, repo }) {
     if (!id) throw new Error('prMerge: id is required');
     const { number, repo: parsedRepo } = parseMrId(id, repoFor(repo));
-    const args = ['mr', 'merge', String(number), '--repo', parsedRepo, '--yes'];
+    const before = await prView({ id, repo: parsedRepo });
+    if (before.isDraft) {
+      throw new MergeRejected(id, 'MR is a draft — mark it ready before merging');
+    }
+    const args = ['mr', 'merge', String(number), '--repo', parsedRepo, '--yes', '--auto-merge=false'];
     switch (strategy) {
       case 'merge': break; // plain merge is glab's default
       case 'squash': args.push('--squash'); break;
@@ -121,7 +134,14 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
       }
       throw new MergeRejected(id, stderr || 'glab mr merge exited non-zero');
     }
-    return { merged: true, url: webUrl(parsedRepo, 'merge_requests', number) };
+    const after = await prView({ id, repo: parsedRepo });
+    if (after.state !== 'MERGED') {
+      throw new MergeRejected(
+        id,
+        `MR is still ${after.state} after glab exited 0 — the merge was queued, not applied`,
+      );
+    }
+    return { merged: true, url: after.url };
   }
 
   async function prView({ id, repo, json }) {
@@ -258,13 +278,16 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
   }
 
   // No `glab ci watch` exists — watch polls the pipeline until it reaches a
-  // status that cannot change on its own. Polling is bounded (an hour by
-  // default); a pipeline that never terminates surfaces as a plain Error,
-  // matching the interface's "raw failures throw Error".
+  // status that cannot change on its own. A `manual` job is not that: an
+  // approval resumes the pipeline, so polling continues past it up to the
+  // bound (an hour by default), and the timeout names what it waited on. A
+  // pipeline that never terminates surfaces as a plain Error, matching the
+  // interface's "raw failures throw Error".
   async function workflowRunWatch({ runId, repo, exitStatus = false }) {
     if (!runId) throw new Error('workflowRunWatch: runId is required');
     const target = repoFor(repo);
     const path = `projects/${encodeURIComponent(target)}/pipelines/${runId}`;
+    let lastStatus = null;
     for (let i = 0; i < maxPolls; i += 1) {
       const stdout = glabOrThrow(apiArgs(path)).trim();
       let pipeline;
@@ -273,13 +296,17 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
       } catch (err) {
         throw new Error(`glab api ${path} returned unparseable output: ${err.message}`);
       }
+      lastStatus = pipeline.status;
       if (PIPELINE_TERMINAL.has(pipeline.status)) {
         if (!exitStatus || pipeline.status === 'success') return { exitCode: 0 };
         return { exitCode: 1, stderr: `pipeline ${pipeline.status}: ${pipeline.web_url}` };
       }
       if (i < maxPolls - 1) await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
-    throw new Error(`pipeline ${runId} did not finish within ${Math.round((pollMs * maxPolls) / 60000)} minutes`);
+    const waiting = lastStatus === 'manual'
+      ? ' — still waiting on a manual job (approve it in the pipeline UI)'
+      : '';
+    throw new Error(`pipeline ${runId} did not finish within ${Math.round((pollMs * maxPolls) / 60000)} minutes${waiting}`);
   }
 
   return {
@@ -352,7 +379,12 @@ function parseMrId(id, fallbackRepo) {
 
 // Like github.mjs's resolveRepo, kept local so the adapter stands alone:
 // gitlab.com plus the configured self-managed host, scp-style and scheme
-// URLs, nested groups at any depth, optional .git suffix.
+// URLs (an explicit non-default port stays in the host, so `host` can
+// carry it — gitlab.example.com:8443), nested groups at any depth,
+// optional .git suffix.
+const DEFAULT_PORTS = { https: 443, http: 80, ssh: 22, git: 9418 };
+const SCHEME_URL_RE = /^(?<scheme>https?|ssh|git):\/\/(?:[^@/]+@)?(?<host>[^:/]+)(?::(?<port>\d+))?\/(?<path>.+)$/;
+
 function resolveRepo(config, spawnFn) {
   if (config?.repo && config.repo !== 'auto') return config.repo;
   const result = spawnFn('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8' });
@@ -361,10 +393,25 @@ function resolveRepo(config, spawnFn) {
   }
   const hosts = [GITLAB_DEFAULT_HOST, ...(config?.host ? [String(config.host).toLowerCase()] : [])];
   const s = result.stdout.trim().replace(/\/+$/, '');
-  const m = s.match(/^[^@/]+@([^:/]+):(.+)$/) // scp-style: git@host:path
-    || s.match(/^(?:ssh|https?):\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+)$/);
-  if (m && hosts.includes(m[1].toLowerCase())) {
-    const segments = m[2].replace(/\.git$/, '').split('/').filter(Boolean);
+  let host = null;
+  let path = null;
+  const scp = s.match(/^[^@/]+@([^:/]+):(.+)$/); // scp-style: git@host:path
+  if (scp) {
+    host = scp[1].toLowerCase();
+    path = scp[2];
+  } else {
+    const m = s.match(SCHEME_URL_RE);
+    if (m) {
+      const { scheme, host: h, port } = m.groups;
+      // A non-default port stays part of the host so it can match a
+      // configured host that carries one; a default port drops, so
+      // github.com:443-style URLs still resolve.
+      host = (port && Number(port) !== DEFAULT_PORTS[scheme] ? `${h}:${port}` : h).toLowerCase();
+      path = m.groups.path;
+    }
+  }
+  if (host && path && hosts.includes(host)) {
+    const segments = path.replace(/\.git$/, '').split('/').filter(Boolean);
     if (segments.length >= 2) return segments.join('/');
   }
   throw new Error(`Cannot parse GitLab remote: ${result.stdout.trim()}`);

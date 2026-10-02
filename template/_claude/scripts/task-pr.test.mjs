@@ -166,15 +166,19 @@ function fakeForgeFactory(log, {
   });
 }
 
-// A tracker factory that records calls; issueRef mirrors the github-issues
-// adapter's contract so the closing-line shape is observable end to end.
-function fakeTrackerFactory(log, { repo = 'acme/app', title = 'The issue title' } = {}) {
+// A tracker factory that records calls; issueRef/issueUrl mirror the real
+// adapters' contracts so the closing-line shape is observable end to end.
+// `issueUrl: false` mimics github-issues (no issueUrl method — only the
+// gitlab-issues adapter mints URLs).
+function fakeTrackerFactory(log, { repo = 'acme/app', title = 'The issue title', issueUrl = false } = {}) {
+  const url = (id) => `https://tracker.example/${id.replace(':', '/')}`;
   return () => ({
-    async getIssue(id) { log.push({ op: 'getIssue', id }); return { id, title }; },
+    async getIssue(id) { log.push({ op: 'getIssue', id }); return { id, title, url: url(id) }; },
     issueRef(id, { fromRepo } = {}) {
       log.push({ op: 'issueRef', id, fromRepo });
       return fromRepo && fromRepo !== repo ? `${repo}#${id.slice(3)}` : `#${id.slice(3)}`;
     },
+    ...(issueUrl ? { issueUrl: url } : {}),
     async closeIssue(id, { comment } = {}) { log.push({ op: 'closeIssue', id, comment }); },
   });
 }
@@ -200,6 +204,13 @@ console.log('# parseForgeRemote shapes');
   assertEq(parseForgeRemote('git@gitlab.example.com:acme/app.git'), null, 'unconfigured host is not forge-hosted');
   assertEq(parseForgeRemote('git@gitlab.example.com:acme/app.git', { hosts: ['gitlab.example.com'] }),
     { owner: 'acme', name: 'app', slug: 'acme/app', host: 'gitlab.example.com', forge: 'gitlab' }, 'configured self-managed host parses');
+  // Ports: an explicit non-default port stays in the host (so a configured
+  // host carries it); a default port drops.
+  assertEq(parseForgeRemote('https://gitlab.example.com:8443/team/deep/inner.git', { hosts: ['gitlab.example.com:8443'] }),
+    { owner: 'team/deep', name: 'inner', slug: 'team/deep/inner', host: 'gitlab.example.com:8443', forge: 'gitlab' }, 'non-default port stays in the host');
+  assertEq(parseForgeRemote('https://gitlab.example.com:8443/team/inner.git', { hosts: ['gitlab.example.com'] }),
+    null, 'a port-carrying host does not match a bare host entry');
+  assertEq(parseForgeRemote('https://github.com:443/acme/app.git'), gh, 'a default port drops');
   assertEq(parseForgeRemote('/tmp/origin.git'), null, 'local path is not forge-hosted');
   assertEq(parseForgeRemote('file:///srv/bare/app.git'), null, 'file URL is not forge-hosted');
   assertEq(parseForgeRemote('git@gitlab.com:solo.git'), null, 'a namespace-less gitlab path is not forge-hosted');
@@ -244,7 +255,10 @@ console.log('# a mixed GitHub/GitLab workspace: one forge adapter per repo, chos
     app: 'git@github.com:acme/app.git',
     gl: 'git@gitlab.com:group/sub/gl.git',
     hosted: 'git@gitlab.example.com:team/deep/inner.git',
-  }, { forge: { type: 'github', host: 'gitlab.example.com' } });
+  }, {
+    forge: { type: 'github', host: 'gitlab.example.com' },
+    tracker: { type: 'gitlab-issues', repo: 'group/sub/gl' },
+  });
   try {
     assertEq(mergeModeFor(root, 'app'), 'forge', 'a github.com origin is forge mode');
     assertEq(mergeModeFor(root, 'gl'), 'forge', 'a gitlab.com origin is forge mode');
@@ -265,7 +279,7 @@ console.log('# a mixed GitHub/GitLab workspace: one forge adapter per repo, chos
       '--body-file', `app=${join(root, 'body-app.md')}`,
       '--body-file', `gl=${join(root, 'body-gl.md')}`,
       '--body-file', `hosted=${join(root, 'body-hosted.md')}`,
-    ]), { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log, { repo: 'group/sub/gl' }) });
+    ]), { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log, { repo: 'group/sub/gl', issueUrl: true }) });
 
     const creates = log.filter((e) => e.op === 'prCreate');
     assertEq(creates.map((c) => [c.repo, c.type, c.host]), [
@@ -273,12 +287,15 @@ console.log('# a mixed GitHub/GitLab workspace: one forge adapter per repo, chos
       ['group/sub/gl', 'gitlab', 'gitlab.com'],
       ['team/deep/inner', 'gitlab', 'gitlab.example.com'],
     ], 'each repo got a forge matching its origin, not the workspace type');
-    // The closing line names the tracker project when the PR lives elsewhere
-    // — the nested gitlab slug reaches issueRef whole.
+    // The GitHub PR cannot resolve the GitLab tracker's `group/sub#N`
+    // reference, so its closing line is the issue URL the tracker mints;
+    // the GitLab PR — same project as the issue — keeps the native ref,
+    // and the self-managed one names the tracker project (same forge).
     assertEq(log.filter((e) => e.op === 'issueRef').map((e) => e.fromRepo),
       ['acme/app', 'group/sub/gl', 'team/deep/inner'], 'issueRef got each PR repo as fromRepo');
-    assert(creates[0].body.endsWith('Closes group/sub/gl#7\n'), `cross-project closing line: ${JSON.stringify(creates[0].body)}`);
+    assert(creates[0].body.endsWith('Closes https://tracker.example/gl/7\n'), `cross-forge closing line: ${JSON.stringify(creates[0].body)}`);
     assert(creates[1].body.endsWith('Closes #7\n'), `same-project closing line: ${JSON.stringify(creates[1].body)}`);
+    assert(creates[2].body.endsWith('Closes group/sub/gl#7\n'), `cross-project closing line: ${JSON.stringify(creates[2].body)}`);
     assertEq(out.prs.map((p) => [p.repo, p.forge, p.host]), [
       ['app', 'github', 'github.com'],
       ['gl', 'gitlab', 'gitlab.com'],
@@ -409,6 +426,52 @@ console.log('# --create cross-repo ref: the closing line names the tracker repo'
     const create = log.find((e) => e.op === 'prCreate');
     assert(create.body.endsWith('Closes acme/tracker#163\n'), `cross-repo closing line: ${JSON.stringify(create.body)}`);
   } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --create cross-forge: the closing line carries the issue URL, not an unresolvable reference');
+{
+  // GitHub tracker + GitLab repo: `owner/repo#N` cannot resolve on GitLab,
+  // and github-issues has no issueUrl — the line falls back to Refs with
+  // the URL getIssue returned.
+  const gh = makeLauncher({ app: 'git@gitlab.com:group/sub/app.git' }, {
+    tracker: { type: 'github-issues', repo: 'acme/tracker' }, forge: { type: 'gitlab' },
+  });
+  try {
+    const wt = createTaskWorktree(gh.root, { repo: 'app', branch: 'feature/x' });
+    writeFileSync(join(wt.path, 'work.txt'), 'done\n');
+    git(wt.path, ['add', '-A']);
+    git(wt.path, ['commit', '-q', '-m', 'feat: do the thing']);
+    const bodyFile = join(gh.root, 'body-app.md');
+    writeFileSync(bodyFile, 'Summary.\n');
+    const log = [];
+    await run(argvCreate(['--root', gh.root, '--branch', 'feature/x', '--work-item', 'gh:163',
+      '--repo', 'app', '--body-file', `app=${bodyFile}`]),
+      { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log, { repo: 'acme/tracker' }) });
+    const create = log.find((e) => e.op === 'prCreate');
+    assert(create.body.endsWith('Refs https://tracker.example/gh/163\n'),
+      `cross-forge fallback line: ${JSON.stringify(create.body)}`);
+  } finally { clean(gh.root); gh.bares.forEach(clean); }
+
+  // GitLab tracker + GitHub repo: the gitlab-issues adapter mints URLs
+  // (issueUrl), so the same situation still closes — by URL.
+  const gl = makeLauncher({ app: 'git@github.com:acme/app.git' }, {
+    tracker: { type: 'gitlab-issues', repo: 'group/tracker' },
+  });
+  try {
+    const wt = createTaskWorktree(gl.root, { repo: 'app', branch: 'feature/x' });
+    writeFileSync(join(wt.path, 'work.txt'), 'done\n');
+    git(wt.path, ['add', '-A']);
+    git(wt.path, ['commit', '-q', '-m', 'feat: do the thing']);
+    const bodyFile = join(gl.root, 'body-app.md');
+    writeFileSync(bodyFile, 'Summary.\n');
+    const log = [];
+    await run(argvCreate(['--root', gl.root, '--branch', 'feature/x', '--work-item', 'gl:7',
+      '--repo', 'app', '--body-file', `app=${bodyFile}`]),
+      { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log, { repo: 'group/tracker', issueUrl: true }) });
+    const create = log.find((e) => e.op === 'prCreate');
+    assert(create.body.endsWith('Closes https://tracker.example/gl/7\n'),
+      `cross-forge URL close line: ${JSON.stringify(create.body)}`);
+  } finally { clean(gl.root); gl.bares.forEach(clean); }
 }
 
 console.log('# --create without a work item: title is the first commit subject');

@@ -28,13 +28,15 @@ git -C repos/{repo} describe --tags --abbrev=0
 
 Then call the forge adapter's `prList` with a merged-after search bounded by that tag's date (e.g. `merged:>{date}`). Pre-v1.0 breaking changes are a minor bump.
 
-**Step 2: Preflight the tag**
+**Step 2: Preflight the tag and the forge**
 
-If `v{version}` already exists on origin, stop and ask — reuse it, investigate with `forge.releaseView`, or pick another version. Never force-push a tag.
+Two checks before anything is pushed. First the tag: if `v{version}` already exists on origin, stop and ask — reuse it, investigate with `forge.releaseView`, or pick another version. Never force-push a tag.
 
 ```bash
 git -C repos/{repo} ls-remote --exit-code origin refs/tags/v{version}
 ```
+
+Second the release path. Build the repo's forge with `forgeConfigForRepo(root, '{repo}', ws)` from `.claude/scripts/merge-mode.mjs` — it picks the adapter from the repo's own origin, so a GitLab repo gets the gitlab adapter whatever `workspace.forge` says — and decide now who creates the release (Step 5): the repo's CI, or this skill. If the flow needs something the forge cannot do, stop here — past this point the tag is pushed, and a publish that cannot run is much harder to unwind.
 
 **Step 3: Bump on a branch**
 
@@ -48,7 +50,7 @@ If the repo has a `package.json` with a `version`, set it to `{version}` (edit t
 
 **Step 4: Merge**
 
-Push the branch and open a PR through the forge adapter — per-repo `createForge({ ...ws.workspace?.forge, repo: '{owner}/{name}' })` with head `release/v{version}`. Ask `Merge? [Y/n]`, then merge (squash, delete branch).
+Push the branch and open a PR through the same per-repo forge (`forgeConfigForRepo` from Step 2) with head `release/v{version}`. Ask `Merge? [Y/n]`, then merge (squash, delete branch).
 
 **Step 5: Tag and publish**
 
@@ -60,15 +62,25 @@ git -C repos/{repo} tag v{version}
 git -C repos/{repo} push origin v{version}
 ```
 
-Who creates the release depends on the repo. If `.github/workflows/publish.yml` exists and itself creates the release (it contains `gh release create`, `softprops/action-gh-release`, or `actions/create-release`), the workflow owns the release — do not call `releaseCreate`; racing it duplicates the release or fails. Instead find and watch its run with `workflowRunFind` / `workflowRunWatch` — retry the find up to 5 times with 3 s backoff (the run may not be registered the moment the tag lands); a failed run is reported to the operator, not thrown — then confirm the release exists with `forge.releaseView({ tag: 'v{version}', repo })`.
+Who creates the release depends on the repo, and the CI check is per-forge:
 
-Otherwise the skill creates the release itself:
+- **GitHub**: `.github/workflows/publish.yml` that itself creates the release (it contains `gh release create`, `softprops/action-gh-release`, or `actions/create-release`) owns the release — do not call `releaseCreate`; racing it duplicates the release or fails. Instead find and watch its run with `workflowRunFind` / `workflowRunWatch` — retry the find up to 5 times with 3 s backoff (the run may not be registered the moment the tag lands); a failed run is reported to the operator, not thrown.
+- **GitLab**: `.gitlab-ci.yml` with a `release:` keyword block (a release-cli job) owns the release the same way — do not call `releaseCreate`; find and watch the tag's pipeline with `workflowRunFind({ workflow: 'ci.yml', branch: 'v{version}' })` / `workflowRunWatch` (the workflow name is ignored — one pipeline per ref).
+
+Either way, confirm the release exists with `forge.releaseView({ tag: 'v{version}', repo })`.
+
+Otherwise the skill creates the release itself — on GitHub the forge generates the notes; on GitLab it cannot (`NOT_SUPPORTED`), so the notes are assembled from the same merged-MR list Step 1 gathered:
 
 ```js
+// GitHub
 await forge.releaseCreate({ tag: 'v{version}', repo, generateNotes: true });
+// GitLab — notes come from the skill, not the forge
+const merged = await forge.prList({ state: 'merged', search: `merged:>{previous tag date}`, repo });
+await forge.releaseCreate({ tag: 'v{version}', repo, generateNotes: false,
+  notes: merged.map((p) => `- ${p.title}`).join('\n') });
 ```
 
-If a `publish.yml` without release creation exists, still find and watch its run the same way.
+If a `publish.yml` (or a publish job) without release creation exists, still find and watch its run the same way.
 
 **Step 6: Tear down and report**
 
