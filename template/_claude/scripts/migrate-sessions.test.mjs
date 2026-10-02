@@ -199,6 +199,7 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's', '--inventory', '--remote', '--remote-allow', 'app=origin']), '--remote-allow only with --backup');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--allow-uncommitted']), '--allow-uncommitted only with --archive');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--remote', '--remote-allow']), 'a dangling --remote-allow value is rejected');
+  throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--fetch']), '--fetch is only valid with --inventory');
   throws(() => parseArgs(['node', 's', '--inventory', '--bogus']), 'unknown flag rejected');
   const inv = parseArgs(['node', 's', '--root', '/w', '--inventory']);
   assertEq([inv.mode, inv.root, inv.activeDays], ['inventory', '/w', null], 'inventory defaults parse');
@@ -208,6 +209,8 @@ console.log('# parseArgs validation');
   assertEq([bk.mode, bk.remote, bk.remoteAllow], ['backup', true, ['app=origin', '.=upstream']], '--remote-allow is repeatable and "." names the workspace repo');
   const days = parseArgs(['node', 's', '--inventory', '--active-days', '7']);
   assertEq(days.activeDays, 7, '--active-days parses as an integer');
+  const fetched = parseArgs(['node', 's', '--inventory', '--fetch']);
+  assertEq([fetched.mode, fetched.fetch], ['inventory', true], '--inventory --fetch parses');
 }
 
 console.log('# classify: pure proposal logic');
@@ -246,6 +249,21 @@ console.log('# classify: pure proposal logic');
     classify({ worktrees: [ws()], lastActivity: null }, 14).proposal,
     'UNKNOWN',
     'null activity proposes UNKNOWN, never ABANDONED (S2b)',
+  );
+  assertEq(
+    classify({ worktrees: [ws()], lastActivity: new Date().toISOString(), trackerStripped: true }, 14).proposal,
+    'READY_TO_COMPLETE',
+    'a stripped tracker outranks recency — the session is mid-completion (gh:187)',
+  );
+  assertEq(
+    classify({ worktrees: [ws({ contentFiles: 2 })], lastActivity: daysAgoIso(40), trackerStripped: true }, 14).proposal,
+    'READY_TO_COMPLETE',
+    'content does not turn a stripped-tracker session into MERGEABLE',
+  );
+  assertEq(
+    classify({ worktrees: [ws()], lastActivity: null, trackerStripped: true }, 14).proposal,
+    'UNKNOWN',
+    'no activity signal still proposes UNKNOWN, stripped tracker or not',
   );
 }
 
@@ -345,16 +363,194 @@ console.log('# inventory: UNKNOWN when no activity signal exists (S2b)');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
-console.log('# inventory: broken shell');
+// gh:187: the /complete-work-stopped-partway shape — tracker stripped,
+// worktrees live, branch pushed (a PR waiting at the forge). A missing
+// tracker is the strip step's signature, not a reason to crash or to
+// propose resuming ordinary work.
+console.log('# inventory: a stripped tracker with live worktrees proposes READY_TO_COMPLETE');
+{
+  const fx = makeWorkspace();
+  try {
+    makeSession(fx, { name: 'prepped', branch: 'bugfix/prepped', tracker: null });
+    const wsWt = join(fx.root, 'work-sessions', 'prepped', 'workspace');
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(3));
+    git(wsWt, 'push -q origin bugfix/prepped');
+    const s = byName(inventory(fx.root), 'prepped');
+    assertEq(s.proposal, 'READY_TO_COMPLETE', 'a stripped tracker with live worktrees proposes READY_TO_COMPLETE');
+    assertEq(s.status, null, 'no tracker means no status — never a crash');
+    assert(s.reasons.some((r) => r.includes('/complete-work')), 'the reasons say to finish with /complete-work');
+    assert(s.reasons.some((r) => r.includes('mid-completion')), 'and why: the strip step ran, the final steps did not');
+    assertEq(s.worktrees[0].remotes.origin.state, 'same', 'the pushed branch still shows its live remote state');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# inventory: an unreadable tracker warns instead of mis-proposing');
+{
+  const fx = makeWorkspace();
+  try {
+    makeSession(fx, { name: 'garbled', branch: 'bugfix/garbled', tracker: { status: 'active', branch: 'bugfix/garbled', repos: ['app'], updated: new Date().toISOString() } });
+    const wsWt = join(fx.root, 'work-sessions', 'garbled', 'workspace');
+    writeFileSync(join(wsWt, 'session.md'), 'this file has no frontmatter at all\n');
+    commitAll(wsWt, 'garbled tracker', new Date().toISOString());
+    const s = byName(inventory(fx.root), 'garbled');
+    assertEq(s.proposal, 'ACTIVE', 'the worktree evidence still classifies');
+    assert(s.warnings.some((w) => w.kind === 'tracker-unreadable'), 'an unparseable tracker is flagged as such');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# inventory: chatSessions with ended: null mark a session chat-open (gh:187)');
+{
+  const fx = makeWorkspace();
+  try {
+    makeSession(fx, { name: 'chatty', branch: 'bugfix/chatty', tracker: { status: 'active', branch: 'bugfix/chatty', repos: ['app'], updated: new Date().toISOString() } });
+    const wsWt = join(fx.root, 'work-sessions', 'chatty', 'workspace');
+    const trackerWith = (chats) => `---
+type: session-tracker
+name: chatty
+status: active
+branch: bugfix/chatty
+repos:
+  - app
+${chats}
+---
+
+# Work Session: chatty
+`;
+    writeFileSync(join(wsWt, 'session.md'), trackerWith(`chatSessions:
+  - id: chat-one
+    names: []
+    started: 2026-09-01T10:00:00Z
+    ended: null
+  - id: chat-two
+    names: []
+    started: 2026-09-02T10:00:00Z
+    ended: 2026-09-02T11:00:00Z`));
+    commitAll(wsWt, 'tracker', new Date().toISOString());
+    const s = byName(inventory(fx.root), 'chatty');
+    assertEq(s.chatOpen, true, 'one open chat session marks the session chat-open');
+    const warn = s.warnings.find((w) => w.kind === 'chat-open');
+    assert(warn && warn.message.includes('1 chat session'), 'the warning counts only the chats with no end time');
+    const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
+    assert(r.stderr.includes('chat open?'), 'the table renders chat open?');
+
+    writeFileSync(join(wsWt, 'session.md'), trackerWith(`chatSessions:
+  - id: chat-two
+    names: []
+    started: 2026-09-02T10:00:00Z
+    ended: 2026-09-02T11:00:00Z`));
+    commitAll(wsWt, 'tracker closed', new Date().toISOString());
+    const closed = byName(inventory(fx.root), 'chatty');
+    assertEq(closed.chatOpen, false, 'every chat ended means not chat-open');
+    assert(!closed.warnings.some((w) => w.kind === 'chat-open'), 'and no chat-open warning');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# inventory: fetch age — stale tracking refs are flagged, --fetch refreshes them (gh:187)');
+{
+  const fx = makeWorkspace();
+  try {
+    makeSession(fx, { name: 'musty', branch: 'bugfix/musty', tracker: { status: 'active', branch: 'bugfix/musty', repos: ['app'], updated: daysAgoIso(40) } });
+    const wsWt = join(fx.root, 'work-sessions', 'musty', 'workspace');
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    const appFetchHead = resolve(fx.app, git(fx.app, 'rev-parse --git-path FETCH_HEAD').trim());
+    const old = new Date(Date.now() - 3 * DAY_MS);
+    utimesSync(appFetchHead, old, old);
+
+    const s = byName(inventory(fx.root), 'musty');
+    const warn = s.warnings.find((w) => w.kind === 'stale-fetch' && w.repo === 'app');
+    assert(warn && warn.message.includes('3 day'), 'a fetch older than a day is flagged with its age');
+    assertEq(s.worktrees.find((w) => w.repo === 'app').lastFetch, old.toISOString(), 'the worktree carries the fetch time');
+    const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
+    assert(r.stderr.includes('fetch:3 day(s) ago'), 'the table shows the fetch age');
+    assert(r.stderr.includes('--inventory --fetch'), 'the warning names the refresh flag');
+
+    // No FETCH_HEAD at all: the age is unknown, and unknown is flagged too.
+    rmSync(resolve(fx.root, git(fx.root, 'rev-parse --git-path FETCH_HEAD').trim()), { force: true });
+    const never = byName(inventory(fx.root), 'musty');
+    const neverWarn = never.warnings.find((w) => w.kind === 'stale-fetch' && w.repo === '.');
+    assert(neverWarn && neverWarn.message.includes('never'), 'a repo with no FETCH_HEAD is flagged as never fetched');
+
+    const refreshed = inventory(fx.root, { fetch: true });
+    const s2 = byName(refreshed, 'musty');
+    assert(!s2.warnings.some((w) => w.kind === 'stale-fetch'), 'a fresh fetch clears every stale-fetch warning');
+    assert(refreshed.fetch.some((f) => f.repo === 'app' && f.status === 'ok'), 'the fetch summary records the project repo');
+    assert(refreshed.fetch.some((f) => f.repo === '.' && f.status === 'ok'), 'and the workspace repo');
+    const json = JSON.parse(spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory', '--fetch'], { encoding: 'utf8' }).stdout);
+    assertEq(json.fetch.length, 2, '--fetch reports one entry per touched repo');
+    assertEq(JSON.parse(spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' }).stdout).fetch, undefined, 'without --fetch there is no fetch section');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# inventory: a repo with no remote is skipped, not failed, under --fetch');
+{
+  const fx = makeWorkspace();
+  const solo = join(fx.root, 'repos', 'solo');
+  try {
+    mkdirSync(solo, { recursive: true });
+    git(solo, 'init -q -b main');
+    writeFileSync(join(solo, 'README.md'), '# solo\n');
+    commitAll(solo, 'init');
+    makeSession(fx, { name: 'unnet', branch: 'bugfix/unnet', repos: ['solo'], tracker: { status: 'active', branch: 'bugfix/unnet', repos: ['solo'], updated: daysAgoIso(40) } });
+    writeFileSync(join(fx.root, 'work-sessions', 'unnet', 'workspace', 'repos', 'solo', 'fix.txt'), 'fix\n');
+    commitAll(join(fx.root, 'work-sessions', 'unnet', 'workspace', 'repos', 'solo'), 'solo fix', daysAgoIso(40));
+    const refreshed = inventory(fx.root, { fetch: true });
+    assert(refreshed.fetch.some((f) => f.repo === 'solo' && f.status === 'skipped' && f.detail.includes('no origin')), 'a repo without an origin is recorded as skipped');
+    assertEq(byName(refreshed, 'unnet').proposal, 'MERGEABLE', 'the inspection itself is unaffected');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# inventory + archive: external worktrees are reported and never touched (gh:187)');
+{
+  const fx = makeWorkspace();
+  const outside = mkdtempSync(join(tmpdir(), 'mig-external-'));
+  const extWt = join(outside, 'scratch-wt');
+  try {
+    makeSession(fx, { name: 'home', branch: 'bugfix/home', tracker: { branch: 'bugfix/home', repos: ['app'], updated: daysAgoIso(40) } });
+    commitAll(join(fx.root, 'work-sessions', 'home', 'workspace'), 'tracker', daysAgoIso(40));
+    git(fx.app, `worktree add -q -b ext/scratch "${extWt}"`);
+    writeFileSync(join(extWt, 'precious.txt'), 'someone else’s work\n');
+
+    const inv = inventory(fx.root);
+    assert(inv.externalWorktrees.some((e) => e.repo === 'app' && e.path === realpathSync(extWt)), 'the outside worktree is listed as external');
+    assert(!inv.externalWorktrees.some((e) => e.path && e.path.includes('work-sessions')), 'nothing inside the workspace is called external');
+    const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
+    assert(r.stderr.includes('external worktrees'), 'the table has an external-worktrees section');
+    assert(r.stderr.includes(realpathSync(extWt)), 'naming the outside path');
+
+    const out = archiveSession(fx.root, { session: 'home', cwd: fx.root });
+    assertEq(out.refused, undefined, 'archiving an unrelated session is not refused');
+    assert(git(fx.app, 'worktree list --porcelain').includes(realpathSync(extWt)), 'the external worktree is still registered after the archive');
+    assertEq(readFileSync(join(extWt, 'precious.txt'), 'utf8'), 'someone else’s work\n', 'and its files are intact');
+    assertEq(git(fx.app, 'worktree prune --dry-run -v').trim(), '', 'nothing about it became prunable');
+  } finally {
+    try { git(fx.app, `worktree remove --force "${extWt}"`); } catch { /* cleaned with the fixture */ }
+    clean(fx.root, fx.wsOrigin, fx.appOrigin, outside);
+  }
+}
+
+console.log('# inventory: orphan shells — empty ones removable, ones holding files are not (gh:187)');
 {
   const fx = makeWorkspace();
   try {
     mkdirSync(join(fx.root, 'work-sessions', 'empty'), { recursive: true });
-    mkdirSync(join(fx.root, 'work-sessions', 'shell', 'workspace'), { recursive: true });
+    mkdirSync(join(fx.root, 'work-sessions', 'shell', 'workspace', 'repos'), { recursive: true });
+    mkdirSync(join(fx.root, 'work-sessions', 'stray', 'workspace', 'repos'), { recursive: true });
+    writeFileSync(join(fx.root, 'work-sessions', 'stray', 'workspace', 'stray.md'), 'a file\n');
     const inv = inventory(fx.root);
-    assertEq(byName(inv, 'empty').kind, 'broken', 'a bare session directory is broken');
-    assertEq(byName(inv, 'empty').proposal, 'REMOVE_SHELL', 'proposal is REMOVE_SHELL');
-    assertEq(byName(inv, 'shell').kind, 'broken', 'an empty workspace/ shell is broken');
+    const empty = byName(inv, 'empty');
+    assertEq(empty.kind, 'broken', 'a bare session directory is broken');
+    assertEq(empty.proposal, 'ORPHAN_SHELL', 'proposal is ORPHAN_SHELL');
+    assertEq(empty.empty, true, 'a directory with nothing in it is an empty shell');
+    assert(empty.reasons.some((r) => r.includes('only empty directories')), 'the reason says an empty shell is removable');
+    const nested = byName(inv, 'shell');
+    assertEq(nested.kind, 'broken', 'an empty workspace/ shell is broken');
+    assertEq(nested.empty, true, 'empty directories under workspace/ still count as empty');
+    const stray = byName(inv, 'stray');
+    assertEq(stray.proposal, 'ORPHAN_SHELL', 'a shell holding files still proposes ORPHAN_SHELL');
+    assertEq(stray.empty, false, 'a file anywhere in the folder means not empty');
+    assert(stray.reasons.some((r) => r.includes('--archive')), 'the reason points a file-holding shell at --archive');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 

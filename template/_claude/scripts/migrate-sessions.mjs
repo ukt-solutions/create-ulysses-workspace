@@ -7,9 +7,22 @@
 // some still live. This script is the mechanical half of draining them:
 //
 //   --inventory   read-only evidence + a proposal (ACTIVE / ABANDONED /
-//                 MERGEABLE / UNKNOWN / REMOVE_SHELL / LEAVE) per session,
-//                 listing every worktree's remotes by name, fetch URL, and
-//                 (when it differs) push URL(s)
+//                 MERGEABLE / READY_TO_COMPLETE / UNKNOWN / ORPHAN_SHELL /
+//                 LEAVE) per session, listing every worktree's remotes by
+//                 name, fetch URL, and (when it differs) push URL(s); the
+//                 age of each repo's last fetch (FETCH_HEAD mtime) so the
+//                 operator can tell stale tracking refs from fresh ones;
+//                 and every worktree the workspace's repos register
+//                 OUTSIDE the workspace (reported as external — never
+//                 pruned, moved, or removed by anything here)
+//   --inventory --fetch
+//                 refresh each touched repo's remote-tracking refs with a
+//                 `git fetch origin` in its source clone before inspecting
+//                 it. A fetch moves no local branch and touches no
+//                 worktree — it updates refs/remotes/* and the object
+//                 store — so the inventory stays read-only with respect
+//                 to the workspace's own state. Failures (offline, no
+//                 origin) are recorded, never fatal.
 //   --backup      tag each tip the session holds that no remote branch or
 //                 tag already points at — LOCAL tags only, nothing pushed
 //                 (--dry-run reports the plan with no side effects)
@@ -86,6 +99,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // refuse rather than guess.
 const LS_REMOTE_TIMEOUT_MS = 15000;
 const PUSH_TIMEOUT_MS = 60000;
+const FETCH_TIMEOUT_MS = 60000;
 
 function netOpts(timeoutMs) {
   return { encoding: 'utf8', timeout: timeoutMs, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } };
@@ -512,6 +526,51 @@ function dirtyContentMtimeMs(gitFn, wtPath, kind) {
   return newest;
 }
 
+// === S2(d): fetch freshness ===
+//
+// ahead/behind and the content counts compare against tracking refs
+// (refs/remotes/origin/*) that only move on a fetch — in a quiet workspace
+// they can be weeks stale, and every count derived from them inherits the
+// staleness. FETCH_HEAD's mtime is the cheapest honest proxy for "when did
+// that last happen". FETCH_HEAD is per git-dir (a linked worktree has its
+// own), so this reads the SOURCE CLONE's copy — the same place --fetch
+// refreshes — keeping the reported age and the refresh the same file.
+function lastFetchMs(gitFn, repoDir) {
+  const res = run(gitFn, repoDir, ['rev-parse', '--git-path', 'FETCH_HEAD']);
+  if (res.status !== 0) return null;
+  try {
+    return statSync(resolve(repoDir, String(res.stdout).trim())).mtimeMs;
+  } catch {
+    return null; // never fetched (or an unreadable file) — age unknown
+  }
+}
+
+function describeFetchAge(ageMs) {
+  if (ageMs == null) return 'never (no FETCH_HEAD)';
+  const hours = ageMs / 3600000;
+  if (hours < 1) return 'less than an hour ago';
+  if (hours < 48) return `${Math.max(1, Math.round(hours))} hour(s) ago`;
+  return `${Math.max(2, Math.round(hours / 24))} day(s) ago`;
+}
+
+// --fetch refreshes one repo's remote-tracking refs: `git fetch origin` in
+// the source clone, nothing else. A fetch moves no local branch and
+// touches no worktree, so the inventory stays read-only with respect to
+// the workspace's own state; a repo without an origin is skipped, and a
+// failure (offline, unreachable, timed out) is a recorded outcome, never
+// a crash — the counts just keep their old staleness warning.
+function runFetch(gitFn, repoDir, repo) {
+  if (!remotesOf(gitFn, repoDir).includes('origin')) {
+    return { repo, status: 'skipped', detail: 'no origin remote' };
+  }
+  const res = gitFn('git', ['-C', repoDir, 'fetch', 'origin'], netOpts(FETCH_TIMEOUT_MS));
+  if (res.error || res.status !== 0) {
+    const detail = res.error ? `timed out after ${FETCH_TIMEOUT_MS / 1000}s` : String(res.stderr || '').trim();
+    return { repo, status: 'failed', detail };
+  }
+  return { repo, status: 'ok' };
+}
+
 // === Session shape ===
 
 function readTracker(wsDir) {
@@ -524,12 +583,19 @@ function readTracker(wsDir) {
     const rawRepos = fields.repos;
     const repos = Array.isArray(rawRepos) ? rawRepos.map(String)
       : rawRepos == null || rawRepos === '' ? [] : [String(rawRepos)];
+    // A chat session with ended: null may still be open — session-start
+    // records one per chat and session-end fills ended in. Counting them
+    // is how the inventory flags "a chat may be working in this session
+    // right now" before anyone proposes archiving it.
+    const chats = Array.isArray(fields.chatSessions) ? fields.chatSessions : [];
+    const openChats = chats.filter((c) => c && typeof c === 'object' && (c.ended == null || c.ended === '')).length;
     return {
       status: typeof fields.status === 'string' ? fields.status : null,
       workItem: typeof fields.workItem === 'string' ? fields.workItem : null,
       branch: typeof fields.branch === 'string' ? fields.branch : null,
       updated: fields.updated != null ? String(fields.updated) : null,
       repos,
+      openChats,
     };
   } catch {
     // An unparseable tracker is evidence about the tracker, not the
@@ -541,8 +607,16 @@ function readTracker(wsDir) {
 // One worktree of a session — the workspace worktree (repo ".") or one
 // nested project worktree (repo = its directory name under repos/).
 // A session's workspace branch and its code are different things, so
-// each is reported on its own line.
-function inspectWorktree(gitFn, rootDir, kind, repo, wtPath) {
+// each is reported on its own line. fetchState (present only under
+// --fetch) refreshes the repo's tracking refs in its source clone before
+// anything derived from them is computed, once per repo per run.
+function inspectWorktree(gitFn, rootDir, kind, repo, wtPath, fetchState) {
+  const repoDir = kind === 'workspace' ? rootDir : join(rootDir, 'repos', repo);
+  if (fetchState && !fetchState.attempts.has(repoDir)) {
+    fetchState.attempts.set(repoDir, runFetch(gitFn, repoDir, kind === 'workspace' ? WORKSPACE_REPO : repo));
+  }
+  const now = fetchState ? fetchState.now : Date.now();
+  const fetchedMs = lastFetchMs(gitFn, repoDir);
   const branch = currentBranch(gitFn, wtPath);
   const defaultBranch = defaultBranchFor(rootDir, repo, gitFn);
   const range = ownRange(gitFn, wtPath, defaultBranch);
@@ -560,6 +634,8 @@ function inspectWorktree(gitFn, rootDir, kind, repo, wtPath) {
     base,
     defaultBranch,
     reflogAt: reflogTs(gitFn, wtPath),
+    lastFetch: fetchedMs != null ? new Date(fetchedMs).toISOString() : null,
+    fetchAgeMs: fetchedMs != null ? Math.max(0, now - fetchedMs) : null,
     remotes: {},
     backedBy: null,
   };
@@ -607,14 +683,18 @@ function collectSessionWorktrees(gitFn, rootDir, folder) {
  * Pure classifier: given a session's computed metrics, return its
  * proposal and the human-readable reasons for it. No activity signal at
  * all → UNKNOWN (never ABANDONED — absence of evidence is not
- * abandonment). Active-ness is lastActivity within N days, or any dirty
- * worktree with lastActivity within 2N days. Everything else splits on
- * whether real content survives — committed content files, uncommitted
- * content paths, or project commits mean MERGEABLE; artifact-only,
- * clean, and quiet means ABANDONED. A session that fits neither (e.g.
- * uncommitted project changes on a stale session) falls to MERGEABLE —
- * real uncommitted work is content, and the dirty warning carries the
- * caution.
+ * abandonment). A session with activity but no session.md →
+ * READY_TO_COMPLETE: /complete-work strips the tracker before its final
+ * steps, so live worktrees without one mean the completion stopped
+ * partway — finishing it (or archiving it as abandoned mid-flight, the
+ * operator's call) beats resuming it as ordinary work. Active-ness is
+ * lastActivity within N days, or any dirty worktree with lastActivity
+ * within 2N days. Everything else splits on whether real content
+ * survives — committed content files, uncommitted content paths, or
+ * project commits mean MERGEABLE; artifact-only, clean, and quiet means
+ * ABANDONED. A session that fits neither (e.g. uncommitted project
+ * changes on a stale session) falls to MERGEABLE — real uncommitted
+ * work is content, and the dirty warning carries the caution.
  */
 function classify(session, activeDays, now = Date.now()) {
   const ws = session.worktrees.find((w) => w.kind === 'workspace') || null;
@@ -627,6 +707,16 @@ function classify(session, activeDays, now = Date.now()) {
     return {
       proposal: 'UNKNOWN',
       reasons: ['no activity signal — no session commits, no reflog entries, no content-dirty files, no tracker updated date'],
+    };
+  }
+  if (session.trackerStripped) {
+    return {
+      proposal: 'READY_TO_COMPLETE',
+      reasons: [
+        `last activity ${session.lastActivity}`,
+        'no session.md tracker — /complete-work strips it before its final steps, so live worktrees without one are a session stopped mid-completion',
+        'finish it with /complete-work, or archive it if the operator knows it was abandoned there',
+      ],
     };
   }
   if (within(activeDays)) {
@@ -675,6 +765,7 @@ function classify(session, activeDays, now = Date.now()) {
 
 function collectWarnings(gitFn, rootDir, worktrees, active, trackerBranch) {
   const warnings = [];
+  const staleFetchReported = new Set(); // once per repo — one FETCH_HEAD serves every worktree
   for (const wt of worktrees) {
     if (wt.kind === 'workspace' && wt.branchDrift) {
       warnings.push({
@@ -709,25 +800,83 @@ function collectWarnings(gitFn, rootDir, worktrees, active, trackerBranch) {
         repo: wt.repo,
       });
     }
+    // The remote states come from live ls-remote queries, but ahead/behind
+    // and the content counts ride on tracking refs frozen at the last
+    // fetch. Past a day that deserves a flag before anyone trusts the
+    // numbers — and the flag names the two ways to refresh them.
+    if ((wt.fetchAgeMs == null || wt.fetchAgeMs > DAY_MS) && !staleFetchReported.has(wt.repo)) {
+      staleFetchReported.add(wt.repo);
+      warnings.push({
+        kind: 'stale-fetch',
+        message: `${repoLabel(wt)}: last fetch ${describeFetchAge(wt.fetchAgeMs)} — commits-ahead and content counts use tracking refs from then; fetch the repo first, or re-run with --inventory --fetch`,
+        repo: wt.repo,
+        fetchAgeMs: wt.fetchAgeMs,
+      });
+    }
   }
   return warnings;
 }
 
-function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
+// Is a shell folder provably empty — every entry a directory, every
+// directory readable, no files and no symlinks anywhere? Symlinks count
+// as content (they may point at anything), and an unreadable directory
+// means emptiness cannot be proven. "Removable" must be provably safe,
+// not probably safe: the inventory answer is what the operator's removal
+// step is checked against, and it re-verifies at removal time anyway.
+function shellIsEmpty(folder) {
+  let empty = true;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      empty = false;
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) { // files, symlinks, anything else
+        empty = false;
+        continue;
+      }
+      walk(join(dir, entry.name));
+    }
+  };
+  walk(folder);
+  return empty;
+}
+
+function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now, fetchState) {
   const folder = join(sessionsDir, name);
   const wsDir = join(folder, 'workspace');
   if (!existsSync(join(wsDir, '.git'))) {
-    const reason = existsSync(wsDir)
+    const shape = existsSync(wsDir)
       ? `workspace/ at ${relative(rootDir, wsDir)} is not a git worktree (empty shell)`
       : `no workspace worktree at ${relative(rootDir, folder)}${sep}workspace`;
-    return { name, kind: 'broken', proposal: 'REMOVE_SHELL', reasons: [reason] };
+    const empty = shellIsEmpty(folder);
+    return {
+      name,
+      kind: 'broken',
+      empty,
+      proposal: 'ORPHAN_SHELL',
+      reasons: [
+        shape,
+        empty
+          ? 'the folder holds only empty directories — an orphan shell left by a session whose worktrees were already torn down; removable once re-verified empty at removal time (see the skill)'
+          : 'the folder holds files with no worktree left to own them — archive it with --archive (which keeps them) or reconcile manually',
+      ],
+    };
   }
 
   const tracker = readTracker(wsDir);
+  // A missing tracker and an unreadable one are different facts: absence is
+  // the /complete-work strip step's signature (a session stopped
+  // mid-completion), while an unparseable file is tracker damage the
+  // operator should hear about. Neither ever crashes the inspection.
+  const trackerStripped = !existsSync(join(wsDir, 'session.md'));
   const rawWorktrees = collectSessionWorktrees(gitFn, rootDir, folder);
   const worktrees = rawWorktrees
     .filter((w) => w.kind !== 'foreign')
-    .map((w) => inspectWorktree(gitFn, rootDir, w.kind, w.repo, w.path));
+    .map((w) => inspectWorktree(gitFn, rootDir, w.kind, w.repo, w.path, fetchState));
   const wsWt = worktrees.find((w) => w.kind === 'workspace');
   if (wsWt && tracker) {
     wsWt.trackerBranch = tracker.branch;
@@ -754,13 +903,26 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
   }
   consider(tracker?.updated ?? null);
 
-  const { proposal, reasons } = classify({ name, worktrees, lastActivity }, activeDays, now);
+  const { proposal, reasons } = classify({ name, worktrees, lastActivity, trackerStripped }, activeDays, now);
   const warnings = collectWarnings(gitFn, rootDir, worktrees, proposal === 'ACTIVE', tracker?.branch ?? null);
+  if (tracker && tracker.openChats > 0) {
+    warnings.push({
+      kind: 'chat-open',
+      message: `${tracker.openChats} chat session(s) recorded with no end time — a chat may still be working in this session; confirm with the operator before archiving it`,
+    });
+  }
+  if (!trackerStripped && !tracker) {
+    warnings.push({
+      kind: 'tracker-unreadable',
+      message: 'session.md exists but could not be parsed — status, work item and chat evidence are missing; the worktree evidence still stands',
+    });
+  }
   return {
     name,
     kind: 'session',
     status: tracker?.status ?? null,
     workItem: tracker?.workItem ?? null,
+    chatOpen: tracker ? tracker.openChats > 0 : false,
     lastActivity,
     proposal,
     reasons,
@@ -769,15 +931,42 @@ function inspectSession(gitFn, rootDir, sessionsDir, name, activeDays, now) {
   };
 }
 
+// Registered worktrees of the workspace's own repositories that live
+// OUTSIDE the workspace root — a scratch checkout in tmp, a directory on
+// another drive, someone's working copy. They belong to no session, so
+// they are reported at the top level rather than under one, and nothing
+// in this script ever prunes, moves, or removes them: `git worktree
+// prune` is the one command that could silently drop their records, and
+// no mode here runs it for real (archive's prune checks are --dry-run).
+function externalWorktreesOf(gitFn, rootDir) {
+  const out = [];
+  for (const owned of workspaceRepos(rootDir)) {
+    const listed = registeredWorktrees(gitFn, owned.dir);
+    if (listed === null) {
+      out.push({ repo: owned.repo, error: `could not list worktrees of ${relative(rootDir, owned.dir) || 'the workspace repo'}` });
+      continue;
+    }
+    for (const p of listed) {
+      if (!insideRoot(rootDir, p)) out.push({ repo: owned.repo, path: p });
+    }
+  }
+  return out;
+}
+
 /**
  * Read-only inventory of every session under the workspace's sessions
  * directory. The proposal each session gets is a proposal — the note in
  * the result says so, and the skill says so again to the operator.
  * Symlinked entries are reported as foreign (LEAVE) and never followed.
+ * `fetch: true` (CLI --fetch) refreshes each touched repo's tracking
+ * refs first; the result records what the refresh did per repo. Worktrees
+ * the workspace's repos register outside the root are listed as external
+ * — evidence for the operator, never something to act on.
  */
-function inventory(root, { activeDays = 14, gitFn = spawnSync, now = Date.now() } = {}) {
+function inventory(root, { activeDays = 14, gitFn = spawnSync, now = Date.now(), fetch = false } = {}) {
   const rootDir = resolveRoot(root);
   const sessionsDir = sessionsDirOf(rootDir);
+  const fetchState = fetch ? { attempts: new Map(), now } : null;
   const sessions = listSessionEntries(rootDir).map((entry) => (
     entry.foreign
       ? {
@@ -786,13 +975,15 @@ function inventory(root, { activeDays = 14, gitFn = spawnSync, now = Date.now() 
         proposal: 'LEAVE',
         reasons: ['entry is a symlink, not a session directory — never followed; reconcile manually'],
       }
-      : inspectSession(gitFn, rootDir, sessionsDir, entry.name, activeDays, now)
+      : inspectSession(gitFn, rootDir, sessionsDir, entry.name, activeDays, now, fetchState)
   ));
   return {
     root: rootDir,
     activeDays,
     note: 'Proposals are proposals — inventory evidence only; the operator decides each session.',
     sessions,
+    externalWorktrees: externalWorktreesOf(gitFn, rootDir),
+    ...(fetch ? { fetch: [...fetchState.attempts.values()] } : {}),
   };
 }
 
@@ -1731,14 +1922,19 @@ function renderTable(result) {
   ];
   for (const s of result.sessions) {
     lines.push('');
-    lines.push(`${s.name}  ${s.kind === 'broken' ? 'broken shell' : s.kind === 'foreign' ? 'foreign entry' : s.proposal}` +
-      (s.kind === 'broken' || s.kind === 'foreign' ? '' : `  (status ${s.status ?? '—'}, last activity ${s.lastActivity ?? '—'}, work item ${s.workItem ?? '—'})`));
+    const header = s.kind === 'broken'
+      ? `ORPHAN_SHELL — ${s.empty ? 'only empty directories' : 'holds files, no worktree'}`
+      : s.kind === 'foreign' ? 'foreign entry' : s.proposal;
+    const detail = s.kind === 'broken' || s.kind === 'foreign'
+      ? ''
+      : `  (status ${s.status ?? '—'}, last activity ${s.lastActivity ?? '—'}, work item ${s.workItem ?? '—'}${s.chatOpen ? ', chat open?' : ''})`;
+    lines.push(`${s.name}  ${header}${detail}`);
     for (const w of s.worktrees || []) {
       const remotes = Object.entries(w.remotes)
         .map(([r, v]) => describeRemote(r, v))
         .join(' ') || 'no remotes';
       const extra = w.kind === 'workspace' ? `  content:${w.contentFiles}` : '';
-      lines.push(`    ${w.kind === 'workspace' ? '(workspace)' : w.repo}  ${w.branch ?? 'detached'}  ahead:${w.ahead ?? '?'} dirty:${w.dirty}${extra}  [${remotes}]`);
+      lines.push(`    ${w.kind === 'workspace' ? '(workspace)' : w.repo}  ${w.branch ?? 'detached'}  ahead:${w.ahead ?? '?'} dirty:${w.dirty}${extra}  fetch:${describeFetchAge(w.fetchAgeMs)}  [${remotes}]`);
       // The state bracket alone is ambiguous — "origin:none" says the remote
       // holds no copy of this branch, not that there is no origin. The URL
       // line settles it: name = exact URL for every configured remote, plus
@@ -1758,6 +1954,13 @@ function renderTable(result) {
     for (const r of s.reasons || []) lines.push(`    · ${r}`);
     for (const w of s.warnings || []) lines.push(`    ! ${w.message}`);
   }
+  if (Array.isArray(result.externalWorktrees) && result.externalWorktrees.length > 0) {
+    lines.push('');
+    lines.push('external worktrees (registered outside this workspace — never prune, move, or remove them):');
+    for (const e of result.externalWorktrees) {
+      lines.push(e.error ? `    repo "${e.repo}": ${e.error}` : `    repo "${e.repo}"  ${e.path}`);
+    }
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -1773,6 +1976,7 @@ const BOOL_FLAGS = new Map([
   ['--remote', 'remote'],
   ['--remote-allow-all', 'remoteAllowAll'],
   ['--allow-uncommitted', 'allowUncommitted'],
+  ['--fetch', 'fetch'],
 ]);
 
 function parseArgs(argv) {
@@ -1786,6 +1990,7 @@ function parseArgs(argv) {
     remote: false,
     remoteAllowAll: false,
     allowUncommitted: false,
+    fetch: false,
   };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
@@ -1824,6 +2029,9 @@ function parseArgs(argv) {
     if (!Number.isInteger(n) || n <= 0) throw new Error('--active-days must be a positive integer');
     args.activeDays = n;
   }
+  if (args.fetch && args.mode !== 'inventory') {
+    throw new Error('--fetch is only valid with --inventory');
+  }
   if (args.remote && args.mode !== 'backup') {
     throw new Error('--remote is only valid with --backup');
   }
@@ -1854,7 +2062,7 @@ function main() {
   let out;
   let code = 0;
   if (args.mode === 'inventory') {
-    out = inventory(rootDir, { activeDays: args.activeDays ?? 14 });
+    out = inventory(rootDir, { activeDays: args.activeDays ?? 14, fetch: args.fetch });
     process.stderr.write(renderTable(out));
   } else if (args.mode === 'backup') {
     out = backupSession(rootDir, {
