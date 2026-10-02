@@ -40,13 +40,12 @@ const TEXT_FILENAMES = new Set(['LICENSE', '_gitignore']);
 
 const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 
-// Hard size ceiling. v0.23 lands four growth spurts at once — the GitLab
-// forge and issue-tracker adapters (gh:185), the upgrade bootstrap with
-// baseline reconstruction and the config merge (gh:186), migrate-sessions'
-// orphan-shell and external-worktree handling (gh:187), and lane-chat
-// detection (gh:188) — bringing the tarball to 300,774 bytes, so the
-// ceiling moves to 295 kB, the smallest passing 5 kB multiple. Trips loudly
-// if something like docs/ or node_modules/ gets pulled in by accident.
+// Hard size ceiling. v0.23.1 stacks two fix rounds on top of v0.23's growth —
+// /workspace-update hardening from the first real v0.15 → v0.23 upgrade
+// (gh:190) and the migrate-sessions/launcher/archive fixes (gh:191) —
+// bringing the tarball to 306,874 bytes (~300 kB), so the ceiling moves to
+// 310 kB. Trips loudly if something like docs/ or node_modules/ gets pulled
+// in by accident.
 //
 // Bump history (5 kB steps unless noted): 150 kB initial → 155 kB (BP-10
 // session-end reflection) → 170 kB (forges/ adapter family) → 185 kB
@@ -56,13 +55,14 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // (gh:147 fix + allowlist rounds; held through gh:157) → 230 kB (gh:155
 // switch step) → 245 kB (upgrade path + gh:170/gh:172 review rounds) →
 // 250 kB (/workspace-update dogfood, gh:180) → 260 kB (gh:180 fix round) →
-// 265 kB (gh:183 fix round: 267,497 bytes) → 295 kB (v0.23: 300,774 bytes —
-// 290 kB fails, 295 kB is the smallest passing multiple).
+// 265 kB (gh:183 fix round: 267,497 bytes) → 295 kB (v0.23: 300,774 bytes,
+// smallest passing multiple) → 310 kB (v0.23.1: 306,874 bytes, gh:190/gh:191
+// fix rounds).
 //
 // Test files ship because template/ is included wholesale, matching the
 // trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
 // worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 295 * 1024;
+const SIZE_LIMIT_BYTES = 310 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
