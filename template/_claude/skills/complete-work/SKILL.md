@@ -13,15 +13,16 @@ Finalize the active work session. Handles all project repos (code changes, PRs) 
 
 Read the active-session pointer from `.claude/.active-session.json` in the current worktree. If it is present, this chat runs inside a session worktree: continue with this flow unchanged.
 
-If no pointer is present, run work-model detection — this covers the task model, whose chats run at the workspace root (the launcher), not inside a worktree:
+If no pointer is present, run work-model detection — this covers lane chats, which run at the workspace root (the launcher) rather than inside a worktree, for both lifecycles:
 
 ```bash
-node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --detect --chat "{chat}"
+node "{launcher-root}/.claude/scripts/task-worktree.mjs" --root "{launcher-root}" --detect --chat "{chat}" [--session-id "{id}"]
 ```
 
 - `{launcher-root}` is the absolute path on the `Workspace root:` line the SessionStart hook injects. If that line is absent, derive it from git: run `git rev-parse --git-common-dir` (when it prints a relative path, resolve it against the cwd) and take its parent directory. That derivation lands on the source clone `…/repos/{repo}` when run from inside a **project** task worktree — there the launcher is two levels up; from inside a `.` worktree (`.claude/worktrees/{slug}`) the parent already is the launcher.
-- `{chat}` is the name from the `Chat record:` line the SessionStart hook injects. If that line is absent, run `node .claude/scripts/chat-record.mjs --whoami --root "{launcher-root}"` first — compaction can drop the hook line, and this recovers the name by matching the chat's session id against the records. When that too prints nothing (exit 1), omit `--chat` — detection then relies on cwd alone.
-- `model: session` → continue with this flow (read the session tracker as below), taking `{session-name}` from the detect result's `sessionName`.
+- `{chat}` is the name from the `Chat record:` line the SessionStart hook injects. If that line is absent, run `node .claude/scripts/chat-record.mjs --whoami --root "{launcher-root}"` first — compaction can drop the hook line, and this recovers the name by matching the chat's session id against the records. When that too prints nothing (exit 1), omit `--chat` — detection then relies on cwd and the session id alone. Detection also matches this chat's session id against each `work-sessions/*/workspace/session.md` `chatSessions` list, so a lane chat that drove an old-model session by path is findable from the launcher. Pass `--session-id` when the id is known from somewhere else; otherwise it resolves from the chat record's `sessionId`, then `$CLAUDE_CODE_SESSION_ID`, in that order.
+- `model: session` → continue with this flow (read the session tracker as below), taking `{session-name}` from the detect result's `sessionName`. When detection ran at the launcher the result instead carries `source: "chat-sessions"` and a `sessions` list — present the entries (each `{ name, branch, workItem, status }`) and ask which to finish; `{session-name}` is the chosen entry's `name`.
+- `model: mixed` → this chat has open tasks AND sessions its id is registered in. List both — each session as `{name} ({status}, {branch})`, each task group as `{branch}` (grouping by branch as below) — and ask which to finish. A session continues this session flow with that `{session-name}`; a task goes to **Task completion (session model v2)**.
 - `model: task` → go to **Task completion (session model v2)**. The result's `tasks` come from the chat record; if several are open, ask the user which one to complete — group by branch, a multi-repo task is several entries sharing a branch.
 - `model: none` → "No active work session. Nothing to complete."
 
@@ -375,6 +376,8 @@ Reached from Step 1 when detection says `model: task`. The state is the branch, 
 - `{mode}` per repo — `forge` or `local`, resolved exactly as `task-pr.mjs` resolves it: `local` when the repo has no origin remote or its override says so (`repos.{repo}.merge`, or `workspace.merge` for `.`) — the override for a clone whose origin is a third-party upstream nobody here may push to; `forge` when its origin is a forge remote. A local repo is never pushed: it merges into its source clone in step 4.
 
 If several tasks are open, ask the user which one to complete — group by branch; a multi-repo task is several entries sharing a branch — and complete one branch at a time.
+
+Notes meant for another chat are not drawer notes. The drawer is per-chat and machine-local — no other chat can read it, and this machine is its only copy — so nothing in it survives a handoff. Anything the next chat (or the operator, from another machine) needs to continue this task — decisions, gotchas, where work stopped — goes on the linked issue as a comment through the tracker adapter (`await tracker.comment("{workItem}", body)`), where every chat can read it.
 
 0. **Pre-flight: the worktrees must be clean.** For each `{worktree}` of the chosen task, `git -C "{worktree}" status --porcelain` must be empty. If it is not, stop here — before the rebase — and ask the user to commit or discard: rebasing over uncommitted work silently invalidates it.
 

@@ -23,19 +23,28 @@
 // chat name it also consults the chat record, which is the only place
 // open tasks are listed. /complete-work uses that to pick its flow.
 //
+// Long-lived lane chats sit at the launcher across BOTH lifecycles, so
+// detection also matches the chat's session id against each old session's
+// chatSessions frontmatter — a chat that drove a work-sessions/{name}/
+// session by path is findable from the launcher too (gh:188). The id comes
+// from --session-id, from the named chat record's sessionId, or from
+// $CLAUDE_CODE_SESSION_ID, in that order. Tasks AND sessions at once
+// report model "mixed" and let the operator pick.
+//
 // Usage:
 //   node task-worktree.mjs --root <dir> --create --repo <r> --branch <b> [--base <ref>]
 //   node task-worktree.mjs --root <dir> --remove --repo <r> --branch <b> [--force] [--delete-branch]
-//   node task-worktree.mjs --root <dir> --detect [--cwd <dir>] [--chat <name>]
+//   node task-worktree.mjs --root <dir> --detect [--cwd <dir>] [--chat <name>] [--session-id <id>]
 
 import {
-  readFileSync, writeFileSync, existsSync, mkdirSync, statSync,
+  readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync,
 } from 'node:fs';
 import { realpathSync } from 'node:fs';
 import { join, resolve, relative, sep, isAbsolute, basename, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readRecord } from './chat-record.mjs';
+import { readSessionFields } from '../lib/session-frontmatter.mjs';
 import { WORKSPACE_REPO, repoDirFor, mergeModeFor } from './merge-mode.mjs';
 
 function isMainModule(metaUrl) {
@@ -192,9 +201,11 @@ function ensureWorkspaceExcluded(gitFn, rootDir) {
  * Create (or return) the task worktree for {branch} in {repo}.
  *
  * Idempotent: a worktree already at the path on the same branch is a
- * success — /start-work is not guaranteed to run exactly once per task. A
- * path held by anything else is a collision and refuses rather than
- * guessing. Three creation cases, in order:
+ * success — /start-work is not guaranteed to run exactly once per task,
+ * and adopting another chat's task re-runs --create over the owner's
+ * existing worktree, which must be reused (created: false), never
+ * duplicated or failed. A path held by anything else is a collision and
+ * refuses rather than guessing. Three creation cases, in order:
  *   - the local branch exists (a prior remove kept it) → check it out,
  *     keeping its commits;
  *   - only refs/remotes/origin/{branch} exists → the task was started on
@@ -382,6 +393,58 @@ function matchingTasks(rootDir, chat, branch) {
   return tasks.length > 0 ? tasks : null;
 }
 
+// The sessions a chat id has driven, from each tracker's chatSessions. A
+// lane chat at the launcher works a session by path, so cwd can never say
+// which — the id the SessionStart hook registered is the only link. All
+// matches come back (a chat can hop across sessions over days); the caller
+// asks the operator when there is more than one. Archived sessions sit at
+// work-sessions/.archived/{name}/workspace/ — one level too deep for this
+// scan, so they never surface.
+function matchingSessions(rootReal, sessionId) {
+  if (!sessionId) return null;
+  const sessionsDir = sessionsDirFor(rootReal);
+  let names;
+  try {
+    names = readdirSync(sessionsDir).sort();
+  } catch {
+    return null; // no sessions dir — nothing to match
+  }
+  const out = [];
+  for (const name of names) {
+    const tracker = join(sessionsDir, name, 'workspace', 'session.md');
+    if (!existsSync(tracker)) continue;
+    let fields;
+    try {
+      fields = readSessionFields(tracker);
+    } catch {
+      continue; // an unparseable tracker is evidence about the tracker, not this chat
+    }
+    const chats = Array.isArray(fields.chatSessions) ? fields.chatSessions : [];
+    if (!chats.some((c) => c && c.id === sessionId)) continue;
+    out.push({
+      name,
+      branch: typeof fields.branch === 'string' ? fields.branch : null,
+      workItem: typeof fields.workItem === 'string' ? fields.workItem : null,
+      status: typeof fields.status === 'string' ? fields.status : null,
+    });
+  }
+  return out.length > 0 ? out : null;
+}
+
+// Which session id detection matches sessions by: an explicit argument
+// beats the named chat record's sessionId (the record IS this chat's id,
+// keyed stably where a name is renameable), which beats the ambient
+// $CLAUDE_CODE_SESSION_ID — the hook's id, present even when the hook's
+// `Chat record:` line was compacted away.
+function resolveSessionId(rootDir, chat, sessionId, env) {
+  if (sessionId) return sessionId;
+  if (chat) {
+    const rec = readRecord(rootDir, chat);
+    if (rec && rec.sessionId) return rec.sessionId;
+  }
+  return (env && env.CLAUDE_CODE_SESSION_ID) || null;
+}
+
 // One task worktree's detect payload, or null when {path} does not really
 // hold a task: a stale plain directory under .claude/worktrees/ would
 // otherwise detect through cwd and resolve to the repo around it — for the
@@ -408,10 +471,12 @@ function taskWorktreeInfo(gitFn, rootReal, repo, path, chat) {
  * Tell a skill which lifecycle the current directory is under, in order:
  * session (cwd in the old model's tree), task (cwd in a task worktree,
  * enriched with the chat's matching tasks when {chat} is given), then —
- * because task chats run at the launcher, where cwd is just the root —
- * task again if the named chat's record has open tasks. Else none.
+ * because lane chats run at the launcher, where cwd is just the root —
+ * task if the named chat's record has open tasks, session if the chat's
+ * session id appears in any tracker's chatSessions, "mixed" when both.
+ * Else none.
  */
-function detectWorkModel(cwd, root, { chat = null, gitFn = spawnSync } = {}) {
+function detectWorkModel(cwd, root, { chat = null, sessionId = null, gitFn = spawnSync, env = process.env } = {}) {
   const rootReal = realPath(resolve(root));
   const cwdReal = realPath(resolve(cwd));
 
@@ -441,7 +506,10 @@ function detectWorkModel(cwd, root, { chat = null, gitFn = spawnSync } = {}) {
   }
 
   const tasks = matchingTasks(rootReal, chat, null);
+  const sessions = matchingSessions(rootReal, resolveSessionId(rootReal, chat, sessionId, env));
+  if (tasks && sessions) return { model: 'mixed', tasks, sessions };
   if (tasks) return { model: 'task', source: 'chat-record', tasks };
+  if (sessions) return { model: 'session', source: 'chat-sessions', sessions };
 
   return { model: 'none' };
 }
@@ -454,6 +522,7 @@ const VALUE_FLAGS = new Map([
   ['--base', 'base'],
   ['--cwd', 'cwd'],
   ['--chat', 'chat'],
+  ['--session-id', 'sessionId'],
 ]);
 
 // A repo name becomes a path segment under repos/ — one segment only, no
@@ -468,7 +537,7 @@ function isRepoSegment(repo) {
 }
 
 function parseArgs(argv) {
-  const args = { root: '.', mode: null, repo: null, branch: null, base: null, cwd: null, chat: null, force: false, deleteBranch: false };
+  const args = { root: '.', mode: null, repo: null, branch: null, base: null, cwd: null, chat: null, sessionId: null, force: false, deleteBranch: false };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
@@ -513,7 +582,7 @@ function main() {
   } else if (args.mode === 'remove') {
     out = removeTaskWorktree(args.root, { repo: args.repo, branch: args.branch, force: args.force, deleteBranch: args.deleteBranch });
   } else {
-    out = detectWorkModel(args.cwd || process.cwd(), args.root, { chat: args.chat });
+    out = detectWorkModel(args.cwd || process.cwd(), args.root, { chat: args.chat, sessionId: args.sessionId });
   }
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
 }
