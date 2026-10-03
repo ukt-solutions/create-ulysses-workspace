@@ -134,13 +134,23 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     return issue;
   }
 
+  // `glab issue create` prints the new issue's URL: older GitLab/glab says
+  // /-/issues/N, newer says /-/work_items/N (issues became work items
+  // under the hood) — the number is the same iid either way. If neither
+  // shape appears the issue still WAS created (glab exited 0 and the
+  // server accepted it), so the error must say so and carry glab's output
+  // — otherwise the caller retries and duplicates the issue.
   async function createIssue({ title, body = '', labels = [], milestone = null }) {
     const args = ['issue', 'create', '--repo', repo, '--title', title, '--description', body, '--yes'];
     if (labels.length > 0) args.push('--label', labels.join(','));
     if (milestone) args.push('--milestone', milestone);
     const stdout = glab(args);
-    const m = stdout.match(/\/-\/issues\/(\d+)/);
-    if (!m) throw new Error(`Could not parse issue number from: ${stdout.trim()}`);
+    const m = stdout.match(/\/-\/(?:issues|work_items)\/(\d+)/);
+    if (!m) {
+      throw new Error(
+        `glab issue create succeeded, but the new issue's number could not be parsed from its output `
+        + `— the issue WAS created; do NOT retry (a retry would create a duplicate). glab output: ${stdout.trim()}`);
+    }
     return getIssue(`gl:${m[1]}`);
   }
 
@@ -162,7 +172,11 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
 
   // The canonical URL for an issue — what a cross-forge reference needs
   // (a `group/sub#N` reference cannot resolve on a GitHub PR), minted from
-  // the same host/repo every other URL here is built from.
+  // the same host/repo every other URL here is built from. `/-/issues/N`
+  // stays the link form even though GitLab now serves issues at work_items
+  // URLs — those links still resolve — and every method but createIssue
+  // takes `gl:N` ids rather than parsing glab's printed URLs, so this is
+  // the only other place the URL shape is chosen, deliberately.
   function issueUrl(issueId) {
     const num = parseIssueNumber(issueId);
     return `https://${host}/${repo}/-/issues/${num}`;
