@@ -19,13 +19,13 @@
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, cpSync,
-  symlinkSync, utimesSync, renameSync, realpathSync, chmodSync, readdirSync,
+  symlinkSync, utimesSync, renameSync, realpathSync, chmodSync, readdirSync, lstatSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  inventory, backupSession, archiveSession, enableTaskModel, classify, parseArgs,
+  inventory, backupSession, archiveSession, removeShell, enableTaskModel, classify, parseArgs,
 } from './migrate-sessions.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -201,7 +201,16 @@ console.log('# parseArgs validation');
   throws(() => parseArgs(['node', 's', '--inventory', '--allow-unbacked']), '--allow-unbacked only with --archive');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--remote', '--remote-allow']), 'a dangling --remote-allow value is rejected');
   throws(() => parseArgs(['node', 's', '--backup', '--session', 'x', '--fetch']), '--fetch is only valid with --inventory');
+  throws(() => parseArgs(['node', 's', '--remove-shell']), '--remove-shell requires --session');
+  throws(() => parseArgs(['node', 's', '--inventory', '--session', 'x', '--remove-shell', 'x']), 'two modes rejected (remove-shell)');
+  throws(() => parseArgs(['node', 's', '--remove-shell', '--session', 'x', '--fetch']), '--fetch is only valid with --inventory');
+  throws(() => parseArgs(['node', 's', '--inventory', '--launcher', '/w']), '--launcher is only valid with --enable-task-model');
+  throws(() => parseArgs(['node', 's', '--enable-task-model', '--launcher']), 'a dangling --launcher value is rejected');
   throws(() => parseArgs(['node', 's', '--inventory', '--bogus']), 'unknown flag rejected');
+  const rs = parseArgs(['node', 's', '--remove-shell', '--session', 'x']);
+  assertEq(rs.mode, 'remove-shell', '--remove-shell parses as a mode');
+  const etm = parseArgs(['node', 's', '--enable-task-model', '--root', '/w', '--launcher', '/launcher']);
+  assertEq([etm.mode, etm.root, etm.launcher], ['enable-task-model', '/w', '/launcher'], '--enable-task-model --launcher parses');
   const inv = parseArgs(['node', 's', '--root', '/w', '--inventory']);
   assertEq([inv.mode, inv.root, inv.activeDays], ['inventory', '/w', null], 'inventory defaults parse');
   const ar = parseArgs(['node', 's', '--archive', '--session', 'x', '--allow-uncommitted']);
@@ -1253,6 +1262,222 @@ console.log('# archive: unbacked tips refuse until the backup decision is made (
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
+// gh:197: the archive gate must count the backup the skill documents.
+// --backup --remote pushes drain/{session}/* tags, so a tip held on no
+// remote BRANCH is still backed when a qualifying remote holds it under
+// such a tag — at the tip itself, or at a later commit containing it. A
+// local-only tag still proves nothing, and an unreachable remote counts
+// as not backed with the reason said out loud.
+console.log('# archive: a pushed drain tag backs the tip and is reported as backed-by-tag (gh:197)');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt } = makeSession(fx, { name: 'tagged', branch: 'bugfix/tagged', repos: [], tracker: { branch: 'bugfix/tagged', repos: [], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    // The documented path: backup with a pushed tag, the branch itself on
+    // no remote anywhere.
+    const bk = backupSession(fx.root, { session: 'tagged', remote: true, remoteAllowAll: true });
+    assertEq(bk.refused, undefined, 'the pushed backup runs');
+    assert(bk.branches.every((b) => b.pushed === true && b.verified === true), 'the drain tag is on the remote');
+    assert(git(fx.wsOrigin, 'tag -l drain/tagged/bugfix-tagged').trim() !== '', 'the tag exists on the workspace origin');
+
+    const out = archiveSession(fx.root, { session: 'tagged', cwd: fx.root, now: Date.UTC(2026, 9, 2, 9, 0, 0) });
+    assertEq(out.refused, undefined, 'the pushed drain tag clears the unbacked gate — no --allow-unbacked needed');
+    assert(out.backedByTag.some((b) => b.repo === '.' && b.branch === 'bugfix/tagged' && b.tag === 'drain/tagged/bugfix-tagged' && b.remote === 'origin' && b.commits === 1), 'the result reports the tip as backed by tag');
+    assertEq(out.unbacked, undefined, 'the tagged tip is not reported as unbacked');
+    // gh:197 item 6: the result names the branches that stay checked out.
+    assertEq(out.heldBranches, ['bugfix/tagged'], 'the result names the branches held by the archive');
+    assert(out.note && out.note.includes('bugfix/tagged') && out.note.includes('until the archive is deleted'), 'with a note saying the names stay taken');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# archive: a drain tag on a later commit containing the tip also backs it (gh:197)');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt } = makeSession(fx, { name: 'anc', branch: 'bugfix/anc', repos: [], tracker: { branch: 'bugfix/anc', repos: [], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'session content', daysAgoIso(40));
+    // The session branch merged on the launcher; a drain tag on the merge
+    // commit contains the session tip. main itself stays unpushed, so the
+    // tip is on no remote branch — only under the tag.
+    git(fx.root, 'merge -q --no-ff -m merge bugfix/anc');
+    git(fx.root, 'tag -a drain/anc/bugfix-anc -m "backup before draining session anc" main');
+    git(fx.root, 'push -q origin refs/tags/drain/anc/bugfix-anc');
+    const out = archiveSession(fx.root, { session: 'anc', cwd: fx.root, now: Date.UTC(2026, 9, 2, 9, 0, 1) });
+    assertEq(out.refused, undefined, 'a tag whose commit contains the tip backs the tip');
+    assert(out.backedByTag.some((b) => b.tag === 'drain/anc/bugfix-anc' && b.remote === 'origin'), 'reported as backed by that tag');
+    assertEq(out.unbacked, undefined, 'nothing reported as unbacked');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# archive: a local-only drain tag does not back the tip (gh:197)');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt } = makeSession(fx, { name: 'localtag', branch: 'bugfix/localtag', repos: [], tracker: { branch: 'bugfix/localtag', repos: [], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    assertEq(backupSession(fx.root, { session: 'localtag' }).branches.length, 1, 'a local-only backup tag exists');
+    assertEq(git(fx.wsOrigin, 'tag -l "drain/localtag/*"').trim(), '', 'and it is on no remote');
+    const out = archiveSession(fx.root, { session: 'localtag', cwd: fx.root });
+    assertEq(out.refused, true, 'a local-only tag still refuses as unbacked');
+    assert(out.reasons.some((r) => r.includes('only on this machine')), 'the refusal names the machine-only commits');
+    assert(out.reasons.some((r) => r.includes('--allow-unbacked')), 'the refusal names the explicit way through');
+    assert(existsSync(join(fx.root, 'work-sessions', 'localtag', 'workspace')), 'nothing moved');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# archive: an unreachable remote makes the drain-tag check fail closed, saying why (gh:197)');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt } = makeSession(fx, { name: 'ghosttag', branch: 'bugfix/ghosttag', repos: [], tracker: { branch: 'bugfix/ghosttag', repos: [], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    git(fx.root, 'remote set-url origin /nonexistent/remote.git');
+    const out = archiveSession(fx.root, { session: 'ghosttag', cwd: fx.root });
+    assertEq(out.refused, true, 'an unreachable remote counts as not backed');
+    assert(out.reasons.some((r) => r.includes('the drain-tag check did not clear') && r.includes('could not reach remote "origin"')), 'the refusal says the drain-tag check failed');
+    assert(out.reasons.some((r) => r.includes('treated as not backed')), 'and which way it failed');
+    assert(existsSync(join(fx.root, 'work-sessions', 'ghosttag', 'workspace')), 'nothing moved');
+
+    // The failure detail is honest: only a real ETIMEDOUT says "timed
+    // out"; any other spawn error carries its own message.
+    const fakeLs = (code, message) => (cmd, args, opts = {}) => (
+      args.includes('ls-remote')
+        ? { status: null, error: Object.assign(new Error(message), { code }) }
+        : gitFn(cmd, args, opts)
+    );
+    const enoent = archiveSession(fx.root, { session: 'ghosttag', cwd: fx.root, gitFn: fakeLs('ENOENT', 'spawnSync git ENOENT') });
+    const enoentLine = enoent.reasons.find((r) => r.includes('drain-tag check did not clear'));
+    assert(enoentLine && enoentLine.includes('spawnSync git ENOENT'), 'a non-timeout spawn error reports its message');
+    assert(enoentLine && !enoentLine.includes('timed out'), 'and is not misreported as a timeout');
+    const slow = archiveSession(fx.root, { session: 'ghosttag', cwd: fx.root, gitFn: fakeLs('ETIMEDOUT', 'spawnSync git ETIMEDOUT') });
+    assert(slow.reasons.some((r) => r.includes('drain-tag check did not clear') && r.includes('timed out after 15s')), 'a real ETIMEDOUT reports the timeout');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+// gh:197 round 2: the tag half of the gate must refuse every shape that
+// only LOOKS backed. Each case is a real bare remote holding a real pushed
+// annotated tag — what survives is the refusal, because a tag that does
+// not contain the tip (or belongs to another session, or names objects
+// this machine cannot verify) proves nothing about the tip.
+console.log('# archive: a pushed drain tag on an ANCESTOR of the tip does not back it (gh:197)');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt } = makeSession(fx, { name: 'rev', branch: 'bugfix/rev', repos: [], tracker: { branch: 'bugfix/rev', repos: [], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'one\n');
+    commitAll(wsWt, 'first', daysAgoIso(40));
+    git(fx.root, 'tag -a drain/rev/bugfix-rev -m backup bugfix/rev');
+    writeFileSync(join(wsWt, 'NOTES.md'), 'two\n');
+    commitAll(wsWt, 'second', daysAgoIso(40));
+    git(fx.root, 'push -q origin refs/tags/drain/rev/bugfix-rev');
+    assert(git(fx.wsOrigin, 'tag -l drain/rev/bugfix-rev').trim() !== '', 'the tag is on the remote — at the tip\'s parent');
+    const out = archiveSession(fx.root, { session: 'rev', cwd: fx.root });
+    assertEq(out.refused, true, 'a tag on an ancestor of the tip does not back the tip (ancestry runs the other way)');
+    assert(out.reasons.some((r) => r.includes('only on this machine')), 'the refusal names the machine-only commits');
+    assert(existsSync(join(fx.root, 'work-sessions', 'rev', 'workspace')), 'nothing moved');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# archive: another session\'s drain tag never satisfies this session\'s gate (gh:197)');
+{
+  const fx = makeWorkspace();
+  try {
+    const { wsWt } = makeSession(fx, { name: 'foo', branch: 'bugfix/foo', repos: [], tracker: { branch: 'bugfix/foo', repos: [], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    // drain/foo-bar/… is a DIFFERENT session's namespace, at this tip: a
+    // pattern that matched loosely, or a bare drain/ prefix check, would
+    // let it through. The gate must not.
+    git(fx.root, 'tag -a drain/foo-bar/bugfix-foo -m backup HEAD');
+    git(fx.root, 'push -q origin refs/tags/drain/foo-bar/bugfix-foo');
+    assert(git(fx.wsOrigin, 'tag -l drain/foo-bar/bugfix-foo').trim() !== '', 'the foreign-session tag is on the remote, at the tip');
+    const out = archiveSession(fx.root, { session: 'foo', cwd: fx.root });
+    assertEq(out.refused, true, 'drain/foo-bar/… does not back session foo');
+    assertEq(out.backedByTag, undefined, 'nothing reported as backed by tag');
+    assert(out.reasons.some((r) => r.includes('only on this machine')), 'the refusal names the machine-only commits');
+
+    // A session name with glob metacharacters has no honest pattern at
+    // all (git forbids those characters in ref names, so no drain tag can
+    // exist for it) — refused with that said, not escaped into a query.
+    // A literal `*` cannot be a directory name on Windows, so the case
+    // needs a POSIX filesystem to build at all.
+    if (process.platform !== 'win32') {
+      const starWt = join(fx.root, 'work-sessions', 'star*red', 'workspace');
+      git(fx.root, `worktree add -q -b bugfix/starred "${starWt}"`);
+      writeFileSync(join(starWt, 'NOTES.md'), 'content\n');
+      commitAll(starWt, 'content', daysAgoIso(40));
+      const star = archiveSession(fx.root, { session: 'star*red', cwd: fx.root });
+      const starLine = star.reasons && star.reasons.find((r) => r.includes('glob metacharacters'));
+      assert(star.refused === true && starLine, 'a glob-metacharacter session name is refused with the reason said');
+      assert(starLine && starLine.includes('"star*red"'), 'naming the session');
+      assert(existsSync(starWt), 'nothing moved');
+    }
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+console.log('# archive: a remote-only tag object absent locally cannot back anything (gh:197)');
+{
+  const fx = makeWorkspace();
+  const otherClone = mkdtempSync(join(tmpdir(), 'mig-remoteonly-'));
+  try {
+    const { wsWt } = makeSession(fx, { name: 'remoteonly', branch: 'bugfix/remoteonly', repos: [], tracker: { branch: 'bugfix/remoteonly', repos: [], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    // A tag made in another clone and pushed from there: the remote holds
+    // an annotated tag whose tag object AND peeled commit this machine
+    // never fetched. The peeled commit DOES contain the tip — but nothing
+    // here can verify that, so the gate must fail closed rather than
+    // trust an unverifiable sha.
+    execSync(`git clone -q "${fx.wsOrigin}" "${otherClone}"`, { stdio: 'pipe', env: process.env });
+    git(otherClone, `fetch -q "${wsWt}" bugfix/remoteonly`);
+    git(otherClone, 'checkout -q -B build FETCH_HEAD');
+    writeFileSync(join(otherClone, 'later.txt'), 'descendant\n');
+    commitAll(otherClone, 'descendant');
+    git(otherClone, 'tag -a drain/remoteonly/bugfix-remoteonly -m backup HEAD');
+    git(otherClone, 'push -q origin refs/tags/drain/remoteonly/bugfix-remoteonly');
+    assert(git(fx.wsOrigin, 'tag -l drain/remoteonly/bugfix-remoteonly').trim() !== '', 'the tag is on the remote');
+    const tagSha = git(fx.wsOrigin, 'rev-parse drain/remoteonly/bugfix-remoteonly').trim();
+    assert(!gitOk(wsWt, `cat-file -t ${tagSha}`), 'and its tag object is absent locally');
+    const out = archiveSession(fx.root, { session: 'remoteonly', cwd: fx.root });
+    assertEq(out.refused, true, 'objects this machine cannot resolve count as not backed');
+    assert(out.reasons.some((r) => r.includes('only on this machine')), 'the refusal names the machine-only commits');
+    assert(existsSync(join(fx.root, 'work-sessions', 'remoteonly', 'workspace')), 'nothing moved');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, otherClone); }
+}
+
+console.log('# archive: a pushed drain tag on an unrelated commit does not back the tip (gh:197)');
+{
+  const fx = makeWorkspace();
+  const otherClone = mkdtempSync(join(tmpdir(), 'mig-unrel-'));
+  try {
+    const { wsWt } = makeSession(fx, { name: 'unrel', branch: 'bugfix/unrel', repos: [], tracker: { branch: 'bugfix/unrel', repos: [], updated: daysAgoIso(40) } });
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+    // A diverged commit (sibling of the tip, no ancestry either way) is
+    // pushed on a branch so its OBJECT is local after a --no-tags fetch —
+    // the ancestry check itself is what refuses, not a missing object.
+    execSync(`git clone -q "${fx.wsOrigin}" "${otherClone}"`, { stdio: 'pipe', env: process.env });
+    writeFileSync(join(otherClone, 'unrelated.txt'), 'unrelated\n');
+    commitAll(otherClone, 'unrelated');
+    git(otherClone, 'tag -a drain/unrel/bugfix-unrel -m backup HEAD');
+    git(otherClone, 'push -q origin HEAD:refs/heads/unrelated-branch refs/tags/drain/unrel/bugfix-unrel');
+    git(wsWt, 'fetch -q --no-tags origin');
+    const tagSha = git(fx.wsOrigin, 'rev-parse drain/unrel/bugfix-unrel').trim();
+    assertEq(git(wsWt, `cat-file -t ${git(wsWt, 'rev-parse refs/remotes/origin/unrelated-branch').trim()}`).trim(), 'commit', 'the unrelated commit is present locally');
+    assert(!gitOk(wsWt, `cat-file -t ${tagSha}`), 'while the remote-made tag object is not');
+    const out = archiveSession(fx.root, { session: 'unrel', cwd: fx.root });
+    assertEq(out.refused, true, 'a tag on a commit with no ancestry to the tip does not back it');
+    assertEq(out.backedByTag, undefined, 'nothing reported as backed by tag');
+    assert(out.reasons.some((r) => r.includes('only on this machine')), 'the refusal names the machine-only commits');
+    assert(existsSync(join(fx.root, 'work-sessions', 'unrel', 'workspace')), 'nothing moved');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, otherClone); }
+}
+
 console.log('# archive: a failed repair moves the session back, nothing lost');
 {
   const fx = makeWorkspace();
@@ -1393,6 +1618,77 @@ console.log('# archive: a broken shell is archived, not deleted');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
+// gh:197: empty-shell removal is scripted, not an improvised node -e one
+// liner — and emptiness is re-verified at removal time, never trusted
+// from the inventory.
+console.log('# remove-shell: emptiness re-verified at removal time; anything else refuses untouched (gh:197)');
+{
+  const fx = makeWorkspace();
+  try {
+    mkdirSync(join(fx.root, 'work-sessions', 'gone', 'workspace', 'repos'), { recursive: true });
+    mkdirSync(join(fx.root, 'work-sessions', 'held', 'workspace'), { recursive: true });
+    writeFileSync(join(fx.root, 'work-sessions', 'held', 'workspace', 'stray.md'), 'a file\n');
+
+    const out = removeShell(fx.root, { session: 'gone', cwd: fx.root });
+    assertEq(out.removed, true, 'an empty shell is removed');
+    assertEq(out.from, join('work-sessions', 'gone'), 'the result names what was removed');
+    assert(!existsSync(join(fx.root, 'work-sessions', 'gone')), 'the folder is gone');
+
+    const held = removeShell(fx.root, { session: 'held', cwd: fx.root });
+    assertEq(held.refused, true, 'a shell holding files refuses');
+    assert(held.reasons.some((r) => r.includes('nothing was removed')), 'the refusal says nothing was removed');
+    assert(held.reasons.some((r) => r.includes('--archive')), 'and points file-holding shells at archive');
+    assert(existsSync(join(fx.root, 'work-sessions', 'held', 'workspace', 'stray.md')), 'nothing was touched');
+
+    // Emptiness is a removal-time fact: a file that appeared since the
+    // inventory refuses even though the inventory saw the shell empty.
+    mkdirSync(join(fx.root, 'work-sessions', 'later'), { recursive: true });
+    assertEq(byName(inventory(fx.root), 'later').empty, true, 'the inventory saw it empty');
+    writeFileSync(join(fx.root, 'work-sessions', 'later', 'appeared.txt'), 'appeared after the inventory\n');
+    assertEq(removeShell(fx.root, { session: 'later', cwd: fx.root }).refused, true, 'a file appearing since the inventory refuses');
+
+    // A symlink is content, not an empty directory — even a dangling one.
+    mkdirSync(join(fx.root, 'work-sessions', 'linked'), { recursive: true });
+    let linked = true;
+    try { symlinkSync('/nonexistent/target', join(fx.root, 'work-sessions', 'linked', 'dangling')); } catch { linked = false; }
+    if (linked) {
+      assertEq(removeShell(fx.root, { session: 'linked', cwd: fx.root }).refused, true, 'a symlink inside the shell refuses removal');
+      assert(lstatSync(join(fx.root, 'work-sessions', 'linked', 'dangling')).isSymbolicLink(), 'untouched (lstat — the link dangles)');
+    }
+
+    // A symlinked DIRECTORY is content too — never followed into, never
+    // removed through, never treated as an empty tree.
+    if (linked) {
+      mkdirSync(join(fx.root, 'work-sessions', 'dirlinked'), { recursive: true });
+      symlinkSync(join(fx.root, 'work-sessions', 'held', 'workspace'), join(fx.root, 'work-sessions', 'dirlinked', 'ws-link'));
+      assertEq(removeShell(fx.root, { session: 'dirlinked', cwd: fx.root }).refused, true, 'a symlinked directory inside the shell refuses removal');
+      assert(lstatSync(join(fx.root, 'work-sessions', 'dirlinked', 'ws-link')).isSymbolicLink(), 'the directory symlink untouched');
+      assert(existsSync(join(fx.root, 'work-sessions', 'dirlinked')), 'and the folder around it untouched');
+    }
+
+    // A stray dotfile is a file — emptiness means directories only, and
+    // Finder droppings must not erase a shell.
+    mkdirSync(join(fx.root, 'work-sessions', 'dotted', 'workspace'), { recursive: true });
+    writeFileSync(join(fx.root, 'work-sessions', 'dotted', 'workspace', '.DS_Store'), 'finder droppings\n');
+    const dotted = removeShell(fx.root, { session: 'dotted', cwd: fx.root });
+    assertEq(dotted.refused, true, 'a stray dotfile (.DS_Store) refuses removal');
+    assert(existsSync(join(fx.root, 'work-sessions', 'dotted', 'workspace', '.DS_Store')), 'and leaves it untouched');
+
+    // The CLI form, with the same exit contract as every other mode.
+    mkdirSync(join(fx.root, 'work-sessions', 'viashell', 'workspace'), { recursive: true });
+    const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--remove-shell', '--session', 'viashell'], { encoding: 'utf8' });
+    assertEq(r.status, 0, 'the CLI removes an empty shell');
+    assertEq(JSON.parse(r.stdout).removed, true, 'with the result on stdout');
+    assert(!existsSync(join(fx.root, 'work-sessions', 'viashell')), 'the folder is gone');
+    const bad = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--remove-shell', '--session', 'held'], { encoding: 'utf8' });
+    assertEq(bad.status, 1, 'a removal refusal exits 1');
+    assertEq(JSON.parse(bad.stdout).refused, true, 'refusal JSON on stdout');
+    assert(existsSync(join(fx.root, 'work-sessions', 'held')), 'still untouched');
+
+    throws(() => removeShell(fx.root, { session: '../x' }), 'removeShell rejects an escaping session name');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
 console.log('# N3: symlinked session entries are foreign and never acted on');
 {
   const fx = makeWorkspace();
@@ -1496,6 +1792,74 @@ console.log('# S6: enable-task-model from a task worktree; acting modes refuse a
 
     const cli = spawnSync(process.execPath, [SCRIPT, '--enable-task-model', '--root', wt], { encoding: 'utf8' });
     assertEq(cli.status, 0, '--enable-task-model accepts the worktree root');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+// gh:197: run from the switch worktree, --enable-task-model reported
+// remainingSessions: null — work-sessions/ does not exist there. --launcher
+// names the launcher so the count comes back with the switch.
+console.log('# S6: --launcher counts the remaining sessions from the worktree (gh:197)');
+{
+  const fx = makeWorkspace();
+  try {
+    mkdirSync(join(fx.root, 'work-sessions', 'alpha'), { recursive: true });
+    git(fx.root, 'worktree add -q -b chore/enable-task-model ".claude/worktrees/chore-enable-task-model"');
+    const wt = join(fx.root, '.claude', 'worktrees', 'chore-enable-task-model');
+    const out = enableTaskModel(wt, { launcher: fx.root });
+    assertEq(out.sessionModel, 'task', 'the switch applies to the worktree');
+    assertEq(out.remainingSessions, ['alpha'], 'remaining sessions are counted from the launcher');
+    assertEq(out.note, undefined, 'no caveat note when the launcher is given');
+    assertEq(JSON.parse(readFileSync(join(wt, 'workspace.json'), 'utf-8')).workspace.sessionModel, 'task', 'the worktree file is the one edited');
+    assertEq(JSON.parse(readFileSync(join(fx.root, 'workspace.json'), 'utf-8')).workspace.sessionModel, 'session', 'the launcher file is untouched');
+
+    // Without the flag the old answer stands, now naming the way to the count.
+    const bare = enableTaskModel(wt);
+    assertEq(bare.remainingSessions, null, 'without --launcher the count is still null');
+    assert(bare.note.includes('--launcher'), 'and the note names the flag');
+
+    // A launcher that is itself a linked worktree is refused before the
+    // switch edits anything.
+    git(wt, 'checkout -q -- workspace.json');
+    let threw = false;
+    try { enableTaskModel(wt, { launcher: wt }); } catch { threw = true; }
+    assert(threw, 'a worktree as --launcher throws');
+    const cfgAfter = JSON.parse(readFileSync(join(wt, 'workspace.json'), 'utf-8'));
+    assertEq(cfgAfter.workspace.sessionModel, 'session', 'a bad launcher leaves workspace.json unedited');
+
+    // A launcher belonging to a DIFFERENT workspace would happily count
+    // that workspace's sessions — same check, before anything is edited.
+    const fx2 = makeWorkspace();
+    try {
+      let threw2 = false;
+      try { enableTaskModel(wt, { launcher: fx2.root }); } catch (e) { threw2 = /different repository/.test(e.message); }
+      assert(threw2, 'another workspace\'s launcher throws');
+      assertEq(JSON.parse(readFileSync(join(wt, 'workspace.json'), 'utf-8')).workspace.sessionModel, 'session', 'and still edits nothing');
+
+      // --root already the launcher: --launcher may only name the same
+      // root again. A nested directory of the same repo is not a linked
+      // worktree and shares the git dir, so only the root check catches
+      // it.
+      mkdirSync(join(fx.root, 'nested'), { recursive: true });
+      writeFileSync(join(fx.root, 'nested', 'workspace.json'), JSON.stringify({ workspace: { name: 'inner' }, repos: {} }));
+      let threw3 = false;
+      try { enableTaskModel(fx.root, { launcher: join(fx.root, 'nested') }); } catch (e) { threw3 = /has nothing to add/.test(e.message); }
+      assert(threw3, 'a --launcher beside a launcher --root throws');
+      assertEq(JSON.parse(readFileSync(join(fx.root, 'workspace.json'), 'utf-8')).workspace.sessionModel, 'session', 'the launcher root is unedited');
+      rmSync(join(fx.root, 'nested'), { recursive: true, force: true });
+
+      // The same root spelled as the launcher is a harmless redundancy,
+      // not an error.
+      const same = enableTaskModel(fx.root, { launcher: fx.root });
+      assertEq(same.remainingSessions, ['alpha'], 'the launcher root counts its own sessions');
+      assertEq(JSON.parse(readFileSync(join(fx.root, 'workspace.json'), 'utf-8')).workspace.sessionModel, 'task', 'the root itself is switched');
+      git(fx.root, 'checkout -q -- workspace.json');
+    } finally {
+      clean(fx2.root, fx2.wsOrigin, fx2.appOrigin);
+    }
+
+    const run = spawnSync(process.execPath, [SCRIPT, '--enable-task-model', '--root', wt, '--launcher', fx.root], { encoding: 'utf8' });
+    assertEq(run.status, 0, 'the CLI accepts --launcher');
+    assertEq(JSON.parse(run.stdout).remainingSessions, ['alpha'], 'and reports the launcher count');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 

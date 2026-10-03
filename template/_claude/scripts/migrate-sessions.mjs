@@ -47,14 +47,24 @@
 //                 worktree holds uncommitted changes (an edited session.md
 //                 counts) unless --allow-uncommitted says leave them be,
 //                 and when a worktree tip holds commits no remote backs
-//                 (they exist only on this machine) unless --allow-unbacked
+//                 on a branch or under a drain/{session}/* tag (they
+//                 exist only on this machine) unless --allow-unbacked
 //                 records that the operator saw the counts and declined
 //                 the backup.
+//   --remove-shell
+//                 remove an ORPHAN_SHELL session folder — no worktree,
+//                 nothing but empty directories, re-verified empty at
+//                 removal time; anything else refuses, touching nothing
 //   --enable-task-model
 //                 flip workspace.sessionModel to "task" (accepts a task
-//                 worktree root — the one mode allowed off the launcher)
+//                 worktree root — the one mode allowed off the launcher;
+//                 --launcher <root> counts the remaining sessions from
+//                 the launcher when --root is that worktree)
 //
-// NOTHING HERE DELETES. Draining a session means taking it out of the
+// NOTHING HERE DELETES — with one deliberate exception: --remove-shell,
+// whose target is a folder provably empty of files and symlinks
+// (re-verified at removal time, so a plain directory tree is all it can
+// ever lose). Draining a session otherwise means taking it out of the
 // active lifecycle, not destroying it. An earlier design tore sessions
 // down behind a "prove it is safe to delete" check; four independent
 // reviews each found a new place git keeps state that the check missed
@@ -80,7 +90,7 @@
 // reasons: [...]} and exits 1; any other error goes to stderr and exits 2.
 
 import {
-  readFileSync, writeFileSync, existsSync, readdirSync, lstatSync, statSync, mkdirSync, renameSync, readlinkSync,
+  readFileSync, writeFileSync, existsSync, readdirSync, lstatSync, statSync, mkdirSync, renameSync, readlinkSync, rmSync,
 } from 'node:fs';
 import { realpathSync } from 'node:fs';
 import { join, resolve, relative, dirname, sep, isAbsolute } from 'node:path';
@@ -633,6 +643,7 @@ function inspectWorktree(gitFn, rootDir, kind, repo, wtPath, fetchState) {
     repo,
     path: relative(rootDir, realPath(wtPath)),
     branch,
+    head,
     dirty: dirtyRecords.length,
     ahead: aheadCount(gitFn, wtPath, range),
     lastOwnCommit: lastOwnCommitIso(gitFn, wtPath, range),
@@ -1066,9 +1077,12 @@ function remoteQualifies(safety, repoDir, remote) {
 
 // Every branch and tag a remote holds, mapped by commit sha. Other
 // advertised refs (HEAD, a forge's refs/pull/N/*) are ephemeral and never
-// count. No refspec pattern: patterns silently drop the peeled ^{} lines,
-// which are the ones comparable with commit tips. A failed or timed-out
-// query returns null (unknown) — it proves nothing.
+// count. No refspec pattern: some git versions drop the peeled ^{} lines
+// under a pattern, and those lines are the ones comparable with commit
+// tips (drainTagSafety below does use one — it must name a single
+// session's tags — and compensates by peeling locally instead of trusting
+// the peel line). A failed or timed-out query returns null (unknown) — it
+// proves nothing.
 function remoteRefs(safety, repoDir, remote) {
   const key = `${repoDir}\0${remote}`;
   if (safety.lsCache.has(key)) return safety.lsCache.get(key);
@@ -1099,6 +1113,75 @@ function tipSafety(safety, repoDir, sha) {
     if (exact) return { safe: true, by: 'remote', remote, ref: exact };
   }
   return { safe: false };
+}
+
+// The archive gate's tag half: --backup --remote is what puts
+// drain/{session}/{branch-slug} tags on remotes, so the gate must count its
+// own backup or the documented "backup, then archive" path always refuses.
+// A tip is backed by tag when a qualifying remote holds a
+// drain/{session}/* tag whose peeled commit CONTAINS the tip — the tip
+// itself (what the backup tagged) or any descendant. The query narrows to
+// the session with a refspec pattern AND every returned line is re-checked
+// against `refs/tags/drain/{session}/` after stripping a trailing `^{}` —
+// the pattern is the query, the prefix is the answer's meaning, and a tag
+// like drain/{session}-suffix/… must never satisfy the other session's
+// gate. A session name containing glob metacharacters (* ? [ ]) has no
+// honest pattern — git forbids those characters in ref names anyway, so no
+// drain tag can exist for it — and is refused up front rather than escaped
+// into meaning something else. The peel is resolved locally
+// (cat-file/merge-base peel tag objects; the backup run left the tag
+// object in the local store), which keeps the check fetch-free and never
+// dependent on the peeled ^{} line: current git returns it under a
+// pattern, older gits drop it (the reason remoteRefs above avoids
+// patterns), and the plain line answers either way once the object is
+// local. Without the object nothing can be verified and the tip counts as
+// not backed. A local-only tag proves nothing — the remote is asked
+// directly — and a failed or timed-out query is reported as a blocker and
+// counts as not backed (the safe direction: an unreachable remote cannot
+// vouch for anything).
+function drainTagSafety(safety, session, wtPath, tip) {
+  const blockers = [];
+  if (/[*?[\]]/.test(session)) {
+    blockers.push(`cannot build a drain-tag pattern for session name "${session}" (it contains glob metacharacters, which git forbids in ref names — no drain tag can exist for it)`);
+    return { backed: false, remote: null, tag: null, blockers };
+  }
+  const out = { backed: false, remote: null, tag: null, blockers };
+  const prefix = `refs/tags/drain/${session}/`;
+  const pattern = `${prefix}*`;
+  for (const remote of safety.remotes(wtPath)) {
+    if (!remoteQualifies(safety, wtPath, remote)) continue;
+    const res = safety.gitFn('git', ['-C', wtPath, 'ls-remote', '--tags', remote, pattern], netOpts(LS_REMOTE_TIMEOUT_MS));
+    if (res.error || res.status !== 0) {
+      // "timed out" only when spawnSync actually timed out; anything else
+      // carries its own message (or git's stderr).
+      const detail = res.error
+        ? (res.error.code === 'ETIMEDOUT'
+          ? `timed out after ${LS_REMOTE_TIMEOUT_MS / 1000}s`
+          : String(res.error.message || res.error))
+        : (String(res.stderr || '').trim() || 'ls-remote failed');
+      out.blockers.push(`could not reach remote "${remote}" (${detail})`);
+      continue;
+    }
+    for (const line of okLines(res)) {
+      const [sha, ref] = line.trim().split(/\s+/);
+      // Explicit session filter: strip the peel suffix first, so both line
+      // kinds are held to the same `drain/{session}/` prefix.
+      const bare = ref && ref.endsWith('^{}') ? ref.slice(0, -3) : ref;
+      if (!sha || !ref || !bare.startsWith(prefix)) continue;
+      if (sha === tip) {
+        out.backed = true; out.remote = remote; out.tag = bare.slice('refs/tags/'.length);
+        break;
+      }
+      const commit = `${sha}^{commit}`; // no-op for a peel line, peels a plain tag-object sha
+      const known = run(safety.gitFn, wtPath, ['cat-file', '-e', commit]).status === 0;
+      if (known && run(safety.gitFn, wtPath, ['merge-base', '--is-ancestor', tip, commit]).status === 0) {
+        out.backed = true; out.remote = remote; out.tag = bare.slice('refs/tags/'.length);
+        break;
+      }
+    }
+    if (out.backed) break;
+  }
+  return out;
 }
 
 function makeSafety(gitFn, rootDir) {
@@ -1793,11 +1876,13 @@ function repairAndVerify(gitFn, owned, worktreePaths, prunableBefore) {
  * session.md counts (unless allowUncommitted: they would ride along
  * fine, but they deserve a decision: commit them to the session branch,
  * or explicitly accept archiving them mid-edit); or a worktree tip holds
- * commits no remote backs — they exist only on this machine, and the
- * archive is safe for them but the moment it is deleted they are gone
+ * commits no remote backs — on a branch, or under a drain/{session}/* tag
+ * the backup step pushed there — so they exist only on this machine, and
+ * the archive is safe for them but the moment it is deleted they are gone
  * (unless allowUnbacked, the operator's recorded decline after seeing
  * the per-repo counts; the refusal names them, and a successful archive
- * that carried unbacked tips reports them in `unbacked`). Also refused
+ * reports tips those tags backed in `backedByTag` and tips that rode
+ * along unbacked in `unbacked`). Also refused
  * when the archive directory is a symlink or resolves outside the
  * workspace. If anything fails after the rename, the folder is renamed
  * back and repaired, and the result reports the verified state.
@@ -1873,10 +1958,15 @@ function archiveSession(root, { session, allowUncommitted = false, allowUnbacked
   // own call. A tip whose commits no remote backs (the inventory's
   // `unbacked` evidence, recomputed here at archive time) exists only on
   // this machine, so the archive moves only once a remote holds every
-  // such tip — the backup step's push mode --remote with an allow — or
-  // after --allow-unbacked records that the operator saw these counts and
-  // declined it. allowUnbacked still reports what rode along.
+  // such tip — on a branch, or under a drain/{session}/* tag the backup
+  // step's push mode put there — or after --allow-unbacked records that
+  // the operator saw these counts and declined the backup. allowUnbacked
+  // still reports what rode along.
   const unbacked = [];
+  const backedByTag = [];
+  const tagBlockers = [];
+  const wtInfos = [];
+  const safety = makeSafety(gitFn, rootDir);
   for (const f of found) {
     const wtPath = f.rel === '.' ? folder : join(folder, f.rel);
     const info = inspectWorktree(
@@ -1884,12 +1974,25 @@ function archiveSession(root, { session, allowUncommitted = false, allowUnbacked
       f.owner.repo === WORKSPACE_REPO ? 'workspace' : 'project',
       f.owner.repo, wtPath, null,
     );
-    if (info.ahead > 0 && !info.backedBy) unbacked.push(info);
+    wtInfos.push(info);
+    if (!(info.ahead > 0) || info.backedBy) continue;
+    const tag = info.head
+      ? drainTagSafety(safety, session, wtPath, info.head)
+      : { backed: false, remote: null, tag: null, blockers: [] };
+    if (tag.backed) {
+      backedByTag.push({ repo: info.repo, branch: info.branch, commits: info.ahead, tag: tag.tag, remote: tag.remote });
+      continue;
+    }
+    for (const b of tag.blockers) {
+      tagBlockers.push(`${repoLabel(info)}: the drain-tag check did not clear — ${b} — treated as not backed; resolve it or decide with --allow-unbacked`);
+    }
+    unbacked.push(info);
   }
   if (unbacked.length > 0 && !allowUnbacked) {
     reasons.push(
       ...unbacked.map((wt) => unbackedMessage(gitFn, rootDir, wt)),
-      `${unbacked.length} worktree tip(s) above hold commits that exist only on this machine — this clears only when a remote holds them (--backup --remote with the operator's allow pushes backup tags there), or re-run with --allow-unbacked once the operator has seen these counts and explicitly declined the backup`,
+      ...tagBlockers,
+      `${unbacked.length} worktree tip(s) above hold commits that exist only on this machine — this clears only when a remote holds them (a pushed branch, or --backup --remote with the operator's allow pushing backup tags there), or re-run with --allow-unbacked once the operator has seen these counts and explicitly declined the backup`,
     );
   }
   if (reasons.length > 0) return { refused: true, reasons };
@@ -1929,17 +2032,58 @@ function archiveSession(root, { session, allowUncommitted = false, allowUnbacked
     return { refused: true, reasons: [...problems, state] };
   }
 
+  // The archived worktrees keep their branches checked out, so those names
+  // stay taken until the archive is deleted — the result says so, naming
+  // them, so the next task that wants one of those names learns why not.
+  const heldBranches = [...new Set(wtInfos.map((w) => w.branch).filter(Boolean))];
   return {
     session,
     archived: true,
     from: relative(rootDir, folder),
     to: relative(rootDir, dest),
     worktrees: at(dest).map((m) => ({ repo: m.owner.repo, path: relative(rootDir, m.path) })),
+    // Tips the backup's drain tags cover on a remote — backed, just not on
+    // a branch.
+    ...(backedByTag.length > 0 ? { backedByTag } : {}),
     // What the operator accepted riding along unbacked — the same
     // repos and counts the refusal would have named.
     ...(unbacked.length > 0 ? { unbacked: unbacked.map((wt) => ({ repo: wt.repo, branch: wt.branch, commits: wt.ahead })) } : {}),
-    warnings: scan.outwardLinks.map((l) => `relative symlink ${relative(rootDir, join(dest, relative(folder, l)))} pointed outside the session and no longer resolves after the move — it was kept as-is`),
+    ...(heldBranches.length > 0 ? {
+      heldBranches,
+      note: `the archived worktrees keep ${heldBranches.join(', ')} checked out — a new task cannot reuse ${heldBranches.length === 1 ? 'that branch name' : 'those branch names'} until the archive is deleted`,
+    } : {}),
+    warnings: [
+      ...scan.outwardLinks.map((l) => `relative symlink ${relative(rootDir, join(dest, relative(folder, l)))} pointed outside the session and no longer resolves after the move — it was kept as-is`),
+      ...tagBlockers,
+    ],
   };
+}
+
+// The one thing this script removes: an ORPHAN_SHELL — a session folder
+// with no worktree left in it and nothing but empty directories, verified
+// EMPTY AT REMOVAL TIME, not at inventory time. The inventory's `empty`
+// flag is evidence a shell was empty when read; anything that appeared
+// since (a stray file, a symlink, a .git marker) means the folder is
+// content now, and content is archive's to keep, never removal's to
+// delete. A refusal touches nothing.
+function removeShell(root, { session, cwd = process.cwd() } = {}) {
+  const rootDir = resolveRoot(root);
+  if (!isSessionSegment(session)) {
+    throw new Error(`session name must be a single path segment not starting with ".", got: ${session}`);
+  }
+  const sessionsDir = sessionsDirOf(rootDir);
+  const { folder, refusal } = sessionFolderGuards(rootDir, sessionsDir, session, cwd);
+  if (refusal) return refusal;
+  if (!shellIsEmpty(folder)) {
+    return {
+      refused: true,
+      reasons: [
+        `session "${session}" holds files or symlinks, not just empty directories — nothing was removed; archive it instead (--archive keeps everything) or reconcile manually`,
+      ],
+    };
+  }
+  rmSync(folder, { recursive: true, force: true });
+  return { session, removed: true, from: relative(rootDir, folder) };
 }
 
 // The launcher root is the main worktree of the workspace repo; every
@@ -1958,11 +2102,39 @@ function isLinkedWorktree(gitFn, rootDir) {
  * Switch the workspace to the task model: flip workspace.sessionModel to
  * "task", keeping every other key untouched. From the launcher this also
  * reports the remaining sessions; from a task worktree (the S6 flow)
- * there is no sessions directory to read — remainingSessions is null and
- * the note says where the real list comes from.
+ * there is no sessions directory to read — pass `launcher` (CLI
+ * `--launcher <root>`) to count them from the launcher anyway, or get
+ * remainingSessions null with a note saying where the real list comes
+ * from. The launcher is validated before anything is edited: it must be
+ * the launcher of the SAME repository as --root (a different workspace's
+ * launcher would happily count that workspace's sessions), and a --root
+ * that is itself the launcher needs no launcher — only the same root
+ * spelled again is accepted.
  */
-function enableTaskModel(root, { gitFn = spawnSync } = {}) {
+function enableTaskModel(root, { gitFn = spawnSync, launcher = null } = {}) {
   const rootDir = resolveRoot(root);
+  // Validate and resolve the launcher BEFORE editing anything: a wrong
+  // launcher would report a wrong count, and the switch must not land
+  // only to have the run die on the flag afterwards.
+  const linked = isLinkedWorktree(gitFn, rootDir);
+  let launcherDir = null;
+  if (launcher) {
+    launcherDir = resolveRoot(launcher);
+    if (isLinkedWorktree(gitFn, launcherDir)) {
+      throw new Error(`--launcher must be the workspace launcher (its own root), not a linked worktree: ${launcherDir}`);
+    }
+    const rootCommon = commonDirOf(gitFn, rootDir);
+    const launcherCommon = commonDirOf(gitFn, launcherDir);
+    if (!rootCommon || !launcherCommon) {
+      throw new Error(`could not determine the repository of ${!rootCommon ? rootDir : launcherDir} (git rev-parse --git-common-dir failed) — refusing to guess at --launcher`);
+    }
+    if (rootCommon !== launcherCommon) {
+      throw new Error(`--launcher ${launcherDir} belongs to a different repository than --root ${rootDir} — name this workspace's own launcher`);
+    }
+    if (!linked && rootDir !== launcherDir) {
+      throw new Error(`--root ${rootDir} is not a task worktree, so --launcher has nothing to add (got ${launcherDir}) — omit it, or point --root at the switch worktree`);
+    }
+  }
   const cfgPath = join(rootDir, 'workspace.json');
   let cfg;
   try {
@@ -1975,14 +2147,13 @@ function enableTaskModel(root, { gitFn = spawnSync } = {}) {
   // file's house format.
   cfg.workspace = { ...(cfg.workspace || {}), sessionModel: 'task' };
   writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`);
-  const linked = isLinkedWorktree(gitFn, rootDir);
-  return linked
-    ? {
-      sessionModel: 'task',
-      remainingSessions: null,
-      note: 'run from a task worktree — remaining sessions come from --inventory at the launcher root',
-    }
-    : { sessionModel: 'task', remainingSessions: listSessionNames(rootDir) };
+  if (!linked) return { sessionModel: 'task', remainingSessions: listSessionNames(rootDir) };
+  if (launcherDir) return { sessionModel: 'task', remainingSessions: listSessionNames(launcherDir) };
+  return {
+    sessionModel: 'task',
+    remainingSessions: null,
+    note: 'run from a task worktree — pass --launcher <launcher root> to count the remaining sessions from it, or run --inventory at the launcher root',
+  };
 }
 
 // Human-readable inventory rendering for stderr — the operator's table;
@@ -2037,12 +2208,13 @@ function renderTable(result) {
   return `${lines.join('\n')}\n`;
 }
 
-const MODE_FLAGS = new Set(['--inventory', '--backup', '--archive', '--enable-task-model']);
+const MODE_FLAGS = new Set(['--inventory', '--backup', '--archive', '--enable-task-model', '--remove-shell']);
 const VALUE_FLAGS = new Map([
   ['--root', 'root'],
   ['--session', 'session'],
   ['--active-days', 'activeDays'],
   ['--remote-allow', 'remoteAllow'], // repeatable: <repo>=<remote>
+  ['--launcher', 'launcher'], // --enable-task-model only: count sessions from here
 ]);
 const BOOL_FLAGS = new Map([
   ['--dry-run', 'dryRun'],
@@ -2060,6 +2232,7 @@ function parseArgs(argv) {
     session: null,
     activeDays: null,
     remoteAllow: [],
+    launcher: null,
     dryRun: false,
     remote: false,
     remoteAllowAll: false,
@@ -2088,12 +2261,15 @@ function parseArgs(argv) {
     }
     throw new Error(`unknown argument: ${a}`);
   }
-  if (!args.mode) throw new Error('one of --inventory, --backup, --archive, --enable-task-model is required');
-  if ((args.mode === 'backup' || args.mode === 'archive') && !args.session) {
+  if (!args.mode) throw new Error('one of --inventory, --backup, --archive, --enable-task-model, --remove-shell is required');
+  if ((args.mode === 'backup' || args.mode === 'archive' || args.mode === 'remove-shell') && !args.session) {
     throw new Error(`--${args.mode} requires --session`);
   }
-  if (args.session != null && args.mode !== 'backup' && args.mode !== 'archive') {
-    throw new Error('--session is only valid with --backup or --archive');
+  if (args.session != null && args.mode !== 'backup' && args.mode !== 'archive' && args.mode !== 'remove-shell') {
+    throw new Error('--session is only valid with --backup, --archive or --remove-shell');
+  }
+  if (args.launcher != null && args.mode !== 'enable-task-model') {
+    throw new Error('--launcher is only valid with --enable-task-model');
   }
   if (args.session != null && !isSessionSegment(args.session)) {
     throw new Error(`--session must be a single path segment, got: ${args.session}`);
@@ -2156,8 +2332,10 @@ function main() {
       allowUncommitted: args.allowUncommitted,
       allowUnbacked: args.allowUnbacked,
     });
+  } else if (args.mode === 'remove-shell') {
+    out = removeShell(rootDir, { session: args.session });
   } else {
-    out = enableTaskModel(rootDir);
+    out = enableTaskModel(rootDir, { launcher: args.launcher });
   }
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   if (out && out.refused) {
@@ -2181,4 +2359,4 @@ if (isMainModule(import.meta.url)) {
   }
 }
 
-export { inventory, backupSession, archiveSession, enableTaskModel, classify, parseArgs };
+export { inventory, backupSession, archiveSession, removeShell, enableTaskModel, classify, parseArgs };
