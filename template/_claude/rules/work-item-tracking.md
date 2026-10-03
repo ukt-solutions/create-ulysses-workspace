@@ -15,9 +15,12 @@ humans and Claude read the same list in the same place.
 ## Configuration
 
 `workspace.json` → `workspace.tracker`: `{ "type": "github-issues", "repo": "owner/name" }`.
-`type` names the adapter at `.claude/scripts/trackers/{type}.mjs`; only `github-issues` ships.
-`repo` is adapter-specific — for GitHub, the slug where issues live, or `"auto"` to resolve
-from the git remote. No `workspace.tracker` means tracking is disabled, and skills fall back
+`type` names the adapter at `.claude/scripts/trackers/{type}.mjs`; the template ships
+`github-issues` and `gitlab-issues`. `repo` is adapter-specific — for GitHub, the slug where
+issues live, or `"auto"` to resolve from the git remote. Two optional keys configure epics:
+`epics` (`"label"` by default — an epic is an `epic:{name}` label; `"native"` uses GitLab's
+group epics and needs Premium/Ultimate) and `epicLabelPrefix` (default `epic:`); `/setup-tracker`
+walks the choice. No `workspace.tracker` means tracking is disabled, and skills fall back
 to a blank describe-the-work flow rather than fabricating a local mirror.
 
 ## Session linkage
@@ -44,5 +47,7 @@ The prefix makes it self-describing across adapter swaps.
 
 Adapter choice is per workspace; this rule prescribes no particular tracker. Beyond the six
 labels `ensureLabels()` creates (`bug`, `feat`, `chore`, `P1`, `P2`, `P3`), it prescribes no
-schema — teams with an existing tracker skip label creation. Tracker-native features like
-comments, reactions and linked PRs stay in the tracker's own UI.
+schema — teams with an existing tracker skip label creation. Epics are the one extension every
+adapter implements: an issue carries exactly one, and assigning an unknown epic name throws
+rather than minting it. Tracker-native features like comments, reactions and linked PRs stay
+in the tracker's own UI.

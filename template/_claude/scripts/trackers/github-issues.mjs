@@ -17,6 +17,12 @@ const STANDARD_LABELS = [
   { name: 'P3', color: '0e8a16' },
 ];
 
+// Epic labels share one colour so they read as a family in the UI;
+// createEpic never rewrites a label that already exists, so a team that
+// recolours theirs keeps their choice.
+const EPIC_LABEL_COLOR = '5319e7';
+const DEFAULT_EPIC_LABEL_PREFIX = 'epic:';
+
 export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
   const repo = resolveRepo(config, spawnFn);
   let loginCache = null;
@@ -144,6 +150,98 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     return normalizeMilestone(created);
   }
 
+  // ---- Epics --------------------------------------------------------------
+  // Label mode: an epic is a single label `epicLabelPrefix + name` on every
+  // issue in it, so an issue carries exactly one epic and `listEpicIssues`
+  // is a label query. GitHub has no native epic object — sub-issues could
+  // back a native mode one day, but until then `epics: "native"` fails
+  // loudly per call rather than degrading to labels, because a team that
+  // asked for native must find out, not silently get label semantics.
+  const epicLabelPrefix = typeof config?.epicLabelPrefix === 'string' && config.epicLabelPrefix
+    ? config.epicLabelPrefix
+    : DEFAULT_EPIC_LABEL_PREFIX;
+
+  function requireLabelEpics(method) {
+    if (config?.epics === 'native') {
+      throw new Error(
+        `github-issues does not support epics: "native" (${method}) — GitHub has no epic object; `
+        + `sub-issues may back one later. Set workspace.tracker.epics to "label" (or remove it) `
+        + `to use ${epicLabelPrefix}* labels.`,
+      );
+    }
+  }
+
+  function isEpicLabel(name) {
+    return name.startsWith(epicLabelPrefix) && name !== epicLabelPrefix;
+  }
+
+  async function listEpics() {
+    requireLabelEpics('listEpics');
+    // `--paginate` concatenates raw JSON pages into invalid JSON; the `--jq`
+    // filter runs per page and streams names one per line, so both the walk
+    // and the parse stay well-formed. (`gh label list --limit N` silently
+    // caps at N — gh:195.)
+    const stdout = gh(['api', '--paginate', `repos/${repo}/labels`, '--jq', '.[].name']);
+    return stdout.split('\n')
+      .map((name) => name.trim())
+      .filter(isEpicLabel)
+      .map((name) => ({ name: name.slice(epicLabelPrefix.length), native: false }));
+  }
+
+  async function getEpic(name) {
+    return (await listEpics()).find((e) => e.name === name) ?? null;
+  }
+
+  async function requireEpic(name) {
+    const epic = await getEpic(name);
+    if (!epic) {
+      throw new Error(`Unknown epic "${name}" — create it with createEpic() first (assignment never mints epics).`);
+    }
+    return epic;
+  }
+
+  async function createEpic({ name, description = '' } = {}) {
+    requireLabelEpics('createEpic');
+    if (!name) throw new Error('createEpic: name is required');
+    const existing = await getEpic(name);
+    if (existing) return existing;
+    const args = ['label', 'create', `${epicLabelPrefix}${name}`, '--repo', repo, '--color', EPIC_LABEL_COLOR];
+    if (description) args.push('--description', description);
+    gh(args);
+    return { name, native: false };
+  }
+
+  // Exactly one epic per issue: the new label replaces any current epic
+  // label, and null strips them all — a single `issue edit` carries both
+  // halves so no intermediate state is ever visible.
+  async function setIssueEpic(issueId, name) {
+    requireLabelEpics('setIssueEpic');
+    const num = parseIssueNumber(issueId);
+    let toAdd = null;
+    if (name !== null && name !== undefined) {
+      await requireEpic(name);
+      toAdd = `${epicLabelPrefix}${name}`;
+    }
+    const issue = await getIssue(issueId);
+    const current = issue.labels.filter(isEpicLabel);
+    if (toAdd && current.length === 1 && current[0] === toAdd) return;
+    if (!toAdd && current.length === 0) return;
+    const args = ['issue', 'edit', String(num), '--repo', repo];
+    for (const label of current) args.push('--remove-label', label);
+    if (toAdd) args.push('--add-label', toAdd);
+    gh(args);
+  }
+
+  async function listEpicIssues(name, { state = 'open' } = {}) {
+    requireLabelEpics('listEpicIssues');
+    await requireEpic(name);
+    const stdout = gh([
+      'issue', 'list', '--repo', repo, '--label', `${epicLabelPrefix}${name}`,
+      '--state', state, '--limit', '1000', '--json', ISSUE_FIELDS,
+    ]);
+    return JSON.parse(stdout).map(normalize);
+  }
+
   return {
     listAssignedToMe,
     listUnassigned,
@@ -155,6 +253,11 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     issueRef,
     ensureLabels,
     ensureMilestone,
+    listEpics,
+    getEpic,
+    createEpic,
+    setIssueEpic,
+    listEpicIssues,
     get identity() { return `github-issues:${repo}`; },
   };
 }

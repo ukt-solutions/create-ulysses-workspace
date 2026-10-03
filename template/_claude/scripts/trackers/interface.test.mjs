@@ -45,5 +45,18 @@ const fail = (msg) => { failed++; console.error(`  FAIL: ${msg}`); };
   else fail(`unexpected identity: ${adapter.identity}`);
 }
 
+// Epic parity: every shipped adapter exposes the five epic methods — the
+// contract comment in this module is the checklist (gh:195).
+{
+  const spawnFn = () => ({ status: 0, stdout: '[]', stderr: '' });
+  for (const type of ['github-issues', 'gitlab-issues']) {
+    const adapter = createTracker({ type, repo: 'foo/bar' }, { spawnFn });
+    const missing = ['listEpics', 'getEpic', 'createEpic', 'setIssueEpic', 'listEpicIssues']
+      .filter((m) => typeof adapter[m] !== 'function');
+    if (missing.length === 0) ok();
+    else fail(`${type} is missing epic methods: ${missing.join(', ')}`);
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

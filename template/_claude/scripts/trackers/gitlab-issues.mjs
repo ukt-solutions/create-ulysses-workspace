@@ -22,6 +22,13 @@ const STANDARD_LABELS = [
   { name: 'P3', color: '0e8a16' },
 ];
 
+// Epic labels share one colour so they read as a family in the UI;
+// createEpic never rewrites a label that already exists (there is no
+// --force here anyway), so a team that recolours theirs keeps their
+// choice. Native epics ignore it — GitLab owns their appearance.
+const EPIC_LABEL_COLOR = '5319e7';
+const DEFAULT_EPIC_LABEL_PREFIX = 'epic:';
+
 export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
   const repo = resolveRepo(config, spawnFn);
   const host = typeof config?.host === 'string' && config.host ? config.host : GITLAB_DEFAULT_HOST;
@@ -222,6 +229,160 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     return normalizeMilestone(created);
   }
 
+  // ---- Epics --------------------------------------------------------------
+  // Label mode (default) mirrors github-issues: one `epicLabelPrefix + name`
+  // label per epic, exactly one epic per issue. Native mode
+  // (workspace.tracker.epics: "native") uses GitLab's group epics instead —
+  // the group is the project path minus its last segment — and needs
+  // Premium/Ultimate: without it the group-epic endpoints answer 403 (404
+  // when the group itself is missing or out of reach). Either must surface
+  // as a clear pointer back to label mode, never a silent fallback — a
+  // native-configured team that quietly got labels would have epics living
+  // in two places. (This speaks the epics REST API, deprecated in favor of
+  // the work-item epics API as of GitLab 17.0, because glab has no
+  // high-level epic commands; the endpoints still serve.)
+  const nativeEpics = config?.epics === 'native';
+  const epicLabelPrefix = typeof config?.epicLabelPrefix === 'string' && config.epicLabelPrefix
+    ? config.epicLabelPrefix
+    : DEFAULT_EPIC_LABEL_PREFIX;
+
+  // Epics live at the group level in native mode; a single-segment project
+  // path has no group to hang them on.
+  function epicGroup() {
+    const segments = repo.split('/');
+    if (segments.length < 2) {
+      throw new Error(`cannot derive a group for native epics from project "${repo}" — epics live at the group level`);
+    }
+    return segments.slice(0, -1).join('/');
+  }
+
+  function isEpicLabel(name) {
+    return name.startsWith(epicLabelPrefix) && name !== epicLabelPrefix;
+  }
+
+  // Runs a native-epic call and translates glab's 403/404 into an
+  // actionable error pointing at label mode; any other failure passes
+  // through untouched.
+  function nativeEpicCall(run) {
+    try {
+      return run();
+    } catch (e) {
+      if (!/\b40[34]\b|Forbidden|Not Found/i.test(e.message)) throw e;
+      throw new Error(
+        `native epics are unavailable for group "${epicGroup()}" on ${host} — typically no `
+        + `Premium/Ultimate licence, or the group is missing. Set workspace.tracker.epics to "label" `
+        + `(or remove it) to use ${epicLabelPrefix}* labels instead. Underlying error: ${e.message}`,
+      );
+    }
+  }
+
+  async function listEpics() {
+    if (nativeEpics) {
+      const epics = nativeEpicCall(() =>
+        apiListAll(`groups/${encodeURIComponent(epicGroup())}/epics`));
+      return epics.map((e) => ({ name: e.title, id: e.iid, native: true, url: e.web_url }));
+    }
+    const labels = await apiListAll(`projects/${encodeURIComponent(repo)}/labels`);
+    return labels
+      .map((l) => l.name)
+      .filter(isEpicLabel)
+      .map((name) => ({ name: name.slice(epicLabelPrefix.length), native: false }));
+  }
+
+  async function getEpic(name) {
+    return (await listEpics()).find((e) => e.name === name) ?? null;
+  }
+
+  async function requireEpic(name) {
+    const epic = await getEpic(name);
+    if (!epic) {
+      throw new Error(`Unknown epic "${name}" — create it with createEpic() first (assignment never mints epics).`);
+    }
+    return epic;
+  }
+
+  async function createEpic({ name, description = '' } = {}) {
+    if (!name) throw new Error('createEpic: name is required');
+    const existing = await getEpic(name);
+    if (existing) return existing;
+    if (nativeEpics) {
+      const args = ['api', `groups/${encodeURIComponent(epicGroup())}/epics`, '-X', 'POST', '-f', `title=${name}`];
+      if (description) args.push('-f', `description=${description}`);
+      args.push('--hostname', host);
+      const raw = JSON.parse(nativeEpicCall(() => glab(args)));
+      return { name: raw.title, id: raw.iid, native: true, url: raw.web_url };
+    }
+    const args = ['label', 'create', '--repo', repo, '--name', `${epicLabelPrefix}${name}`, '--color', `#${EPIC_LABEL_COLOR}`];
+    if (description) args.push('--description', description);
+    glab(args);
+    return { name, native: false };
+  }
+
+  // Exactly one epic per issue, both modes. Label mode computes the issue's
+  // final label set and writes it in one PUT — `labels` replaces the whole
+  // set (and counts as the update's one required parameter), so the type and
+  // priority labels ride along untouched. Native mode assigns through the
+  // epic-issue endpoints: assigning POSTs the issue's global id (GitLab
+  // unassigns its previous epic server-side), and unassigning DELETEs the
+  // association id, which only the epic's own issue list carries.
+  async function setIssueEpic(issueId, name) {
+    const num = parseIssueNumber(issueId);
+    const epic = name === null || name === undefined ? null : await requireEpic(name);
+    const raw = JSON.parse(glab(['issue', 'view', String(num), '--repo', repo, '-F', 'json']));
+
+    if (nativeEpics) {
+      if (epic) {
+        if (raw.epic?.iid === epic.id || raw.epic_iid === epic.id) return; // already there
+        nativeEpicCall(() => glab([
+          'api', `groups/${encodeURIComponent(epicGroup())}/epics/${epic.id}/issues/${raw.id}`,
+          '-X', 'POST', '--hostname', host,
+        ]));
+        return;
+      }
+      const currentIid = raw.epic?.iid ?? raw.epic_iid;
+      if (!currentIid) return;
+      nativeEpicCall(() => {
+        const members = apiListAll(`groups/${encodeURIComponent(epicGroup())}/epics/${currentIid}/issues`);
+        const association = members.find((i) => i.id === raw.id);
+        if (association) {
+          glab([
+            'api', `groups/${encodeURIComponent(epicGroup())}/epics/${currentIid}/issues/${association.epic_issue_id}`,
+            '-X', 'DELETE', '--hostname', host,
+          ]);
+        }
+      });
+      return;
+    }
+
+    const current = (raw.labels || []).map((l) => (typeof l === 'string' ? l : l.name));
+    const kept = current.filter((l) => !isEpicLabel(l));
+    const next = epic === null ? kept : [...kept, `${epicLabelPrefix}${name}`];
+    const sameSet = next.length === current.length && next.every((l) => current.includes(l));
+    if (sameSet) return;
+    glab([
+      'api', `projects/${encodeURIComponent(repo)}/issues/${num}`,
+      '-X', 'PUT', '-f', `labels=${next.join(',')}`, '--hostname', host,
+    ]);
+  }
+
+  async function listEpicIssues(name, { state = 'open' } = {}) {
+    const epic = await requireEpic(name);
+    // The API spells it "opened"; closed and all pass through as-is.
+    const gitlabState = state === 'open' ? 'opened' : state;
+    if (nativeEpics) {
+      // The epic-issue list endpoint has no state filter of its own.
+      const members = nativeEpicCall(() =>
+        apiListAll(`groups/${encodeURIComponent(epicGroup())}/epics/${epic.id}/issues`));
+      return members
+        .filter((i) => state === 'all' || i.state === gitlabState)
+        .map(normalize);
+    }
+    return apiListAll(
+      `projects/${encodeURIComponent(repo)}/issues`,
+      [`labels=${encodeURIComponent(`${epicLabelPrefix}${name}`)}`, `state=${gitlabState}`],
+    ).map(normalize);
+  }
+
   return {
     listAssignedToMe,
     listUnassigned,
@@ -234,6 +395,11 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     issueUrl,
     ensureLabels,
     ensureMilestone,
+    listEpics,
+    getEpic,
+    createEpic,
+    setIssueEpic,
+    listEpicIssues,
     get identity() { return `gitlab-issues:${repo}`; },
   };
 }
