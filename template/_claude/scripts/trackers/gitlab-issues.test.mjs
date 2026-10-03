@@ -132,7 +132,8 @@ const apiPage = (path, params, page) =>
   else fail(`claim should assign: ${JSON.stringify(issue)}`);
 }
 
-// createIssue parses the issue number from the URL glab prints.
+// createIssue parses the issue number from the URL glab prints — the
+// legacy /-/issues/N form...
 {
   const spawnFn = buildSpawn({
     [`issue create --repo ${PROJECT} --title New --description b --yes --label chore`]:
@@ -144,6 +145,40 @@ const apiPage = (path, params, page) =>
   const issue = await t.createIssue({ title: 'New', body: 'b', labels: ['chore'] });
   if (issue.id === 'gl:99' && issue.labels[0] === 'chore') ok();
   else fail(`createIssue wrong: ${JSON.stringify(issue)}`);
+}
+
+// ...and the /-/work_items/N URLs GitLab now prints — same iid, so the
+// follow-up `issue view` still finds it.
+{
+  const spawnFn = buildSpawn({
+    [`issue create --repo ${PROJECT} --title New --description b --yes --label chore`]:
+      `https://gitlab.com/${PROJECT}/-/work_items/99\n`,
+    [`issue view 99 --repo ${PROJECT} -F json`]:
+      issueEntity({ iid: 99, title: 'New', description: 'b', labels: ['chore'] }),
+  });
+  const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
+  const issue = await t.createIssue({ title: 'New', body: 'b', labels: ['chore'] });
+  if (issue.id === 'gl:99' && issue.title === 'New') ok();
+  else fail(`createIssue work_items URL wrong: ${JSON.stringify(issue)}`);
+}
+
+// When neither URL shape appears the issue was still created — the error
+// must say so, warn against retrying (a retry duplicates it), and carry
+// glab's output so the issue can be found by hand.
+{
+  const spawnFn = buildSpawn({
+    [`issue create --repo ${PROJECT} --title New --description b --yes`]:
+      'something happened, but no URL\n',
+  });
+  const t = createTracker({ type: 'gitlab-issues', repo: PROJECT }, { spawnFn });
+  try {
+    await t.createIssue({ title: 'New', body: 'b' });
+    fail('createIssue should have thrown on unparseable output');
+  } catch (e) {
+    const msg = e.message;
+    if (/WAS created/.test(msg) && /duplicate/.test(msg) && /no URL/.test(msg)) ok();
+    else fail(`wrong error for unparseable output: ${msg}`);
+  }
 }
 
 // comment and closeIssue (with comment) build the right argv.
