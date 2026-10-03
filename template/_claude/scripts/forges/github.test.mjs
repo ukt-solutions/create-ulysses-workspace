@@ -132,12 +132,12 @@ console.log('# prView');
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GH_ORIGIN,
-    'pr view 42 --repo foo/bar --json number,url,state,title,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,isDraft,mergedAt':
+    'pr view 42 --repo foo/bar --json number,url,state,title,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,isDraft,mergedAt,createdAt':
       JSON.stringify({
         number: 42, url: 'https://github.com/foo/bar/pull/42', state: 'OPEN',
         title: 'PR title', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
         reviewDecision: '', headRefName: 'feature/x', baseRefName: 'main',
-        isDraft: false, mergedAt: null,
+        isDraft: false, mergedAt: null, createdAt: '2026-09-01T00:00:00Z',
       }),
   });
   const forge = createForge({ type: 'github' }, { spawnFn });
@@ -145,13 +145,15 @@ console.log('# prView');
   if (view.number === 42 && view.state === 'OPEN' && view.mergeable === 'MERGEABLE'
       && view._raw.headRefName === 'feature/x') ok();
   else fail(`prView wrong: ${JSON.stringify(view)}`);
+  if (view.createdAt === '2026-09-01T00:00:00Z') ok();
+  else fail(`prView createdAt wrong: ${view.createdAt}`);
 }
 
 // not-found surfaces as PrNotFound.
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GH_ORIGIN,
-    'pr view 999 --repo foo/bar --json number,url,state,title,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,isDraft,mergedAt':
+    'pr view 999 --repo foo/bar --json number,url,state,title,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,isDraft,mergedAt,createdAt':
       () => ({ status: 1, stdout: '', stderr: 'pull request not found' }),
   });
   const forge = createForge({ type: 'github' }, { spawnFn });
@@ -275,13 +277,39 @@ const CHECKS_URL = 'https://github.com/foo/bar/pull/42/checks';
   else fail(`prChecks pending wrong: ${JSON.stringify(checks)}`);
 }
 
-// No rows at all → 'none' (no CI configured on the PR).
+// No CI at all — the real gh 2.89 shape: no JSON on stdout, exit 1, and
+// "no checks reported on the '<branch>' branch" on stderr. That absence is
+// the answer, 'none', not an error.
+{
+  const spawnFn = buildSpawn({
+    [CHECKS_KEY]: () => ({ status: 1, stdout: '', stderr: "no checks reported on the 'feature/x' branch" }),
+  });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const checks = await forge.prChecks({ id: 'foo/bar#42' });
+  if (checks.state === 'none' && checks.failing.length === 0 && checks.url === CHECKS_URL) ok();
+  else fail(`prChecks no-checks-reported wrong: ${JSON.stringify(checks)}`);
+}
+
+// No rows at all → 'none' too (other gh versions print an empty array).
 {
   const spawnFn = buildSpawn({ [CHECKS_KEY]: '[]' });
   const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
   const checks = await forge.prChecks({ id: 'foo/bar#42' });
   if (checks.state === 'none' && checks.failing.length === 0) ok();
   else fail(`prChecks none wrong: ${JSON.stringify(checks)}`);
+}
+
+// Not-found prose maps to PrNotFound, as prMerge does — the PR is gone,
+// not check-less.
+{
+  const spawnFn = buildSpawn({
+    [CHECKS_KEY]: () => ({ status: 1, stdout: '', stderr: 'could not resolve pull request: not found' }),
+  });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  let threw = null;
+  try { await forge.prChecks({ id: 'foo/bar#42' }); } catch (e) { threw = e; }
+  if (threw instanceof PrNotFound) ok();
+  else fail(`prChecks not-found wrong: ${threw?.message ?? 'no throw'}`);
 }
 
 // A cancelled check never passed — it counts as failing, not as done.

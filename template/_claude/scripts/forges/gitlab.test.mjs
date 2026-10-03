@@ -209,7 +209,7 @@ console.log('# prView');
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GL_ORIGIN,
-    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity({ sha: HEAD_SHA }),
+    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity({ sha: HEAD_SHA, created_at: '2026-09-01T00:00:00Z' }),
   });
   const forge = createForge({ type: 'gitlab' }, { spawnFn });
   const view = await forge.prView({ id: `${PROJECT}!42` });
@@ -221,6 +221,8 @@ console.log('# prView');
   else fail(`prView headSha wrong: ${view.headSha}`);
   if (view.mergeable === 'MERGEABLE') ok();
   else fail(`prView mergeable wrong: ${view.mergeable}`);
+  if (view.createdAt === '2026-09-01T00:00:00Z') ok();
+  else fail(`prView createdAt wrong: ${view.createdAt}`);
 }
 
 // Conflicts and draft surface through the same fields; a view without a
@@ -417,9 +419,9 @@ const PIPE_URL = 'https://gitlab.com/group/sub/proj/-/pipelines/9';
 }
 
 // A failed pipeline → failure, with the failed jobs named from the
-// pipeline jobs API filtered to scope[]=failed.
+// pipeline jobs API filtered to scope[]=failed, a full page at a time.
 {
-  const jobsApi = `api projects/${encodeURIComponent(PROJECT)}/pipelines/9/jobs?scope[]=failed --hostname gitlab.com`;
+  const jobsApi = `api projects/${encodeURIComponent(PROJECT)}/pipelines/9/jobs?scope[]=failed&per_page=100 --hostname gitlab.com`;
   const spawnFn = buildSpawn({
     [MR_API]: mrWithPipeline({ id: 9, status: 'failed', web_url: PIPE_URL }),
     [jobsApi]: JSON.stringify([
@@ -436,9 +438,26 @@ const PIPE_URL = 'https://gitlab.com/group/sub/proj/-/pipelines/9';
   else fail(`prChecks failure surface wrong: ${JSON.stringify(spawnFn.calls.map((c) => c.args))}`);
 }
 
+// allow_failure jobs are allowed to fail — they did not break the
+// pipeline, so they are not what the failure names.
+{
+  const jobsApi = `api projects/${encodeURIComponent(PROJECT)}/pipelines/9/jobs?scope[]=failed&per_page=100 --hostname gitlab.com`;
+  const spawnFn = buildSpawn({
+    [MR_API]: mrWithPipeline({ id: 9, status: 'failed', web_url: PIPE_URL }),
+    [jobsApi]: JSON.stringify([
+      { name: 'rspec', web_url: `${PIPE_URL}/rspec` },
+      { name: 'audit', web_url: `${PIPE_URL}/audit`, allow_failure: true },
+    ]),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'failure' && checks.failing.length === 1 && checks.failing[0].name === 'rspec') ok();
+  else fail(`prChecks allow_failure wrong: ${JSON.stringify(checks)}`);
+}
+
 // canceled reads as failure too, on the same two-call path.
 {
-  const jobsApi = `api projects/${encodeURIComponent(PROJECT)}/pipelines/9/jobs?scope[]=failed --hostname gitlab.com`;
+  const jobsApi = `api projects/${encodeURIComponent(PROJECT)}/pipelines/9/jobs?scope[]=failed&per_page=100 --hostname gitlab.com`;
   const spawnFn = buildSpawn({
     [MR_API]: mrWithPipeline({ id: 9, status: 'canceled', web_url: PIPE_URL }),
     [jobsApi]: '[]',

@@ -15,8 +15,11 @@
 //     → { merged: true, url }
 //     strategy: 'merge' | 'squash' | 'rebase'
 //   prView({ id, repo?, json? })
-//     → { id, url, state, mergeable, mergeStateStatus, reviewDecision, title }
-//     json may name additional fields to pass through
+//     → { id, url, state, mergeable, mergeStateStatus, reviewDecision, title,
+//         createdAt }
+//     json may name additional fields to pass through. createdAt (an ISO
+//     timestamp) is when the PR opened — a caller judging whether a
+//     "no checks yet" read is a race needs it.
 //   prList({ state = 'merged', base?, head?, search?, limit = 100, repo? })
 //     → [{ id, number, title, url, headRefName, baseRefName, mergedAt, state }]
 //     `base`/`head` filter by target/source branch (e.g. the open PR for a
@@ -39,7 +42,10 @@
 //     (GitHub) or the head pipeline (GitLab). A GitLab pipeline on a
 //     `manual` job reads as pending with a `note` saying so (approving the
 //     job resumes the pipeline), and `skipped` counts as success, matching
-//     GitHub's skipping bucket.
+//     GitHub's skipping bucket. The read is conservative on both forges:
+//     GitHub weighs every check on the PR, required or not, and GitLab's
+//     `failing` excludes allow_failure jobs — allowed to fail, they do not
+//     fail the pipeline.
 //   releaseView({ tag, repo? })
 //     → { tag, url, name, publishedAt }
 //     throws ReleaseNotFound if the tag has no release

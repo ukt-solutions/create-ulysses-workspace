@@ -16,7 +16,7 @@ import {
   MergeRejected,
 } from './interface.mjs';
 
-const PR_VIEW_FIELDS = 'number,url,state,title,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,isDraft,mergedAt';
+const PR_VIEW_FIELDS = 'number,url,state,title,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,isDraft,mergedAt,createdAt';
 
 export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
   const defaultRepo = resolveRepo(config, spawnFn);
@@ -106,6 +106,7 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
       baseRefName: raw.baseRefName,
       isDraft: raw.isDraft,
       mergedAt: raw.mergedAt,
+      createdAt: raw.createdAt,
       _raw: raw,
     };
   }
@@ -143,11 +144,12 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
   // row into a `bucket`: pass, fail, pending, skipping, cancel — the
   // aggregate state derives from those, not from `state`, whose vocabulary
   // is wider and matters less). gh exits non-zero when any check fails or
-  // is pending, so the exit status carries nothing the JSON does not;
-  // output that is not JSON at all — gh printing prose on an auth or
-  // network failure — is the only real error. A cancelled check never
-  // passed and reads as failing; a skipped one is an expected matrix leg
-  // and counts as a pass.
+  // is pending, so the exit status carries nothing the JSON does not. A PR
+  // with no CI at all prints no JSON: gh 2.89 exits 1 with "no checks
+  // reported on the '<branch>' branch" on stderr — that absence is the
+  // answer, 'none', while any other prose (auth, network, not-found) is a
+  // real error. A cancelled check never passed and reads as failing; a
+  // skipped one is an expected matrix leg and counts as a pass.
   async function prChecks({ id, repo }) {
     if (!id) throw new Error('prChecks: id is required');
     const { number, repo: parsedRepo } = parsePrId(id, repoFor(repo));
@@ -156,7 +158,18 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     try {
       rows = JSON.parse(result.stdout || '');
     } catch {
-      throw new Error(`gh pr checks ${number} failed: ${(result.stderr || result.stdout || '').trim()}`);
+      const stderr = (result.stderr || result.stdout || '').trim();
+      if (/not\s+found|could\s+not\s+resolve/i.test(stderr)) {
+        throw new PrNotFound(id);
+      }
+      if (/no checks reported/i.test(stderr)) {
+        return {
+          state: 'none',
+          url: `https://github.com/${parsedRepo}/pull/${number}/checks`,
+          failing: [],
+        };
+      }
+      throw new Error(`gh pr checks ${number} failed: ${stderr}`);
     }
     if (!Array.isArray(rows)) {
       throw new Error(`gh pr checks ${number} returned unparseable output: ${result.stdout}`);

@@ -131,11 +131,13 @@ const pushNonFF = {
 
 // A forge factory that records every call and can be told to fail merges,
 // report PRs as already merged, hold pre-existing open PRs, fail PR
-// creation per repo, or answer prChecks per id (a function value answers
-// per call — a poll that flips states). The per-repo config (type, host,
+// creation per repo, answer prChecks per id (a function value answers
+// per call — a poll that flips states), or report a PR's createdAt per id
+// (what the young-'none' settle keys on). The per-repo config (type, host,
 // repo) is logged so adapter selection is observable.
 function fakeForgeFactory(log, {
   failMergeIds = [], mergedIds = [], openPrsFor = null, failCreateRepos = [], checks = {},
+  createdAtFor = {},
 } = {}) {
   let n = 0;
   const cfg = (config) => ({ type: config.type, host: config.host, repo: config.repo });
@@ -159,7 +161,7 @@ function fakeForgeFactory(log, {
     },
     async prView({ id }) {
       log.push({ op: 'prView', ...cfg(config), id });
-      return { id, state: mergedIds.includes(id) ? 'MERGED' : 'OPEN', number: Number(String(id).split('#')[1]) };
+      return { id, state: mergedIds.includes(id) ? 'MERGED' : 'OPEN', number: Number(String(id).split('#')[1]), createdAt: createdAtFor[id] ?? null };
     },
     async prChecks({ id }) {
       // Default 'none' — no CI configured — so the gate stays transparent
@@ -427,16 +429,18 @@ console.log('# parseArgs validation');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--bogus'])), 'unknown flag rejected');
   // The check-gate flags are --merge's alone, and --wait-timeout rides on --wait.
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--skip-checks'])), '--skip-checks rejected with --create');
+  await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--approved'])), '--approved rejected with --create');
   await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--wait-timeout', '10']), '--wait-timeout needs --wait');
   await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--wait', '--wait-timeout', 'soon']), 'wait-timeout needs a number');
   await rejects(() => run(['node', 'task-pr.mjs', '--checks', '--root', '/w', '--prs', 'x.json', '--wait']), '--wait rejected with --checks');
+  await rejects(() => run(['node', 'task-pr.mjs', '--checks', '--root', '/w', '--prs', 'x.json', '--approved']), '--approved rejected with --checks');
   const ok = parseArgs(['node', 's', '--create', '--root', '/w', '--branch', 'feature/x',
     '--work-item', 'gh:163', '--repo', 'app', '--repo', '.', '--body-file', 'app=/tmp/a.md', '--body-file', '.=/tmp/w.md',
     '--out', '/tmp/prs.json']);
   assertEq([ok.mode, ok.branch, ok.workItem, ok.repos, ok.out], ['create', 'feature/x', 'gh:163', ['app', '.'], '/tmp/prs.json'], 'repeated --repo accumulates');
   assertEq([...ok.bodyFiles.entries()], [['app', '/tmp/a.md'], ['.', '/tmp/w.md']], 'body files map repo to path');
-  const waiting = parseArgs(['node', 's', '--merge', '--root', '/w', '--prs', 'x.json', '--wait', '--wait-timeout', '15', '--skip-checks']);
-  assertEq([waiting.mode, waiting.wait, waiting.waitTimeout, waiting.skipChecks], ['merge', true, '15', true], 'merge flags parse');
+  const waiting = parseArgs(['node', 's', '--merge', '--root', '/w', '--prs', 'x.json', '--wait', '--wait-timeout', '15', '--skip-checks', '--approved']);
+  assertEq([waiting.mode, waiting.wait, waiting.waitTimeout, waiting.skipChecks, waiting.approved], ['merge', true, '15', true, true], 'merge flags parse');
 }
 
 console.log('# --create with a work item: push, PR, closing line (same-repo ref)');
@@ -1089,6 +1093,12 @@ console.log('# a queued GitLab MR merge (glab exits 0, MR still open) stops the 
           stderr: '',
         };
       }
+      // The gate reads every not-yet-merged entry up front, the workspace
+      // MR included — no pipeline there, so 'none' (its view reports no
+      // created_at, keeping the young-'none' settle out of the test).
+      if (key === 'api projects/acme%2Fworkspace/merge_requests/3 --hostname gitlab.com') {
+        return { status: 0, stdout: mr(3, 'acme/workspace'), stderr: '' };
+      }
       // The queued merge: glab exits 0, but the MR never landed.
       if (key === 'mr merge 1 --repo acme/app --yes --auto-merge=false --squash --remove-source-branch') {
         return { status: 0, stdout: '', stderr: '' };
@@ -1307,7 +1317,7 @@ console.log('# --merge re-run: PRs already merged count as done, and the complet
   } finally { clean(root); bares.forEach(clean); }
 }
 
-console.log('# --merge: a failing check stops the whole run, nothing after it merges');
+console.log('# --merge: a red project PR stops the run before any merge — green siblings included');
 {
   const { root, bares } = makeLauncher({});
   try {
@@ -1321,15 +1331,47 @@ console.log('# --merge: a failing check stops the whole run, nothing after it me
     await rejects(
       () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
         { gitFn, forgeFactory: fakeForgeFactory(log, {
-          checks: { 'acme/api#2': { state: 'failure', url: 'https://ci.example/2', failing: [{ name: 'test', url: 'https://ci.example/2/test' }] } },
+          checks: {
+            'acme/app#1': { state: 'success', url: 'https://ci.example/1', failing: [] },
+            'acme/api#2': { state: 'failure', url: 'https://ci.example/2', failing: [{ name: 'test', url: 'https://ci.example/2/test' }] },
+          },
         }), trackerFactory: fakeTrackerFactory(log) }),
       'a failing check stops the merge',
-      'failing: test https://ci.example/2/test',
+      'nothing merged',
     );
-    assertEq(log.filter((e) => e.op === 'prMerge').map((m) => m.repo), ['acme/app'], 'the PR before the red one merged, nothing after');
-    assertEq(log.filter((e) => e.op === 'prChecks').map((e) => e.id), ['acme/app#1', 'acme/api#2'], 'the third PR was never even checked');
+    // The pre-flight gate reads every entry up front and merges nothing:
+    // even the green PR ahead of the red one stays open.
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing at all merged');
+    assertEq(log.filter((e) => e.op === 'prChecks').map((e) => e.id),
+      ['acme/app#1', 'acme/api#2', 'acme/workspace#3'], 'every entry was checked first');
     assertEq(gitFn.calls.filter((c) => c.args.includes('pull')).length, 0, 'no pull after red CI');
     assertEq(log.filter((e) => e.op === 'closeIssue').length, 0, 'no issue close after red CI');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge: a red workspace PR stops the run with the green projects unmerged');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const prs = [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
+      { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace#3', url: 'https://github.com/acme/workspace/pull/3', isWorkspace: true },
+    ];
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
+        { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log, {
+          checks: {
+            'acme/app#1': { state: 'success', url: 'https://ci.example/1', failing: [] },
+            'acme/workspace#3': { state: 'failure', url: 'https://ci.example/3', failing: [{ name: 'docs', url: 'https://ci.example/3/docs' }] },
+          },
+        }), trackerFactory: fakeTrackerFactory(log) });
+    } catch (e) { err = e; }
+    assert(err && /nothing merged/.test(err.message), `the red workspace PR stops the run: ${err?.message}`);
+    assert(/app: success/.test(err.message) && /\.: failure/.test(err.message), `every entry's state is listed: ${err?.message}`);
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'the green project PR was not merged either');
+    assertEq(log.filter((e) => e.op === 'closeIssue').length, 0, 'nothing closed');
   } finally { clean(root); bares.forEach(clean); }
 }
 
@@ -1345,7 +1387,7 @@ console.log('# --merge: pending checks stop the run; --wait polls to green');
       () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file],
         { gitFn: gitWith(), forgeFactory: fakeForgeFactory(stopped, { checks: { 'acme/app#1': { state: 'pending', url: 'https://ci.example/1' } } }), trackerFactory: fakeTrackerFactory(stopped) }),
       'pending checks stop the merge',
-      'CI checks pending',
+      'nothing merged',
     );
     assertEq(stopped.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged while pending');
 
@@ -1374,7 +1416,7 @@ console.log('# --merge --wait gives up at --wait-timeout and stays re-runnable')
       ]), '--wait', '--wait-timeout', '0.001'],
         { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log, { checks: { 'acme/app#1': { state: 'pending', url: 'https://ci.example/1' } } }), trackerFactory: fakeTrackerFactory(log), sleepFn: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))) });
     } catch (e) { err = e; }
-    assert(err && /still pending after 0\.001 minutes/.test(err.message), `the timeout names the bound: ${err?.message}`);
+    assert(err && /still pending after 0\.001 minutes/i.test(err.message), `the timeout names the bound: ${err?.message}`);
     assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged at the timeout');
   } finally { clean(root); bares.forEach(clean); }
 }
@@ -1399,15 +1441,16 @@ console.log('# --merge --skip-checks bypasses the gate and says so in the output
 console.log('# an operator merge in the forge UI: --merge re-runs clean, closing and reporting');
 {
   // gh:202's operator path: the PRs were merged by hand in the forge UI.
-  // The re-run detects them merged — skipping both the merge and the
+  // The re-run detects them merged — skipping the operator refusal (no
+  // --approved needed: the operator already acted), the merge, and the
   // check gate; red CI on an already-merged PR must not block — and
   // finishes the pull and the close.
   const { root, bares } = makeLauncher({}, { launcherOrigin: true });
   try {
     const log = [];
     const prs = [
-      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
-      { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace#3', url: 'https://github.com/acme/workspace/pull/3', isWorkspace: true },
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false, mergeApproval: 'operator' },
+      { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace#3', url: 'https://github.com/acme/workspace/pull/3', isWorkspace: true, mergeApproval: 'operator' },
     ];
     const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
       { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log, {
@@ -1418,6 +1461,93 @@ console.log('# an operator merge in the forge UI: --merge re-runs clean, closing
     assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing re-merged');
     assertEq(log.filter((e) => e.op === 'prChecks').length, 0, 'an already-merged PR reads no checks');
     assertEq(out.closed, 'gh:163', 'the re-run completed the close');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge refuses an operator entry without --approved — one governs the whole task');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    // app is the operator repo, api only "ask" — one operator entry is
+    // enough to hold the whole task, api's PR included.
+    const prs = [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'u1', isWorkspace: false, mergeApproval: 'operator' },
+      { repo: 'api', owner: 'acme', name: 'api', number: 2, id: 'acme/api#2', url: 'u2', isWorkspace: false, mergeApproval: 'ask' },
+    ];
+    const file = prsFile(root, prs);
+    const deps = { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file], deps);
+    } catch (e) { err = e; }
+    assert(err && /mergeApproval "operator" is set for app/.test(err.message) && /--approved/.test(err.message),
+      `the refusal names the policy and the remedy: ${err?.message}`);
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged by the refusal — the ask entry included');
+    assertEq(log.filter((e) => e.op === 'prChecks').length, 0, 'approval comes first: checks were not even read');
+
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--approved'], deps);
+    assertEq(out.merged.map((m) => m.repo), ['app', 'api'], 'the approved run merges every entry');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a young PR reporting no checks is re-read before "none" is accepted');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const fresh = new Date(Date.now() - 5000).toISOString();
+    const log = [];
+    const sleeps = [];
+    let reads = 0;
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'u1', isWorkspace: false },
+    ])], {
+      gitFn: gitWith(),
+      forgeFactory: fakeForgeFactory(log, {
+        createdAtFor: { 'acme/app#1': fresh },
+        checks: { 'acme/app#1': () => (++reads === 3
+          ? { state: 'success', url: 'https://ci.example/1', failing: [] }
+          : { state: 'none', url: 'https://ci.example/1', failing: [] }) },
+      }),
+      trackerFactory: fakeTrackerFactory(log),
+      sleepFn: (ms) => { sleeps.push(ms); },
+    });
+    assertEq(out.merged.map((m) => m.repo), ['app'], 'the race resolved to green and the PR merged');
+    assertEq(sleeps, [30000, 30000], 'two settle pauses before believing a young none');
+    assertEq(log.filter((e) => e.op === 'prChecks').length, 3, 'three reads: none, none, success');
+
+    // A young 'none' that stays none through both retries is accepted —
+    // the PR genuinely has no CI.
+    const stays = [];
+    let stayReads = 0;
+    const out2 = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, [
+      { repo: 'app', owner: 'acme', name: 'app', number: 2, id: 'acme/app#2', url: 'u2', isWorkspace: false },
+    ])], {
+      gitFn: gitWith(),
+      forgeFactory: fakeForgeFactory(stays, {
+        createdAtFor: { 'acme/app#2': fresh },
+        checks: { 'acme/app#2': () => { stayReads += 1; return { state: 'none', url: 'https://ci.example/2', failing: [] }; } },
+      }),
+      trackerFactory: fakeTrackerFactory(stays),
+      sleepFn: (ms) => { stays.push(`sleep:${ms}`); },
+    });
+    assertEq(out2.merged.map((m) => m.repo), ['app'], 'a none that survives the settle is a verdict');
+    assertEq(stays.filter((s) => String(s).startsWith('sleep:')), ['sleep:30000', 'sleep:30000'], 'both settle pauses were taken');
+    assertEq(stayReads, 3, 'three reads: none, none, none');
+
+    // An old PR's 'none' is accepted at once — no pause, no re-read.
+    const old = [];
+    const out3 = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, [
+      { repo: 'app', owner: 'acme', name: 'app', number: 3, id: 'acme/app#3', url: 'u3', isWorkspace: false },
+    ])], {
+      gitFn: gitWith(),
+      forgeFactory: fakeForgeFactory(old, { createdAtFor: { 'acme/app#3': new Date(Date.now() - 10 * 60000).toISOString() } }),
+      trackerFactory: fakeTrackerFactory(old),
+      sleepFn: (ms) => { old.push(`sleep:${ms}`); },
+    });
+    assertEq(out3.merged.map((m) => m.repo), ['app'], 'an old none merges at once');
+    assertEq(old.filter((s) => String(s).startsWith('sleep:')), [], 'no settle for a PR old enough to know its own mind');
+    assertEq(old.filter((e) => e.op === 'prChecks').length, 1, 'a single read');
   } finally { clean(root); bares.forEach(clean); }
 }
 

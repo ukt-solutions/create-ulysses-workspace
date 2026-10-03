@@ -197,6 +197,7 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
       baseRefName: raw.target_branch,
       isDraft: !!raw.draft,
       mergedAt: raw.merged_at,
+      createdAt: raw.created_at,
       _raw: raw,
     };
   }
@@ -281,11 +282,13 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
   // notes), so the MR entity's head_pipeline is the source: the pipeline
   // for the MR's current head. No pipeline → 'none'. `skipped` counts as
   // success (an expected skip satisfies CI, like GitHub's skipping
-  // bucket); `failed`/`canceled` read the pipeline's failed jobs so the
-  // failure names what broke; everything still moving — running, pending,
-  // created, preparing, waiting_for_resource, scheduled — is pending, and
-  // `manual` is pending too, with a note: approving the manual job turns
-  // the pipeline running again.
+  // bucket); `failed`/`canceled` read the pipeline's failed jobs (a full
+  // page of them, per_page=100) so the failure names what broke — minus
+  // the allow_failure jobs, which are allowed to fail and so did not break
+  // it; everything still moving — running, pending, created, preparing,
+  // waiting_for_resource, scheduled — is pending, and `manual` is pending
+  // too, with a note: approving the manual job turns the pipeline running
+  // again.
   async function prChecks({ id, repo }) {
     if (!id) throw new Error('prChecks: id is required');
     const { number, repo: parsedRepo } = parseMrId(id, repoFor(repo));
@@ -310,12 +313,12 @@ export function createGitlabAdapter(config, { spawnFn = nodeSpawnSync, pollMs = 
       return { state: 'success', url, failing: [] };
     }
     if (status === 'failed' || status === 'canceled') {
-      const jobsPath = `projects/${enc}/pipelines/${pipeline.id}/jobs?scope[]=failed`;
+      const jobsPath = `projects/${enc}/pipelines/${pipeline.id}/jobs?scope[]=failed&per_page=100`;
       const jobs = parseApi(jobsPath, glabOrThrow(apiArgs(jobsPath))) ?? [];
       return {
         state: 'failure',
         url,
-        failing: jobs.map((j) => ({ name: j.name, url: j.web_url })),
+        failing: jobs.filter((j) => !j.allow_failure).map((j) => ({ name: j.name, url: j.web_url })),
       };
     }
     const checks = { state: 'pending', url, failing: [] };
