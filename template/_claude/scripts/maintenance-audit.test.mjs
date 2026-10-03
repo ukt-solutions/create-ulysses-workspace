@@ -929,6 +929,117 @@ console.log('# maintenance-audit');
   cleanup(bare);
 }
 
+// 20. gh:205 — leftover Claude Code agent worktrees: every worktree-agent-*
+//     worktree under .claude/worktrees/agent-* (workspace repo and repos/*
+//     alike) is one info finding plus one summary.agentWorktrees entry
+//     carrying the removal-decision facts; task worktrees beside them are
+//     never listed; leftovers are ambient, so the exit code stays 0.
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.repos['app'] = { remote: 'x', branch: 'main' };
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  // A project repo with a real history, built after the fixture so the
+  // launcher repo exists and repos/app stays out of its commit.
+  const app = join(root, 'repos', 'app');
+  mkdirSync(app, { recursive: true });
+  git(app, ['init', '-b', 'main']);
+  git(app, ['config', 'user.email', 'fixture@example.com']);
+  git(app, ['config', 'user.name', 'Fixture']);
+  writeFileSync(join(app, 'README.md'), '# app\n');
+  git(app, ['add', '-A']);
+  git(app, ['commit', '-m', 'init']);
+  // clean, nothing beyond main — the immediately removable case
+  git(app, ['worktree', 'add', '-b', 'worktree-agent-clean', join(app, '.claude', 'worktrees', 'agent-clean')]);
+  // committed, then landed on main by cherry-pick: 1 commit beyond main but
+  // its patch-id is there — removable, and --merged would have said no. The
+  // empty advance commit first is what keeps the pick a distinct commit:
+  // same parent, same second, same message would reproduce the identical
+  // sha and collapse "beyond" to zero.
+  git(app, ['worktree', 'add', '-b', 'worktree-agent-picked', join(app, '.claude', 'worktrees', 'agent-picked')]);
+  writeFileSync(join(app, '.claude', 'worktrees', 'agent-picked', 'fix.txt'), 'fixed\n');
+  git(join(app, '.claude', 'worktrees', 'agent-picked'), ['add', '-A']);
+  git(join(app, '.claude', 'worktrees', 'agent-picked'), ['commit', '-m', 'fix']);
+  git(app, ['commit', '--allow-empty', '-m', 'advance']);
+  git(app, ['cherry-pick', 'worktree-agent-picked']);
+  // dirty, unlanded commit, locked — every refusal fact must show
+  git(app, ['worktree', 'add', '-b', 'worktree-agent-messy', join(app, '.claude', 'worktrees', 'agent-messy')]);
+  writeFileSync(join(app, '.claude', 'worktrees', 'agent-messy', 'wip.txt'), 'loose end\n');
+  git(join(app, '.claude', 'worktrees', 'agent-messy'), ['add', 'wip.txt']);
+  git(join(app, '.claude', 'worktrees', 'agent-messy'), ['commit', '-m', 'wip']);
+  writeFileSync(join(app, '.claude', 'worktrees', 'agent-messy', 'stray.txt'), 'untracked\n');
+  git(app, ['worktree', 'lock', '--reason', 'agent running', join(app, '.claude', 'worktrees', 'agent-messy')]);
+  // a task worktree in the agent slot's sibling path — never an agent leftover
+  git(app, ['worktree', 'add', '-b', 'feature/task', join(app, '.claude', 'worktrees', 'feature-task')]);
+  // and one in the workspace repo itself
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-ws', join(root, '.claude', 'worktrees', 'agent-ws')]);
+
+  const result = await audit(root);
+  const aws = result.summary.agentWorktrees;
+  const byBranch = Object.fromEntries(aws.map((w) => [w.branch, w]));
+  assertEq(Object.keys(byBranch).sort(),
+    ['worktree-agent-clean', 'worktree-agent-messy', 'worktree-agent-picked', 'worktree-agent-ws'],
+    'every agent worktree, workspace repo and project repo alike, is listed once');
+  assertEq(
+    byBranch['worktree-agent-clean'],
+    { repo: 'app', branch: 'worktree-agent-clean', path: 'repos/app/.claude/worktrees/agent-clean',
+      clean: true, commitsBeyond: 0, patchIdsOnDefault: true, locked: false, base: 'main' },
+    'a clean, commit-less worktree reports every fact');
+  assertEq(
+    byBranch['worktree-agent-picked'],
+    { repo: 'app', branch: 'worktree-agent-picked', path: 'repos/app/.claude/worktrees/agent-picked',
+      clean: true, commitsBeyond: 1, patchIdsOnDefault: true, locked: false, base: 'main' },
+    'a cherry-picked commit counts as beyond main yet fully landed by patch-id');
+  assertEq(
+    byBranch['worktree-agent-messy'],
+    { repo: 'app', branch: 'worktree-agent-messy', path: 'repos/app/.claude/worktrees/agent-messy',
+      clean: false, commitsBeyond: 1, patchIdsOnDefault: false, locked: true, lockReason: 'agent running', base: 'main' },
+    'a dirty, unlanded, locked worktree reports every refusal fact, lock reason included');
+  assertEq(
+    byBranch['worktree-agent-ws'],
+    { repo: '.', branch: 'worktree-agent-ws', path: '.claude/worktrees/agent-ws',
+      clean: true, commitsBeyond: 0, patchIdsOnDefault: true, locked: false, base: 'main' },
+    'a workspace-repo agent worktree is reported against repo "."');
+  const g = bySection(result, 'git');
+  assertTrue(
+    g.some((f) => f.severity === 'info' && f.file === 'repos/app/.claude/worktrees/agent-messy'
+      && f.message.includes('worktree-agent-messy') && f.message.includes('dirty')
+      && f.message.includes('1 commit(s) beyond main') && f.message.includes('patch-ids not all on it')
+      && f.message.includes('locked (agent running)')),
+    'the info finding carries the facts in prose',
+  );
+  assertTrue(
+    g.some((f) => f.severity === 'info' && f.file === '.claude/worktrees/agent-ws' && f.message.includes('no commits beyond main')),
+    'a nothing-beyond worktree says so in its finding',
+  );
+  assertTrue(
+    !g.some((f) => f.message.includes('feature/task') || f.message.includes('feature-task')),
+    'a task-prefixed worktree beside them is never listed as an agent leftover',
+  );
+  assertEq(result.summary.exitCode, 0, 'agent leftovers are info, never a failing audit');
+  cleanup(root);
+}
+
+// 20b. gh:205 — no leftovers, no noise: the summary block is an empty array
+//      and a plain git worktree outside .claude/worktrees/ (even on a
+//      worktree-agent-* branch) is not swept up by the branch filter alone.
+{
+  const root = makeWorkspace();
+  const result = await audit(root);
+  assertEq(result.summary.agentWorktrees, [], 'a workspace without agent worktrees reports an empty list');
+  assertEq(bySection(result, 'git').filter((f) => f.message.includes('agent worktree')).length, 0,
+    'no agent-worktree info findings without leftovers');
+
+  // A worktree on a worktree-agent-* branch but outside the agent slot —
+  // the path shape must exclude it.
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-elsewhere', join(root, 'elsewhere-wt')]);
+  const result2 = await audit(root);
+  assertEq(result2.summary.agentWorktrees, [], 'branch prefix alone does not list a worktree outside .claude/worktrees/');
+  cleanup(root);
+}
+
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

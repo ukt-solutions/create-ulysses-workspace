@@ -49,7 +49,9 @@ It also checks the template-modification registry (`.claude/template-modificatio
 ### 4. Git state
 The script covers the launcher itself: on its default branch, tracked tree clean. Untracked paths are info — gitignored content is not counted.
 
-The worktree-level checks are not carried by the script; perform them alongside it:
+It also lists leftover Claude Code agent worktrees (gh:205). A subagent with worktree isolation gets `.claude/worktrees/agent-{id}/` on a `worktree-agent-{id}` branch — in the workspace repo and in each `repos/*/`. Claude Code removes a clean one when the subagent finishes and sweeps the rest past `cleanupPeriodDays`, but the sweep keeps any worktree holding work, and a subagent that commits without pushing is exactly that, indefinitely. Each leftover is one info finding carrying the facts cleanup step 9 needs: clean or dirty, commits beyond the default branch, whether every commit's patch-id is already on the default branch (`git cherry` — sees rebase and cherry-pick landings that `--merged` misses), and whether it is locked (a running agent holds a lock; a killed session leaves a stale one).
+
+The remaining worktree-level checks are not carried by the script; perform them alongside it:
 - Worktrees with no recent commits? (orphaned)
 - Local branches with no remote tracking? (unpushed work)
 - Worktrees whose branch has already been merged? (cleanup candidates)
@@ -107,6 +109,11 @@ When stale candidates are found, surface them as warnings in the output format a
 - `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
 - Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
 - Unrecorded task-prefixed worktrees (no chat-record entry claims them; may be no-tracker tasks) — ask, then suggest `task-worktree.mjs --remove`
+- Leftover Claude Code agent worktrees (gh:205) — the audit script's info findings (or `summary.agentWorktrees` via `--json`) carry each one's facts. Offer removal one worktree at a time, always asking first, and only when all of these hold:
+  - clean — `clean: true`, no uncommitted or untracked files;
+  - nothing unlanded on the branch — `commitsBeyond: 0`, or `patchIdsOnDefault: true` (every commit's patch-id already on the default branch), or the branch's PR merged — judge merged-ness by the forge's merged PRs for that repo, never `git branch --merged` (a squash merge is never an ancestor and silently misses);
+  - unlocked — `locked: false`, or the lock is stale (a killed session's leftover; the user confirms no agent is running, then `git worktree unlock` first).
+  Removal is `git worktree remove <path>` then `git branch -D <branch>`, run in the owning repo (the workspace repo for `repo: "."`, `repos/{repo}/` otherwise). Never touch task worktrees: task-prefixed branches never reach the agent list, and any `worktree-agent-*` branch a chat record claims (cross-reference `chat-record.mjs --list`) is out of bounds too.
 - Chat-record task entries whose worktree is gone — suggest `chat-record.mjs --remove-task`
 - Recorded task branches already merged (per the forge's merged PRs, not `git branch --merged`) — suggest `/complete-work`
 - Braindumps that overlap significantly — suggest merging (e.g., "workspace-branching.md and persistent-work-sessions.md cover the same topic")
@@ -219,7 +226,7 @@ OK (6):
 
 ## Flow
 
-1. Run `node .claude/scripts/maintenance-audit.mjs --root .` and present its report — it carries audit sections 1–7. Add `--offline` when there is no network (section 7 is the only network user), or `--json` when step 13's health metrics want the machine-readable `summary.canonical` / `summary.alwaysLoaded` numbers.
+1. Run `node .claude/scripts/maintenance-audit.mjs --root .` and present its report — it carries audit sections 1–7. Add `--offline` when there is no network (section 7 is the only network user), or `--json` when step 13's health metrics or cleanup step 9's agent-worktree pass want the machine-readable `summary.canonical` / `summary.alwaysLoaded` / `summary.agentWorktrees` numbers.
 2. Perform the residual checks the script does not carry — the worktree-level git checks from audit section 4 (orphaned worktrees, unpushed branches, merged worktrees, prunable worktree records, the task-model checks against `chat-record.mjs --list`).
 3. Read session-log.jsonl if it exists (feeds step 13's session log stats)
 4. If cleanup mode: run `node .claude/scripts/build-workspace-context.mjs --check --root .` — exit `0` = clean (and within budget when one is set), `1` = artifact missing or stale → regenerate with `--write`, `2` = artifacts current but canonical body over budget (only possible with a budget set). The `canonical` block in the JSON drives the triage decision; `"budget": null` means the canonical budget is off. Then compare context files pairwise for overlap and scan for stale cross-references; if the post-regen `--check` reports `over-budget`, enter the canonical-budget triage flow described in cleanup step 11.
