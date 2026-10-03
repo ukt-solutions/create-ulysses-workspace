@@ -1396,11 +1396,11 @@ console.log('# --merge: pending checks stop the run; --wait polls to green');
     const sleeps = [];
     const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--wait'],
       { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log, {
-        checks: { 'acme/app#1': () => ({ state: ++reads === 3 ? 'success' : 'pending', url: 'https://ci.example/1', failing: [] }) },
+        checks: { 'acme/app#1': () => ({ state: reads++ >= 2 ? 'success' : 'pending', url: 'https://ci.example/1', failing: [] }) },
       }), trackerFactory: fakeTrackerFactory(log), sleepFn: (ms) => { sleeps.push(ms); } });
     assertEq(out.merged.map((m) => m.repo), ['app'], 'the PR merged once checks turned green');
     assertEq(sleeps, [20000, 20000], 'polling waited the interval between reads');
-    assertEq(log.filter((e) => e.op === 'prChecks').length, 3, 'three reads: two pending, one green');
+    assertEq(log.filter((e) => e.op === 'prChecks').length, 4, 'four reads: two pending, green, and the confirming sweep');
   } finally { clean(root); bares.forEach(clean); }
 }
 
@@ -1418,6 +1418,40 @@ console.log('# --merge --wait gives up at --wait-timeout and stays re-runnable')
     } catch (e) { err = e; }
     assert(err && /still pending after 0\.001 minutes/i.test(err.message), `the timeout names the bound: ${err?.message}`);
     assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged at the timeout');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --wait re-reads every entry before merging — a green that went red during the wait is caught');
+{
+  // The confirming sweep: app turns green on its second read and red on
+  // its third; api lags one poll and lands green. Without one last read of
+  // everything, app's early green would stand and both PRs would merge.
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const reads = { 'acme/app#1': 0, 'acme/api#2': 0 };
+    const plan = {
+      'acme/app#1': ['pending', 'success', 'failure'],
+      'acme/api#2': ['pending', 'pending', 'success', 'success'],
+    };
+    const sleeps = [];
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, [
+        { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://ci.example/1', isWorkspace: false },
+        { repo: 'api', owner: 'acme', name: 'api', number: 2, id: 'acme/api#2', url: 'https://ci.example/2', isWorkspace: false },
+      ]), '--wait'],
+        { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log, {
+          checks: {
+            'acme/app#1': () => { reads['acme/app#1'] += 1; return { state: plan['acme/app#1'][reads['acme/app#1'] - 1] ?? 'success', url: 'https://ci.example/1', failing: [] }; },
+            'acme/api#2': () => { reads['acme/api#2'] += 1; return { state: plan['acme/api#2'][reads['acme/api#2'] - 1] ?? 'success', url: 'https://ci.example/2', failing: [] }; },
+          },
+        }), trackerFactory: fakeTrackerFactory(log), sleepFn: (ms) => { sleeps.push(ms); } });
+    } catch (e) { err = e; }
+    assert(err && /nothing merged/.test(err.message), `the red flip stops the merge: ${err?.message}`);
+    assert(/app: failure/.test(err.message) && /api: success/.test(err.message), `both states are listed: ${err?.message}`);
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged');
+    assertEq(sleeps, [20000, 20000], 'two poll rounds before the sweep');
   } finally { clean(root); bares.forEach(clean); }
 }
 
@@ -1491,6 +1525,54 @@ console.log('# --merge refuses an operator entry without --approved — one gove
   } finally { clean(root); bares.forEach(clean); }
 }
 
+console.log('# a v0.23 PRs file — entries with no mergeApproval field — reads as ask');
+{
+  // Entries from before gh:202 carry no mergeApproval; they must keep
+  // completing without --approved, exactly as they did when written.
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const prs = [
+      { repo: 'app', mode: 'forge', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
+    ];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
+      { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 1, 'the pre-feature file merges without --approved');
+    assertEq(out.merged.map((m) => m.repo), ['app'], 'the entry is treated as ask, not operator');
+    assertEq(out.closed, 'gh:163', 'the issue closed');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# a local operator entry already contained in its default branch needs no --approved');
+{
+  // The local-mode twin of a forge-UI merge: once the branch is in the
+  // source clone's default branch — by hand or an earlier run — the entry
+  // is done, and the refusal would only block the finishing run.
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git', lone: 'none' });
+  try {
+    const wt = createTaskWorktree(root, { repo: 'lone', branch: 'feature/x' });
+    git(wt.path, ['commit', '-q', '--allow-empty', '-m', 'feat: lone']);
+    const log = [];
+    const prs = [
+      { repo: 'lone', mode: 'local', branch: 'feature/x', base: 'main', mergeApproval: 'operator' },
+      { repo: 'app', mode: 'forge', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false, mergeApproval: 'ask' },
+    ];
+    const file = prsFile(root, prs);
+    const deps = { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:173'], deps);
+    } catch (e) { err = e; }
+    assert(err && /mergeApproval "operator" is set for lone/.test(err.message), `an unmerged local operator entry still refuses: ${err?.message}`);
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged by the refusal');
+
+    git(join(root, 'repos', 'lone'), ['merge', '-q', '--ff-only', 'feature/x']);
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:173'], deps);
+    assertEq(out.merged.map((m) => m.repo), ['lone', 'app'], 'the contained entry finishes the run without --approved');
+    assertEq(out.closed, 'gh:173', 'the issue closed');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
 console.log('# a young PR reporting no checks is re-read before "none" is accepted');
 {
   const { root, bares } = makeLauncher({});
@@ -1548,6 +1630,29 @@ console.log('# a young PR reporting no checks is re-read before "none" is accept
     assertEq(out3.merged.map((m) => m.repo), ['app'], 'an old none merges at once');
     assertEq(old.filter((s) => String(s).startsWith('sleep:')), [], 'no settle for a PR old enough to know its own mind');
     assertEq(old.filter((e) => e.op === 'prChecks').length, 1, 'a single read');
+
+    // Two young 'none's settle together — one pause per round serves both,
+    // and an entry that stops reading 'none' stops being re-read.
+    const pair = [];
+    const pairReads = { 'acme/app#4': 0, 'acme/api#5': 0 };
+    const out4 = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, [
+      { repo: 'app', owner: 'acme', name: 'app', number: 4, id: 'acme/app#4', url: 'u4', isWorkspace: false },
+      { repo: 'api', owner: 'acme', name: 'api', number: 5, id: 'acme/api#5', url: 'u5', isWorkspace: false },
+    ])], {
+      gitFn: gitWith(),
+      forgeFactory: fakeForgeFactory(pair, {
+        createdAtFor: { 'acme/app#4': fresh, 'acme/api#5': fresh },
+        checks: {
+          'acme/app#4': () => { pairReads['acme/app#4'] += 1; return { state: pairReads['acme/app#4'] >= 2 ? 'success' : 'none', url: 'https://ci.example/4', failing: [] }; },
+          'acme/api#5': () => { pairReads['acme/api#5'] += 1; return { state: 'none', url: 'https://ci.example/5', failing: [] }; },
+        },
+      }),
+      trackerFactory: fakeTrackerFactory(pair),
+      sleepFn: (ms) => { pair.push(`sleep:${ms}`); },
+    });
+    assertEq(out4.merged.map((m) => m.repo), ['app', 'api'], 'both settled entries merge');
+    assertEq(pair.filter((s) => String(s).startsWith('sleep:')), ['sleep:30000', 'sleep:30000'], 'one shared pause per round, not per PR');
+    assertEq(pairReads, { 'acme/app#4': 2, 'acme/api#5': 3 }, 'the flipped entry stopped being re-read');
   } finally { clean(root); bares.forEach(clean); }
 }
 

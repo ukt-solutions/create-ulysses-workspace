@@ -58,26 +58,31 @@
 // --merge finishes every entry in the file, all-or-nothing on CI (gh:201):
 // before the FIRST merge, the checks of every forge PR not already merged
 // are read through the forge adapter (prChecks) — projects and workspace
-// alike. Any failure, or any entry still pending, stops the run with every
-// entry's state listed and nothing merged: a task's PRs describe each
-// other, so none may land ahead of a red sibling. "pending" stops it — the
-// run is re-runnable once checks finish — unless --wait was given, which
-// polls each pending entry at 20-second intervals up to --wait-timeout
-// minutes (default 30). Checks can lag PR creation, so a "none" from a PR
-// opened within the last 90 seconds is re-read twice, 30 seconds apart,
-// before it is accepted — the PR's createdAt, from the same prView that
-// detects already-merged PRs, is what tells a young PR from an old one.
-// "none" (no CI configured) and "success" proceed to the merges, in file
-// order, un-re-gated. --skip-checks bypasses the gate and is recorded as
-// checksSkipped in the output — the escape hatch for CI broken in ways the
-// PR cannot fix. Local entries skip checks: there is no forge to ask.
+// alike, all of them up front. Any failure, or any entry still pending,
+// stops the run with every entry's state listed and nothing merged: a
+// task's PRs describe each other, so none may land ahead of a red sibling.
+// Checks can lag PR creation, so a "none" from a PR opened within the last
+// 90 seconds is re-read before it is accepted — every young "none" per
+// round, one shared 30-second pause, twice at most — the PR's createdAt,
+// from the same prView that detects already-merged PRs, is what tells a
+// young PR from an old one. "pending" stops the run — it is re-runnable
+// once checks finish — unless --wait was given: each round sleeps 20
+// seconds and re-reads every still-pending entry, up to --wait-timeout
+// minutes (default 30) counted from the end of the settle, and when the
+// last pending entry goes terminal every entry is read once more so a
+// green read from early in the wait cannot stand if the PR went red after
+// it. "none" (no CI configured) and "success" proceed to the merges, in
+// file order, un-re-gated. --skip-checks bypasses the gate and is recorded
+// as checksSkipped in the output — the escape hatch for CI broken in ways
+// the PR cannot fix. Local entries skip checks: there is no forge to ask.
 //
 // Who may run those merges is mergeApproval (gh:202): any not-yet-merged
 // entry stamped "operator" — one is enough; the workspace PR may never
 // merge ahead of the project PRs it describes — refuses the run unless
 // --approved is passed, which the skill does only once the operator has
-// said merge in a later turn. A forge-UI merge needs no --approved: those
-// PRs read as already merged and drop out of the refusal.
+// said merge in a later turn. Done-by-hand merges need no --approved: a
+// PR the forge reports MERGED, and a local entry whose branch the source
+// clone's default branch already contains, both drop out of the refusal.
 //
 // Forge PRs merge squash + delete branch; local
 // branches merge as a `git merge --ff-only` in the repo's source clone —
@@ -409,6 +414,17 @@ function mergeLocalEntry(gitFn, rootDir, entry) {
   return { alreadyMerged: false };
 }
 
+// A local entry's "already merged" is git's to say: the task branch is
+// contained in the source clone's default branch — the same containment
+// mergeLocalEntry acts on. An operator entry this far along needs no
+// --approved: the merge already happened, by hand or in an earlier run,
+// which is what lets a re-run finish the task.
+function localEntryMerged(gitFn, rootDir, entry) {
+  const repoDir = repoDirFor(rootDir, entry.repo);
+  const base = entry.base || defaultBranchFor(rootDir, entry.repo, gitFn);
+  return gitCheck(gitFn, repoDir, ['merge-base', '--is-ancestor', entry.branch, base]).status === 0;
+}
+
 // Entries written before modes existed carry no `mode`; they are forge
 // PRs, the only kind --create used to emit.
 const modeOfEntry = (p) => p?.mode ?? 'forge';
@@ -460,61 +476,78 @@ function entryForge(ws, deps, p) {
   });
 }
 
-// --wait polls a pending PR at this interval, giving up after this many
-// minutes unless --wait-timeout said otherwise.
+// --wait polls the still-pending PRs at this interval, giving up after
+// this many minutes unless --wait-timeout said otherwise.
 const CHECK_POLL_MS = 20000;
 const CHECK_WAIT_DEFAULT_MIN = 30;
 
 // The settle (gh:201): GitHub's checks and GitLab's pipeline both lag PR
 // creation, so a "no checks yet" from a PR younger than this is re-read
-// before it is believed.
+// before it is believed — every young one per round, one shared pause,
+// at most two rounds.
 const YOUNG_PR_MS = 90000;
 const SETTLE_MS = 30000;
 const SETTLE_TRIES = 2;
 
-// One PR's checks, settled: a young PR's 'none' is re-read after a pause
-// (twice at most) before it is accepted — a fresh 'none' can be a race
-// rather than a verdict. A PR whose age is unknown — prView failed, or the
-// forge reports no createdAt — is taken at its word.
-async function readChecksSettled(forge, entry, deps, createdAt) {
-  let checks = await forge.prChecks({ id: entry.id });
-  if (checks.state !== 'none') return checks;
-  const born = createdAt ? Date.parse(createdAt) : NaN;
-  if (!Number.isFinite(born) || Date.now() - born >= YOUNG_PR_MS) return checks;
-  for (let i = 0; i < SETTLE_TRIES && checks.state === 'none'; i += 1) {
-    await deps.sleepFn(SETTLE_MS);
-    checks = await forge.prChecks({ id: entry.id });
-  }
-  return checks;
-}
-
 // The pre-flight CI gate (gh:201): every forge PR that is not already
 // merged is checked BEFORE the first merge, so the run is all-or-nothing —
-// a red PR can never leave its siblings merged behind it. Under --wait each
-// pending entry is polled to a terminal state under one shared deadline;
-// without it a pending entry stops the run (re-runnable once checks
-// finish). Anything not green throws with every entry's state listed.
-// Local entries never reach this — there is no forge to ask — and
+// a red PR can never leave its siblings merged behind it.
+//
+// The read runs over every entry at once, in phases. A first pass of
+// prChecks. Then the settle: entries that read 'none' while young are
+// re-read after a shared pause, twice at most — a fresh 'none' can be a
+// race rather than a verdict, and one pause serves every entry that needs
+// it; an entry of unknown age (prView failed, or the forge reports no
+// createdAt) is taken at its word. Then, under --wait, the poll: each
+// round sleeps once and re-reads every entry still pending, under a
+// deadline computed after the settle so its pauses do not eat the wait
+// budget — and when the last pending entry goes terminal, every entry is
+// read once more, because a PR read green early may have gone red while
+// the wait lasted and the merge decision needs every entry's current
+// word. Without --wait a pending entry stops the run (re-runnable once
+// checks finish). Anything not green throws with every entry's state
+// listed. Local entries never reach this — there is no forge to ask — and
 // already-merged PRs are skipped unchecked: their CI question is settled.
 async function preFlightChecks(ws, deps, prs, args, alreadyMerged, createdAtById) {
   if (args.skipChecks) return;
   const entries = prs.filter((p) => modeOfEntry(p) === 'forge' && !alreadyMerged.has(p.id));
   if (entries.length === 0) return;
-  const waitMin = args.waitTimeout ? Number(args.waitTimeout) : CHECK_WAIT_DEFAULT_MIN;
-  const deadline = Date.now() + waitMin * 60000;
+  const forges = new Map(entries.map((p) => [p.id, entryForge(ws, deps, p)]));
   const states = new Map();
   for (const p of entries) {
-    states.set(p.id, await readChecksSettled(entryForge(ws, deps, p), p, deps, createdAtById.get(p.id)));
+    states.set(p.id, await forges.get(p.id).prChecks({ id: p.id }));
   }
+  // The settle set is fixed at this first read: a PR young enough to
+  // qualify keeps both retries even as the pauses themselves age it past
+  // the window.
+  let settling = entries.filter((p) => {
+    if (states.get(p.id).state !== 'none') return false;
+    const born = Date.parse(createdAtById.get(p.id) ?? '');
+    return Number.isFinite(born) && Date.now() - born < YOUNG_PR_MS;
+  });
+  for (let round = 0; round < SETTLE_TRIES && settling.length > 0; round += 1) {
+    await deps.sleepFn(SETTLE_MS);
+    for (const p of settling) {
+      states.set(p.id, await forges.get(p.id).prChecks({ id: p.id }));
+    }
+    settling = settling.filter((p) => states.get(p.id).state === 'none');
+  }
+  const waitMin = args.waitTimeout ? Number(args.waitTimeout) : CHECK_WAIT_DEFAULT_MIN;
   if (args.wait) {
-    for (const p of entries) {
-      const forge = entryForge(ws, deps, p);
-      let checks = states.get(p.id);
-      while (checks.state === 'pending' && Date.now() < deadline) {
-        await deps.sleepFn(CHECK_POLL_MS);
-        checks = await forge.prChecks({ id: p.id });
+    const deadline = Date.now() + waitMin * 60000;
+    while (entries.some((p) => states.get(p.id).state === 'pending') && Date.now() < deadline) {
+      await deps.sleepFn(CHECK_POLL_MS);
+      for (const p of entries) {
+        if (states.get(p.id).state !== 'pending') continue;
+        states.set(p.id, await forges.get(p.id).prChecks({ id: p.id }));
       }
-      states.set(p.id, checks);
+    }
+    if (!entries.some((p) => states.get(p.id).state === 'pending')) {
+      // The wait paid off — confirm it with one read of everything: an
+      // early green cannot stand if the PR went red after it.
+      for (const p of entries) {
+        states.set(p.id, await forges.get(p.id).prChecks({ id: p.id }));
+      }
     }
   }
   const blocked = entries.filter((p) => states.get(p.id).state !== 'success' && states.get(p.id).state !== 'none');
@@ -563,14 +596,20 @@ async function mergePrs(args, deps) {
   // anywhere governs the whole task — the workspace PR may never merge
   // ahead of the project PRs it describes, so the task cannot merge
   // part-way — and the run refuses until the operator says merge in a
-  // later turn (--approved, which the skill passes only then) or merges in
-  // the forge UI (those PRs are alreadyMerged above and drop out here).
-  // Entries from before the field existed carry none and read as "ask".
+  // later turn (--approved, which the skill passes only then) or merges
+  // without this script: a forge PR merged in the UI is alreadyMerged
+  // above, and a local entry whose branch the source clone already
+  // contains is just as done (localEntryMerged — the same containment
+  // mergeLocalEntry acts on). Entries from before the field existed carry
+  // none and read as "ask".
   if (!args.approved) {
-    const waiting = prs.filter((p) => !alreadyMerged.has(p.id) && (p.mergeApproval ?? 'ask') === 'operator');
+    const waiting = prs.filter((p) => {
+      if (alreadyMerged.has(p.id) || (p.mergeApproval ?? 'ask') !== 'operator') return false;
+      return modeOfEntry(p) === 'local' ? !localEntryMerged(deps.gitFn, rootDir, p) : true;
+    });
     if (waiting.length > 0) {
       throw new Error(
-        `mergeApproval "operator" is set for ${waiting.map((p) => p.repo).join(', ')} — this task's merges wait for the operator. Re-run --merge with --approved once they have said merge, or after merging the PRs in the forge UI.`,
+        `mergeApproval "operator" is set for ${waiting.map((p) => p.repo).join(', ')} — this task's merges wait for the operator. Re-run --merge with --approved once they have said merge, or after the merges are done by hand: a PR in the forge UI, a local branch fast-forwarded into its default branch.`,
       );
     }
   }
