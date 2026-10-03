@@ -33,7 +33,9 @@
 //     matters;
 //   - the files changed in the tag range (`git diff --name-only -z
 //     --no-renames`, so paths with non-ASCII bytes, quotes, or leading
-//     spaces arrive raw rather than quoted-and-trimmed).
+//     spaces arrive raw rather than quoted-and-trimmed); with no previous
+//     tag, every file at the end ref (`git ls-tree -r -z --name-only`)
+//     is the same surface.
 // File contents are read from the worktree — except with an explicit
 // --tag-range whose end is not HEAD, where they are read from that commit
 // (git show), so the audit scans the state the range actually names.
@@ -47,10 +49,12 @@
 //   node release-leak-audit.mjs --root <launcher> --repo <repo>
 //                               [--tag-range <from>..<to>] [--allow-dirty]
 //
-// The range defaults to <last tag>..HEAD; a repo with no tag yet diffs
-// against the empty tree and logs its whole history, so the root commit
-// is part of a first release's surface too. --tag-range overrides both
-// ends and must name commits ("a...b" symmetric ranges are rejected).
+// The range defaults to <last tag>..HEAD; a repo with no tag yet takes
+// every file at the end ref and logs its whole history, so the root
+// commit is part of a first release's surface too. --tag-range overrides
+// both ends and must name commits ("a...b" symmetric ranges are
+// rejected). The audit is read-only throughout — it never writes so much
+// as a git object into the repository it is auditing.
 //
 // The worktree must be clean: contents are read from disk, so auditing a
 // dirty tree would scan changes that then ship differently. Uncommitted
@@ -91,10 +95,6 @@ function isMainModule(metaUrl) {
 
 const NPM_TIMEOUT_MS = 120_000;
 const CONTEXT_CHARS = 40;
-// The well-known empty tree. Diffing against it means "everything that
-// exists now" without naming a first commit; changedFiles materializes it
-// (hash-object -w) first, because a fresh repo may not hold the object.
-const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbc5aff';
 
 // npm on Windows is npm.cmd, which spawnSync cannot execute without a
 // shell. The args are fixed flags with no interpolated value, so the
@@ -219,9 +219,13 @@ function packFileList(npmFn, repoDir) {
 }
 
 // The release range: explicit --tag-range, else <last tag>..HEAD, else (a
-// first release, no tag yet) the empty tree..HEAD with rootMode set so
-// the commit log runs unbounded and the root commit is included. Null
-// only for a repository with no commits at all.
+// first release, no tag yet) a from-less range with rootMode set, so the
+// file list comes from ls-tree of the end ref and the commit log runs
+// unbounded — the root commit is included. Null only for a repository
+// with no commits at all. Nothing here writes to the repository: the
+// audit is read-only, so the no-tag listing is a plain ls-tree rather
+// than an empty-tree diff (which would have to materialize the empty-tree
+// object first).
 function resolveRange(gitFn, repoDir, tagRange) {
   const head = gitRun(gitFn, repoDir, ['rev-parse', '--verify', 'HEAD^{commit}']);
   if (head.status !== 0) return null;
@@ -246,22 +250,20 @@ function resolveRange(gitFn, repoDir, tagRange) {
     const last = String(describe.stdout || '').trim();
     if (last) return { from: last, to: 'HEAD', rootMode: false, readRef: null };
   }
-  return { from: EMPTY_TREE, to: 'HEAD', rootMode: true, readRef: null };
+  return { from: null, to: 'HEAD', rootMode: true, readRef: null };
 }
 
 // Raw NUL-delimited paths, no quoting and no trimming: a file named
 // " notes.md" or "quoté \"file\".js" must arrive exactly as git stores it.
+// A from-less range (no previous tag) lists the end ref itself — the same
+// set an empty-tree diff would produce, without writing anything.
 function changedFiles(gitFn, repoDir, range) {
-  let from = range.from;
-  if (range.rootMode) {
-    // A repository young enough to have no tag may not hold the empty-tree
-    // object yet; write it so the diff has a revision to name.
-    const wrote = gitRun(gitFn, repoDir, ['hash-object', '-w', '-t', 'tree', '--stdin'], { input: '' });
-    if (wrote.status === 0) from = String(wrote.stdout || '').trim();
-  }
-  const res = gitRun(gitFn, repoDir, ['diff', '--name-only', '-z', '--no-renames', from, range.to]);
+  const res = range.rootMode
+    ? gitRun(gitFn, repoDir, ['ls-tree', '-r', '-z', '--name-only', range.to])
+    : gitRun(gitFn, repoDir, ['diff', '--name-only', '-z', '--no-renames', range.from, range.to]);
   if (res.status !== 0) {
-    throw new Error(`git diff --name-only ${from}..${range.to} failed in ${repoDir}: ${String(res.stderr || '').trim()}`);
+    const what = range.rootMode ? `git ls-tree ${range.to}` : `git diff --name-only ${range.from}..${range.to}`;
+    throw new Error(`${what} failed in ${repoDir}: ${String(res.stderr || '').trim()}`);
   }
   return String(res.stdout || '').split('\0').filter((p) => p !== '');
 }

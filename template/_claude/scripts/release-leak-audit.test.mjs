@@ -317,14 +317,16 @@ console.log('# --tag-range: explicit equals default, and bad ranges fail loudly'
   } finally { clean(root); }
 }
 
-console.log('# no tags yet: the empty tree and the whole history, root commit included');
+console.log('# no tags yet: every file at HEAD and the whole history, root commit included');
 {
   const { root, sha } = makeLauncher({ repoPatterns: ['sk-live-abcdef'], tag: false });
   try {
+    const dir = join(root, 'repos', 'app');
+    const objectsBefore = git(dir, ['count-objects']).trim();
     const out = run(audit(root), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) });
-    // The diff runs against the empty tree (README.md now included; notes.md
-    // still nets out) and the log is unbounded, so the root commit's
-    // message is scanned too — that is c1 "chore: init", no leak.
+    // The surface is ls-tree of HEAD (README.md now included; notes.md was
+    // deleted so it is not at HEAD) and the log is unbounded, so the root
+    // commit's message is scanned too — that is c1 "chore: init", no leak.
     assertEq(out.matches, [
       { file: 'lib/config.js', line: 3, pattern: 'sk-live-abcdef', excerpt: 'const token = "[match:14 chars]1234567890";' },
       { file: 'local-notes.md', line: 2, pattern: 'sk-live-abcdef', excerpt: LONG_MASKED },
@@ -332,6 +334,32 @@ console.log('# no tags yet: the empty tree and the whole history, root commit in
     ], 'a first release scans everything that exists now');
     assertEq(out.scanned, 6, 'README + two leak files + three commit messages');
     assertEq(out.skippedBinary, 1, 'the binary asset still counted');
+    assertEq(git(dir, ['count-objects']).trim(), objectsBefore,
+      'a no-tag run writes nothing to the repository — the object count is unchanged');
+  } finally { clean(root); }
+}
+
+console.log('# no tags, one commit: a root-commit-only leak is still caught');
+{
+  const root = mkdtempSync(join(tmpdir(), 'leak-audit-root-'));
+  try {
+    const dir = join(root, 'repos', 'app');
+    mkdirSync(join(dir, 'lib'), { recursive: true });
+    git(dir, ['init', '-q', '-b', 'main']);
+    writeFileSync(join(dir, 'lib', 'seed-token.js'), 'export const token = "sk-live-abcdef";\n');
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-q', '-m', 'chore: seed the sk-live-abcdef token']);
+    const sha = git(dir, ['log', '-1', '--format=%h']).trim();
+    writeFileSync(join(root, 'workspace.json'), JSON.stringify({
+      workspace: { name: 'fixture' },
+      repos: { app: { branch: 'main', release: { leakPatterns: ['sk-live-abcdef'] } } },
+    }, null, 2));
+    const out = run(audit(root), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) });
+    assertEq(out.matches, [
+      { file: 'lib/seed-token.js', line: 1, pattern: 'sk-live-abcdef', excerpt: 'export const token = "[match:14 chars]";' },
+      { file: `commit ${sha}`, line: 1, pattern: 'sk-live-abcdef', excerpt: 'chore: seed the [match:14 chars] token' },
+    ], 'a single-commit repo surfaces its file and its root commit message');
+    assertEq(out.scanned, 2, 'one file + one message');
   } finally { clean(root); }
 }
 
