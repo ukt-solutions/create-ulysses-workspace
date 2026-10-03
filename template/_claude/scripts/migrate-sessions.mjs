@@ -1077,9 +1077,12 @@ function remoteQualifies(safety, repoDir, remote) {
 
 // Every branch and tag a remote holds, mapped by commit sha. Other
 // advertised refs (HEAD, a forge's refs/pull/N/*) are ephemeral and never
-// count. No refspec pattern: patterns silently drop the peeled ^{} lines,
-// which are the ones comparable with commit tips. A failed or timed-out
-// query returns null (unknown) — it proves nothing.
+// count. No refspec pattern: some git versions drop the peeled ^{} lines
+// under a pattern, and those lines are the ones comparable with commit
+// tips (drainTagSafety below does use one — it must name a single
+// session's tags — and compensates by peeling locally instead of trusting
+// the peel line). A failed or timed-out query returns null (unknown) — it
+// proves nothing.
 function remoteRefs(safety, repoDir, remote) {
   const key = `${repoDir}\0${remote}`;
   if (safety.lsCache.has(key)) return safety.lsCache.get(key);
@@ -1117,39 +1120,62 @@ function tipSafety(safety, repoDir, sha) {
 // own backup or the documented "backup, then archive" path always refuses.
 // A tip is backed by tag when a qualifying remote holds a
 // drain/{session}/* tag whose peeled commit CONTAINS the tip — the tip
-// itself (what the backup tagged) or any descendant. The peel is resolved
-// locally (cat-file/merge-base peel tag objects; the backup run left the
-// tag object in the local store), which keeps the check fetch-free. A
-// local-only tag proves nothing — the remote is asked directly — and a
-// failed or timed-out query is reported as unreachable and counts as not
-// backed (the safe direction: an unreachable remote cannot vouch for
-// anything).
+// itself (what the backup tagged) or any descendant. The query narrows to
+// the session with a refspec pattern AND every returned line is re-checked
+// against `refs/tags/drain/{session}/` after stripping a trailing `^{}` —
+// the pattern is the query, the prefix is the answer's meaning, and a tag
+// like drain/{session}-suffix/… must never satisfy the other session's
+// gate. A session name containing glob metacharacters (* ? [ ]) has no
+// honest pattern — git forbids those characters in ref names anyway, so no
+// drain tag can exist for it — and is refused up front rather than escaped
+// into meaning something else. The peel is resolved locally
+// (cat-file/merge-base peel tag objects; the backup run left the tag
+// object in the local store), which keeps the check fetch-free and never
+// dependent on the peeled ^{} line: current git returns it under a
+// pattern, older gits drop it (the reason remoteRefs above avoids
+// patterns), and the plain line answers either way once the object is
+// local. Without the object nothing can be verified and the tip counts as
+// not backed. A local-only tag proves nothing — the remote is asked
+// directly — and a failed or timed-out query is reported as a blocker and
+// counts as not backed (the safe direction: an unreachable remote cannot
+// vouch for anything).
 function drainTagSafety(safety, session, wtPath, tip) {
-  const out = { backed: false, remote: null, tag: null, unreachable: [] };
-  const pattern = `refs/tags/drain/${session}/*`;
+  const blockers = [];
+  if (/[*?[\]]/.test(session)) {
+    blockers.push(`cannot build a drain-tag pattern for session name "${session}" (it contains glob metacharacters, which git forbids in ref names — no drain tag can exist for it)`);
+    return { backed: false, remote: null, tag: null, blockers };
+  }
+  const out = { backed: false, remote: null, tag: null, blockers };
+  const prefix = `refs/tags/drain/${session}/`;
+  const pattern = `${prefix}*`;
   for (const remote of safety.remotes(wtPath)) {
     if (!remoteQualifies(safety, wtPath, remote)) continue;
     const res = safety.gitFn('git', ['-C', wtPath, 'ls-remote', '--tags', remote, pattern], netOpts(LS_REMOTE_TIMEOUT_MS));
     if (res.error || res.status !== 0) {
-      const detail = res.error ? `timed out after ${LS_REMOTE_TIMEOUT_MS / 1000}s` : String(res.stderr || '').trim();
-      out.unreachable.push({ remote, detail });
+      // "timed out" only when spawnSync actually timed out; anything else
+      // carries its own message (or git's stderr).
+      const detail = res.error
+        ? (res.error.code === 'ETIMEDOUT'
+          ? `timed out after ${LS_REMOTE_TIMEOUT_MS / 1000}s`
+          : String(res.error.message || res.error))
+        : (String(res.stderr || '').trim() || 'ls-remote failed');
+      out.blockers.push(`could not reach remote "${remote}" (${detail})`);
       continue;
     }
-    // A patterned --tags query returns the peeled ^{} line beside the plain
-    // one; either can answer, because the local peel below resolves a plain
-    // annotated-tag sha to its commit.
     for (const line of okLines(res)) {
       const [sha, ref] = line.trim().split(/\s+/);
-      if (!sha || !ref || !ref.startsWith('refs/tags/drain/')) continue;
-      const name = ref.replace(/^refs\/tags\//, '').replace(/\^\{\}$/, '');
+      // Explicit session filter: strip the peel suffix first, so both line
+      // kinds are held to the same `drain/{session}/` prefix.
+      const bare = ref && ref.endsWith('^{}') ? ref.slice(0, -3) : ref;
+      if (!sha || !ref || !bare.startsWith(prefix)) continue;
       if (sha === tip) {
-        out.backed = true; out.remote = remote; out.tag = name;
+        out.backed = true; out.remote = remote; out.tag = bare.slice('refs/tags/'.length);
         break;
       }
       const commit = `${sha}^{commit}`; // no-op for a peel line, peels a plain tag-object sha
       const known = run(safety.gitFn, wtPath, ['cat-file', '-e', commit]).status === 0;
       if (known && run(safety.gitFn, wtPath, ['merge-base', '--is-ancestor', tip, commit]).status === 0) {
-        out.backed = true; out.remote = remote; out.tag = name;
+        out.backed = true; out.remote = remote; out.tag = bare.slice('refs/tags/'.length);
         break;
       }
     }
@@ -1938,7 +1964,7 @@ function archiveSession(root, { session, allowUncommitted = false, allowUnbacked
   // still reports what rode along.
   const unbacked = [];
   const backedByTag = [];
-  const tagUnreachable = [];
+  const tagBlockers = [];
   const wtInfos = [];
   const safety = makeSafety(gitFn, rootDir);
   for (const f of found) {
@@ -1952,20 +1978,20 @@ function archiveSession(root, { session, allowUncommitted = false, allowUnbacked
     if (!(info.ahead > 0) || info.backedBy) continue;
     const tag = info.head
       ? drainTagSafety(safety, session, wtPath, info.head)
-      : { backed: false, remote: null, tag: null, unreachable: [] };
+      : { backed: false, remote: null, tag: null, blockers: [] };
     if (tag.backed) {
       backedByTag.push({ repo: info.repo, branch: info.branch, commits: info.ahead, tag: tag.tag, remote: tag.remote });
       continue;
     }
-    for (const u of tag.unreachable) {
-      tagUnreachable.push(`${repoLabel(info)}: the drain-tag check could not reach remote "${u.remote}" (${u.detail || 'ls-remote failed'}) — treated as not backed; retry when the remote answers, or decide with --allow-unbacked`);
+    for (const b of tag.blockers) {
+      tagBlockers.push(`${repoLabel(info)}: the drain-tag check did not clear — ${b} — treated as not backed; resolve it or decide with --allow-unbacked`);
     }
     unbacked.push(info);
   }
   if (unbacked.length > 0 && !allowUnbacked) {
     reasons.push(
       ...unbacked.map((wt) => unbackedMessage(gitFn, rootDir, wt)),
-      ...tagUnreachable,
+      ...tagBlockers,
       `${unbacked.length} worktree tip(s) above hold commits that exist only on this machine — this clears only when a remote holds them (a pushed branch, or --backup --remote with the operator's allow pushing backup tags there), or re-run with --allow-unbacked once the operator has seen these counts and explicitly declined the backup`,
     );
   }
@@ -2028,7 +2054,7 @@ function archiveSession(root, { session, allowUncommitted = false, allowUnbacked
     } : {}),
     warnings: [
       ...scan.outwardLinks.map((l) => `relative symlink ${relative(rootDir, join(dest, relative(folder, l)))} pointed outside the session and no longer resolves after the move — it was kept as-is`),
-      ...tagUnreachable,
+      ...tagBlockers,
     ],
   };
 }
@@ -2079,18 +2105,34 @@ function isLinkedWorktree(gitFn, rootDir) {
  * there is no sessions directory to read — pass `launcher` (CLI
  * `--launcher <root>`) to count them from the launcher anyway, or get
  * remainingSessions null with a note saying where the real list comes
- * from.
+ * from. The launcher is validated before anything is edited: it must be
+ * the launcher of the SAME repository as --root (a different workspace's
+ * launcher would happily count that workspace's sessions), and a --root
+ * that is itself the launcher needs no launcher — only the same root
+ * spelled again is accepted.
  */
 function enableTaskModel(root, { gitFn = spawnSync, launcher = null } = {}) {
   const rootDir = resolveRoot(root);
   // Validate and resolve the launcher BEFORE editing anything: a wrong
   // launcher would report a wrong count, and the switch must not land
   // only to have the run die on the flag afterwards.
+  const linked = isLinkedWorktree(gitFn, rootDir);
   let launcherDir = null;
   if (launcher) {
     launcherDir = resolveRoot(launcher);
     if (isLinkedWorktree(gitFn, launcherDir)) {
       throw new Error(`--launcher must be the workspace launcher (its own root), not a linked worktree: ${launcherDir}`);
+    }
+    const rootCommon = commonDirOf(gitFn, rootDir);
+    const launcherCommon = commonDirOf(gitFn, launcherDir);
+    if (!rootCommon || !launcherCommon) {
+      throw new Error(`could not determine the repository of ${!rootCommon ? rootDir : launcherDir} (git rev-parse --git-common-dir failed) — refusing to guess at --launcher`);
+    }
+    if (rootCommon !== launcherCommon) {
+      throw new Error(`--launcher ${launcherDir} belongs to a different repository than --root ${rootDir} — name this workspace's own launcher`);
+    }
+    if (!linked && rootDir !== launcherDir) {
+      throw new Error(`--root ${rootDir} is not a task worktree, so --launcher has nothing to add (got ${launcherDir}) — omit it, or point --root at the switch worktree`);
     }
   }
   const cfgPath = join(rootDir, 'workspace.json');
@@ -2105,7 +2147,6 @@ function enableTaskModel(root, { gitFn = spawnSync, launcher = null } = {}) {
   // file's house format.
   cfg.workspace = { ...(cfg.workspace || {}), sessionModel: 'task' };
   writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`);
-  const linked = isLinkedWorktree(gitFn, rootDir);
   if (!linked) return { sessionModel: 'task', remainingSessions: listSessionNames(rootDir) };
   if (launcherDir) return { sessionModel: 'task', remainingSessions: listSessionNames(launcherDir) };
   return {
