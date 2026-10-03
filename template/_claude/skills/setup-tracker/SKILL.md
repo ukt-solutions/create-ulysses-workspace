@@ -130,13 +130,36 @@ For (5): exit — no changes.
    glab issue list --repo {group/sub/project} --per-page 5
    ```
 
-### Step 5: Report
+### Step 5: Configure epics (optional)
+
+Epics group related issues across a release or theme. Two modes, both through the adapter:
+
+- **Label mode** — the default, works on any plan, both backends. An epic is the label `epic:{name}` carried by every issue in it. Nothing to configure unless the team already uses that prefix for something else: `epicLabelPrefix` renames it (e.g. `"E:"` — any delimiter-terminated prefix works; a trailing alphanumeric is rejected), and existing labels under the chosen prefix become epics as they are. On GitLab, `epicLabelPrefix: "epic::"` makes epics **scoped labels** — GitLab itself then enforces one epic per issue.
+- **Native mode** — GitLab only, `"epics": "native"`: real group epics with ids and URLs, living at the project's parent group. Needs Premium/Ultimate on that instance. Without it every epic call fails with a clear error pointing back at label mode — the adapter never silently falls back, so a native-configured team finds out at the first call instead of discovering epics split across two representations. GitHub has no native epic object: `"native"` on `github-issues` throws from every epic method (sub-issues may back one later).
+
+Ask: "Group work into epics? [label/skip]" — plus `native` as a third choice when the backend is gitlab-issues. Default skip. For label or native, write the key into the `workspace.tracker` block (`{"epics": "label"}` or `{"epics": "native"}`; plain label mode needs no key at all). If the user wants starter epics, create them through the adapter — idempotent, so re-running setup duplicates nothing:
+
+```bash
+node --input-type=module -e "
+  import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+  import { readFileSync } from 'node:fs';
+  const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+  const t = createTracker(ws.workspace.tracker);
+  await t.createEpic({ name: 'auth', description: 'Authentication work' });
+  console.log((await t.listEpics()).map((e) => e.name).join(', '));
+"
+```
+
+`/start-work` reads the epic list before creating a new issue and offers an epic picker once at least one epic exists; a workspace with none sees no change.
+
+### Step 6: Report
 
 ```
 Tracker configured:
   Type: {github-issues | gitlab-issues}
   Repo: {slug}
   Labels: bug, feat, chore, P1, P2, P3
+  Epics: {label mode (epic:{name} labels) | native (GitLab group epics) | off}
   Milestones: {list or "(none — add via the forge UI)"}
 
 Next: run /start-work to pick or create an issue and begin.

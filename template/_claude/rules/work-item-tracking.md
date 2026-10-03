@@ -15,9 +15,12 @@ humans and Claude read the same list in the same place.
 ## Configuration
 
 `workspace.json` → `workspace.tracker`: `{ "type": "github-issues", "repo": "owner/name" }`.
-`type` names the adapter at `.claude/scripts/trackers/{type}.mjs`; only `github-issues` ships.
-`repo` is adapter-specific — for GitHub, the slug where issues live, or `"auto"` to resolve
-from the git remote. No `workspace.tracker` means tracking is disabled, and skills fall back
+`type` names the adapter at `.claude/scripts/trackers/{type}.mjs`; the template ships
+`github-issues` and `gitlab-issues`. `repo` is adapter-specific — for GitHub, the slug where
+issues live, or `"auto"` to resolve from the git remote. Epics are configured with `epics`
+(label mode by default, `"native"` for GitLab Premium group epics) and `epicLabelPrefix`
+(default `epic:`) — an issue carries exactly one epic, and assigning an unknown epic name
+throws. No `workspace.tracker` means tracking is disabled, and skills fall back
 to a blank describe-the-work flow rather than fabricating a local mirror.
 
 ## Session linkage

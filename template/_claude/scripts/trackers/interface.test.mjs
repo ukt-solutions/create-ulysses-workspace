@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Tests for the tracker factory and AlreadyAssignedError.
 // Run: node .claude/scripts/trackers/interface.test.mjs
-import { createTracker, AlreadyAssignedError } from './interface.mjs';
+import { createTracker, AlreadyAssignedError, resolveEpicLabelPrefix } from './interface.mjs';
 
 let failed = 0, passed = 0;
 const ok = (msg) => { passed++; };
@@ -43,6 +43,42 @@ const fail = (msg) => { failed++; console.error(`  FAIL: ${msg}`); };
   const adapter = createTracker({ type: 'gitlab-issues', repo: 'group/sub/proj' }, { spawnFn: fakeSpawn });
   if (adapter.identity === 'gitlab-issues:group/sub/proj') ok();
   else fail(`unexpected identity: ${adapter.identity}`);
+}
+
+// Epic parity: every shipped adapter exposes the five epic methods — the
+// contract comment in this module is the checklist (gh:195).
+{
+  const spawnFn = () => ({ status: 0, stdout: '[]', stderr: '' });
+  for (const type of ['github-issues', 'gitlab-issues']) {
+    const adapter = createTracker({ type, repo: 'foo/bar' }, { spawnFn });
+    const missing = ['listEpics', 'getEpic', 'createEpic', 'setIssueEpic', 'listEpicIssues']
+      .filter((m) => typeof adapter[m] !== 'function');
+    if (missing.length === 0) ok();
+    else fail(`${type} is missing epic methods: ${missing.join(', ')}`);
+  }
+}
+
+// resolveEpicLabelPrefix defaults to "epic:", keeps any delimited custom
+// prefix, and rejects one ending in an alphanumeric (it would slice epic
+// names at an arbitrary character).
+{
+  if (resolveEpicLabelPrefix({}) === 'epic:'
+      && resolveEpicLabelPrefix({ epicLabelPrefix: 'E:' }) === 'E:'
+      && resolveEpicLabelPrefix({ epicLabelPrefix: 'epic::' }) === 'epic::') ok();
+  else fail('resolveEpicLabelPrefix defaults/customs wrong');
+  let threw = null;
+  try { resolveEpicLabelPrefix({ epicLabelPrefix: 'epic' }); } catch (e) { threw = e; }
+  if (threw && /must end with a delimiter/.test(threw.message)) ok();
+  else fail(`bad prefix should throw: ${threw?.message ?? 'no throw'}`);
+}
+
+// The prefix validation reaches adapter construction.
+{
+  let threw = null;
+  try { createTracker({ type: 'github-issues', repo: 'foo/bar', epicLabelPrefix: 'epic' }, { spawnFn: () => ({ status: 0, stdout: '', stderr: '' }) }); }
+  catch (e) { threw = e; }
+  if (threw && /must end with a delimiter/.test(threw.message)) ok();
+  else fail(`bad prefix should throw at construction: ${threw?.message ?? 'no throw'}`);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

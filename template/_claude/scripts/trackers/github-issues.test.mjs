@@ -14,7 +14,7 @@ function buildSpawn(responses) {
     calls.push({ cmd, args, input: options?.input });
     const key = args.join(' ');
     const resp = responses[key];
-    if (!resp) {
+    if (resp === undefined) {
       return { status: 1, stdout: '', stderr: `no mock for: ${cmd} ${key}` };
     }
     return { status: 0, stdout: resp, stderr: '' };
@@ -196,6 +196,197 @@ function buildSpawn(responses) {
   else fail(`issueRef shapes wrong: ${t.issueRef('gh:42', { fromRepo: 'foo/other' })}`);
   try { t.issueRef('not-an-id'); fail('issueRef should reject a non-gh id'); }
   catch (e) { if (/Not a GitHub issue ID/.test(e.message)) ok(); else fail(`wrong error: ${e.message}`); }
+}
+
+// ---- Epics (gh:195) ----
+
+// listEpics walks all labels via the API (--paginate + jq streams one name
+// per line across pages; `gh label list --limit N` would silently cap) and
+// keeps only epic-prefixed ones. getEpic finds by name or returns null.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'bug\nepic:auth\nepic:payments\nepic:\n',
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  const epics = await t.listEpics();
+  const auth = await t.getEpic('auth');
+  const none = await t.getEpic('nope');
+  if (JSON.stringify(epics) === JSON.stringify([{ name: 'auth', native: false }, { name: 'payments', native: false }])
+      && auth?.name === 'auth' && auth.native === false && none === null) ok();
+  else fail(`listEpics/getEpic wrong: ${JSON.stringify(epics)} / ${JSON.stringify(auth)} / ${none}`);
+}
+
+// createEpic is idempotent — an existing label is never re-created, so a
+// team's recolouring survives — and a new one carries the fixed colour and
+// optional description.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'label create epic:payments --repo foo/bar --color 5319e7 --description Q3 push': '',
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  const existing = await t.createEpic({ name: 'auth' });
+  const created = await t.createEpic({ name: 'payments', description: 'Q3 push' });
+  const creates = spawnFn.calls.filter(c => c.args[0] === 'label' && c.args[1] === 'create').length;
+  if (existing.native === false && created.name === 'payments' && created.native === false && creates === 1) ok();
+  else fail(`createEpic idempotence wrong: creates=${creates}`);
+}
+
+// setIssueEpic replaces the current epic in a single edit — removals and the
+// addition land together, so an issue never shows two epic labels.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'issue view 7 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt':
+      JSON.stringify({ number: 7, title: 't', body: '', state: 'OPEN', assignees: [], labels: [{ name: 'bug' }, { name: 'epic:old' }], milestone: null, url: 'u', createdAt: 'd', updatedAt: 'd' }),
+    'issue edit 7 --repo foo/bar --remove-label epic:old --add-label epic:auth': '',
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  await t.setIssueEpic('gh:7', 'auth');
+  const edits = spawnFn.calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'edit');
+  if (edits.length === 1
+      && edits[0].args.join(' ') === 'issue edit 7 --repo foo/bar --remove-label epic:old --add-label epic:auth') ok();
+  else fail(`setIssueEpic replace wrong: ${JSON.stringify(edits.map(c => c.args))}`);
+}
+
+// setIssueEpic(null) strips the epic label and keeps the rest; assigning the
+// epic an issue already carries, or clearing an epic-less issue, edits nothing.
+{
+  const mkIssue = (number, labels) => JSON.stringify({ number, title: 't', body: '', state: 'OPEN', assignees: [], labels: labels.map((name) => ({ name })), milestone: null, url: 'u', createdAt: 'd', updatedAt: 'd' });
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'issue view 8 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt': mkIssue(8, ['bug', 'epic:old']),
+    'issue edit 8 --repo foo/bar --remove-label epic:old': '',
+    'issue view 9 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt': mkIssue(9, ['epic:auth']),
+    'issue view 10 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt': mkIssue(10, ['bug']),
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  await t.setIssueEpic('gh:8', null);
+  await t.setIssueEpic('gh:9', 'auth');
+  await t.setIssueEpic('gh:10', null);
+  const edits = spawnFn.calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'edit');
+  if (edits.length === 1
+      && edits[0].args.join(' ') === 'issue edit 8 --repo foo/bar --remove-label epic:old') ok();
+  else fail(`setIssueEpic null/no-op wrong: ${JSON.stringify(edits.map(c => c.args))}`);
+}
+
+// Assigning an unknown epic throws before any edit — a typo must never mint
+// a label that listEpics would then report as a real epic.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'issue view 11 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt':
+      JSON.stringify({ number: 11, title: 't', body: '', state: 'OPEN', assignees: [], labels: [{ name: 'bug' }], milestone: null, url: 'u', createdAt: 'd', updatedAt: 'd' }),
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  try { await t.setIssueEpic('gh:11', 'auth-typo'); fail('should have thrown'); }
+  catch (e) {
+    const edited = spawnFn.calls.some(c => c.args[0] === 'issue' && c.args[1] === 'edit');
+    if (/Unknown epic "auth-typo"/.test(e.message) && !edited) ok();
+    else fail(`unknown-epic guard wrong (edited=${edited}): ${e.message}`);
+  }
+}
+
+// listEpicIssues is a label query over the full field set; state passes
+// through to gh unchanged.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'issue list --repo foo/bar --label epic:auth --state open --limit 1000 --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt':
+      JSON.stringify([{ number: 12, title: 't', body: '', state: 'OPEN', assignees: [], labels: [{ name: 'epic:auth' }], milestone: null, url: 'u', createdAt: 'd', updatedAt: 'd' }]),
+    'issue list --repo foo/bar --label epic:auth --state all --limit 1000 --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt':
+      JSON.stringify([]),
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  const open = await t.listEpicIssues('auth');
+  const all = await t.listEpicIssues('auth', { state: 'all' });
+  if (open.length === 1 && open[0].id === 'gh:12' && open[0].labels[0] === 'epic:auth' && all.length === 0) ok();
+  else fail(`listEpicIssues wrong: ${JSON.stringify(open)} / all=${all.length}`);
+}
+
+// GitHub has no native epic object: `epics: "native"` throws from every epic
+// method rather than silently degrading to label semantics.
+{
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar', epics: 'native' }, { spawnFn: buildSpawn({}) });
+  const attempts = [
+    () => t.listEpics(),
+    () => t.getEpic('auth'),
+    () => t.createEpic({ name: 'auth' }),
+    () => t.setIssueEpic('gh:1', 'auth'),
+    () => t.listEpicIssues('auth'),
+  ];
+  let threw = 0;
+  for (const attempt of attempts) {
+    try { await attempt(); } catch (e) { if (/does not support epics: "native"/.test(e.message)) threw++; }
+  }
+  if (threw === attempts.length) ok();
+  else fail(`native-mode guard fired ${threw}/${attempts.length} times`);
+}
+
+// epicLabelPrefix is configurable — a team whose labels already use another
+// prefix gets epics without renaming anything.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:legacy\nE:auth\n',
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar', epicLabelPrefix: 'E:' }, { spawnFn });
+  const epics = await t.listEpics();
+  if (epics.length === 1 && epics[0].name === 'auth') ok();
+  else fail(`custom epicLabelPrefix wrong: ${JSON.stringify(epics)}`);
+}
+
+// setIssueEpic with two epic labels where one is already the target drops
+// only the stale one — the target is never removed-and-re-added.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'issue view 13 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt':
+      JSON.stringify({ number: 13, title: 't', body: '', state: 'OPEN', assignees: [], labels: [{ name: 'bug' }, { name: 'epic:old' }, { name: 'epic:auth' }], milestone: null, url: 'u', createdAt: 'd', updatedAt: 'd' }),
+    'issue edit 13 --repo foo/bar --remove-label epic:old': '',
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  await t.setIssueEpic('gh:13', 'auth');
+  const edits = spawnFn.calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'edit');
+  if (edits.length === 1
+      && edits[0].args.join(' ') === 'issue edit 13 --repo foo/bar --remove-label epic:old') ok();
+  else fail(`two-epic-labels case wrong: ${JSON.stringify(edits.map(c => c.args))}`);
+}
+
+// Epic names match case-insensitively (GitHub treats label names that way):
+// getEpic finds any casing, createEpic of an existing name in any casing
+// never re-creates, and setIssueEpic writes the label's own casing — so
+// 'AUTH' on an issue already labeled epic:auth edits nothing.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'issue view 14 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt':
+      JSON.stringify({ number: 14, title: 't', body: '', state: 'OPEN', assignees: [], labels: [{ name: 'bug' }, { name: 'epic:auth' }], milestone: null, url: 'u', createdAt: 'd', updatedAt: 'd' }),
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  const found = await t.getEpic('AUTH');
+  const existing = await t.createEpic({ name: 'AUTH' });
+  await t.setIssueEpic('gh:14', 'AUTH');
+  const created = spawnFn.calls.filter(c => c.args[0] === 'label' && c.args[1] === 'create').length;
+  const edited = spawnFn.calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'edit').length;
+  if (found?.name === 'auth' && existing.name === 'auth' && created === 0 && edited === 0) ok();
+  else fail(`case-insensitive matching wrong: found=${JSON.stringify(found)}, created=${created}, edited=${edited}`);
+}
+
+// listEpicIssues validates state up front, before any gh call.
+{
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn: buildSpawn({}) });
+  try { await t.listEpicIssues('auth', { state: 'bogus' }); fail('bad state should have thrown'); }
+  catch (e) { if (/state must be "open", "closed" or "all"/.test(e.message)) ok(); else fail(`state validation wrong: ${e.message}`); }
+}
+
+// A prefix ending in an alphanumeric is rejected at construction — it would
+// slice epic names at an arbitrary character.
+{
+  let threw = null;
+  try { createTracker({ type: 'github-issues', repo: 'foo/bar', epicLabelPrefix: 'epic' }, { spawnFn: buildSpawn({}) }); }
+  catch (e) { threw = e; }
+  if (threw && /must end with a delimiter/.test(threw.message)) ok();
+  else fail(`bad prefix should throw at construction: ${threw?.message ?? 'no throw'}`);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
