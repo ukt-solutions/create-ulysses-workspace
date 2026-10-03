@@ -18,7 +18,7 @@ The `/release` skill is a per-repo operation — each repo has its own release c
 
 4. **Merge.** Push the branch, open a PR through the forge adapter, and merge (squash, delete branch) after the operator confirms.
 
-5. **Leak audit (optional).** Workspaces or repos that configure `release.leakPatterns` in `workspace.json` get a scripted scan of exactly what the release publishes — the `npm pack` file list for a publishable package, else the files changed since the last tag, plus the release's commit subjects — before the tag is pushed. Matches stop the release for a human decision; the skill never edits files to silence the audit. Workspaces that configure no patterns skip the step entirely.
+5. **Leak audit (optional).** Workspaces or repos that configure `release.leakPatterns` in `workspace.json` get a scripted scan of exactly what the release publishes — for a publishable package the `npm pack` file list (root package only) together with the files changed since the last tag, else the changed files alone, plus every commit message in the range — before the tag is pushed. Matched spans are masked in the report and unreadable files are listed rather than dropped; matches stop the release for a human decision, and the skill never edits files to silence the audit. With no patterns configured the step still runs and exits 0 having scanned nothing.
 
 6. **Tag and publish.** Tag the merge commit `v{version}` and push the tag. If the repo's publish workflow (`.github/workflows/publish.yml`) creates the release itself, the skill leaves that to the workflow, watches its run, and confirms the release exists; otherwise it creates the forge release with generated notes (still watching any publish run). A failed run is reported, not thrown.
 

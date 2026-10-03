@@ -55,16 +55,18 @@ Push the branch and open a PR through the same per-repo forge (`forgeConfigForRe
 
 **Step 5: Leak audit (optional)**
 
-Pull the merge, then — only where leak patterns are configured — audit what is about to be tagged:
+Pull the merge, then audit what is about to be tagged:
 
 ```bash
 git -C repos/{repo} pull --ff-only
 node .claude/scripts/release-leak-audit.mjs --root . --repo "{repo}"
 ```
 
-Patterns live in `workspace.json` — `repos.{repo}.release.leakPatterns` for one repo, `workspace.release.leakPatterns` for every repo — as arrays of strings: `/…/flags` is that regex, anything else a case-insensitive literal. The script scans only what this release publishes: the `npm pack --dry-run` file list when the repo's `package.json` is not `"private": true`, otherwise the files changed since the last tag (`--tag-range <from>..<to>` overrides), plus the release's commit subjects. With no patterns configured it exits 0 having scanned nothing — the step does not exist for workspaces that never opt in.
+Patterns live in `workspace.json` — `repos.{repo}.release.leakPatterns` for one repo, `workspace.release.leakPatterns` for every repo — as arrays of strings: `/…/flags` is that regex, anything else a case-insensitive literal. Mind the seam between the forms: a path-like literal whose tail parses as a flags run (`/keys/i`) reads as a regex — write such literals without the leading slash or escape them as a regex.
 
-Exit 1 lists matches as `{ file, line, pattern, excerpt }`: stop and show them; never edit files to silence the audit. Whether a match is a true leak, an over-broad pattern, or a release to redo is the operator's call — cheap before the tag is pushed, impossible after. Exit 2 means the audit itself could not run; report that too.
+The script scans what this release publishes: for a publishable package the `npm pack --dry-run --ignore-scripts` file list (the root package only — a monorepo's workspace packages are not enumerated, and build artifacts a publish workflow generates only in CI are not in npm's local list) together with the files changed since the last tag, else the changed files alone (`--tag-range <from>..<to>` overrides, reading contents from the range's end commit when it is not HEAD) — plus every commit message in the range, squash-merged PR bodies included. The worktree must be clean, since contents are read from disk (`--allow-dirty` overrides). Matched spans are masked in the excerpt, so showing a match never echoes the secret.
+
+Exit 1 lists matches as `{ file, line, pattern, excerpt }` plus a `skipped` list of files it could not read: stop and show them; never edit files to silence the audit. Exit 0 with `no leak patterns configured` is the no-patterns case — the step still runs and exits 0, so a workspace that never opts in needs no special-casing. Exit 2 means the audit itself could not run (including a dirty worktree); report that too. Whether a match is a true leak, an over-broad pattern, or a release to redo is the operator's call — cheap before the tag is pushed, impossible after.
 
 **Step 6: Tag and publish**
 
