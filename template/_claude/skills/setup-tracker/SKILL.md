@@ -134,10 +134,10 @@ For (5): exit — no changes.
 
 Epics group related issues across a release or theme. Two modes, both through the adapter:
 
-- **Label mode** — the default, works on any plan, both backends. An epic is the label `epic:{name}` carried by every issue in it. Nothing to configure unless the team already uses that prefix for something else: `epicLabelPrefix` renames it (e.g. `"E:"`), and existing labels under the chosen prefix become epics as they are.
+- **Label mode** — the default, works on any plan, both backends. An epic is the label `epic:{name}` carried by every issue in it. Nothing to configure unless the team already uses that prefix for something else: `epicLabelPrefix` renames it (e.g. `"E:"` — any delimiter-terminated prefix works; a trailing alphanumeric is rejected), and existing labels under the chosen prefix become epics as they are. On GitLab, `epicLabelPrefix: "epic::"` makes epics **scoped labels** — GitLab itself then enforces one epic per issue.
 - **Native mode** — GitLab only, `"epics": "native"`: real group epics with ids and URLs, living at the project's parent group. Needs Premium/Ultimate on that instance. Without it every epic call fails with a clear error pointing back at label mode — the adapter never silently falls back, so a native-configured team finds out at the first call instead of discovering epics split across two representations. GitHub has no native epic object: `"native"` on `github-issues` throws from every epic method (sub-issues may back one later).
 
-Ask: "Group work into epics? [label/native/skip]" — default skip. For label or native, write the key into the `workspace.tracker` block (`{"epics": "label"}` or `{"epics": "native"}`; plain label mode needs no key at all). If the user wants starter epics, create them through the adapter — idempotent, so re-running setup duplicates nothing:
+Ask: "Group work into epics? [label/skip]" — plus `native` as a third choice when the backend is gitlab-issues. Default skip. For label or native, write the key into the `workspace.tracker` block (`{"epics": "label"}` or `{"epics": "native"}`; plain label mode needs no key at all). If the user wants starter epics, create them through the adapter — idempotent, so re-running setup duplicates nothing:
 
 ```bash
 node --input-type=module -e "
@@ -150,7 +150,7 @@ node --input-type=module -e "
 "
 ```
 
-`/start-work` offers an epic picker when creating a new issue once at least one epic exists; a workspace with none sees no change.
+`/start-work` reads the epic list before creating a new issue and offers an epic picker once at least one epic exists; a workspace with none sees no change.
 
 ### Step 6: Report
 

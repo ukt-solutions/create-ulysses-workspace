@@ -335,5 +335,59 @@ function buildSpawn(responses) {
   else fail(`custom epicLabelPrefix wrong: ${JSON.stringify(epics)}`);
 }
 
+// setIssueEpic with two epic labels where one is already the target drops
+// only the stale one — the target is never removed-and-re-added.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'issue view 13 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt':
+      JSON.stringify({ number: 13, title: 't', body: '', state: 'OPEN', assignees: [], labels: [{ name: 'bug' }, { name: 'epic:old' }, { name: 'epic:auth' }], milestone: null, url: 'u', createdAt: 'd', updatedAt: 'd' }),
+    'issue edit 13 --repo foo/bar --remove-label epic:old': '',
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  await t.setIssueEpic('gh:13', 'auth');
+  const edits = spawnFn.calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'edit');
+  if (edits.length === 1
+      && edits[0].args.join(' ') === 'issue edit 13 --repo foo/bar --remove-label epic:old') ok();
+  else fail(`two-epic-labels case wrong: ${JSON.stringify(edits.map(c => c.args))}`);
+}
+
+// Epic names match case-insensitively (GitHub treats label names that way):
+// getEpic finds any casing, createEpic of an existing name in any casing
+// never re-creates, and setIssueEpic writes the label's own casing — so
+// 'AUTH' on an issue already labeled epic:auth edits nothing.
+{
+  const spawnFn = buildSpawn({
+    'api --paginate repos/foo/bar/labels --jq .[].name': 'epic:auth\n',
+    'issue view 14 --repo foo/bar --json number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt':
+      JSON.stringify({ number: 14, title: 't', body: '', state: 'OPEN', assignees: [], labels: [{ name: 'bug' }, { name: 'epic:auth' }], milestone: null, url: 'u', createdAt: 'd', updatedAt: 'd' }),
+  });
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn });
+  const found = await t.getEpic('AUTH');
+  const existing = await t.createEpic({ name: 'AUTH' });
+  await t.setIssueEpic('gh:14', 'AUTH');
+  const created = spawnFn.calls.filter(c => c.args[0] === 'label' && c.args[1] === 'create').length;
+  const edited = spawnFn.calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'edit').length;
+  if (found?.name === 'auth' && existing.name === 'auth' && created === 0 && edited === 0) ok();
+  else fail(`case-insensitive matching wrong: found=${JSON.stringify(found)}, created=${created}, edited=${edited}`);
+}
+
+// listEpicIssues validates state up front, before any gh call.
+{
+  const t = createTracker({ type: 'github-issues', repo: 'foo/bar' }, { spawnFn: buildSpawn({}) });
+  try { await t.listEpicIssues('auth', { state: 'bogus' }); fail('bad state should have thrown'); }
+  catch (e) { if (/state must be "open", "closed" or "all"/.test(e.message)) ok(); else fail(`state validation wrong: ${e.message}`); }
+}
+
+// A prefix ending in an alphanumeric is rejected at construction — it would
+// slice epic names at an arbitrary character.
+{
+  let threw = null;
+  try { createTracker({ type: 'github-issues', repo: 'foo/bar', epicLabelPrefix: 'epic' }, { spawnFn: buildSpawn({}) }); }
+  catch (e) { threw = e; }
+  if (threw && /must end with a delimiter/.test(threw.message)) ok();
+  else fail(`bad prefix should throw at construction: ${threw?.message ?? 'no throw'}`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

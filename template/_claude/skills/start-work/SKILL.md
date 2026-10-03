@@ -57,7 +57,7 @@ If `workspace.tracker` is absent, say tracking is off and skip step 1 — but st
    await tracker.claim(newIssue.id);
    ```
 
-   Then the epic picker from Blank step 6 applies here too — offered only when `tracker.listEpics()` is non-empty.
+   The epic flow from Blank step 6 applies here too — `tracker.listEpics()` read before the create (a failure there is reported and skipped, never fatal), the picker offered only when it is non-empty.
 
    Remember `workItem: {issue.id}`.
 
@@ -194,8 +194,15 @@ If no gap is found, skip silently.
 
 6. **User picked "Something new" (or fell through from step 2 with no tracker).**
    - Ask for a description, type (`bug` / `feat` / `chore`), priority (`P1` / `P2` / `P3`), optional milestone.
-   - If a tracker is configured, create the issue and self-assign, then offer the epic picker — but only when the tracker already has epics; teams that don't use them see nothing new:
+   - If a tracker is configured, read the epic list first — a tracker/epic failure must surface before anything is created, and it never blocks issue creation — then create the issue and self-assign:
      ```javascript
+     let epics = [];
+     try {
+       epics = await tracker.listEpics();
+     } catch (e) {
+       console.log(`Skipping the epic picker — could not list epics: ${e.message}`);
+     }
+
      const newIssue = await tracker.createIssue({
        title: description,
        body: `Created at /start-work by ${user}.`,
@@ -204,15 +211,15 @@ If no gap is found, skip silently.
      });
      await tracker.claim(newIssue.id);
 
-     const epics = await tracker.listEpics();
+     // Offered only when epics already exist; teams without them see
+     // nothing new. Present a numbered menu: the existing epics, "[0] No
+     // epic", and "[N] New epic…". Create only on the explicit new-epic
+     // choice (tracker.createEpic({ name })), then assign the pick:
      if (epics.length > 0) {
-       // Present a numbered menu: the existing epics, "[0] No epic", and
-       // "[N] New epic…". Create only on the explicit new-epic choice
-       // (tracker.createEpic({ name })), then assign the pick:
        await tracker.setIssueEpic(newIssue.id, chosenName /* or null for no epic */);
      }
      ```
-     `setIssueEpic` replaces any epic the issue already carries, and an unknown name throws — never invent epic names to satisfy it.
+     `setIssueEpic` replaces any epic the issue already carries, and an unknown name throws — never invent epic names to satisfy it. If it itself fails after the issue exists, report that and continue: the issue is already created and claimed, and nothing after that point is worth aborting over.
      Remember `workItem: {newIssue.id}` for the session tracker.
    - If no tracker: proceed without a `workItem:` linkage — the session is a pure blank.
 

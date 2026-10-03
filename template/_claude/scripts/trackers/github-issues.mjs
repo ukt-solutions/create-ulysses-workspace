@@ -4,7 +4,7 @@
 
 import '../../lib/require-node.mjs';
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
-import { AlreadyAssignedError } from './interface.mjs';
+import { AlreadyAssignedError, resolveEpicLabelPrefix } from './interface.mjs';
 
 const ISSUE_FIELDS = 'number,title,body,state,assignees,labels,milestone,url,createdAt,updatedAt';
 
@@ -21,7 +21,6 @@ const STANDARD_LABELS = [
 // createEpic never rewrites a label that already exists, so a team that
 // recolours theirs keeps their choice.
 const EPIC_LABEL_COLOR = '5319e7';
-const DEFAULT_EPIC_LABEL_PREFIX = 'epic:';
 
 export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
   const repo = resolveRepo(config, spawnFn);
@@ -157,9 +156,7 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
   // back a native mode one day, but until then `epics: "native"` fails
   // loudly per call rather than degrading to labels, because a team that
   // asked for native must find out, not silently get label semantics.
-  const epicLabelPrefix = typeof config?.epicLabelPrefix === 'string' && config.epicLabelPrefix
-    ? config.epicLabelPrefix
-    : DEFAULT_EPIC_LABEL_PREFIX;
+  const epicLabelPrefix = resolveEpicLabelPrefix(config);
 
   function requireLabelEpics(method) {
     if (config?.epics === 'native') {
@@ -175,7 +172,9 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     return name.startsWith(epicLabelPrefix) && name !== epicLabelPrefix;
   }
 
-  async function listEpics() {
+  async function listEpics({ state } = {}) {
+    // `state` exists for signature parity with native mode — a label has no
+    // state, so every epic label is listed.
     requireLabelEpics('listEpics');
     // `--paginate` concatenates raw JSON pages into invalid JSON; the `--jq`
     // filter runs per page and streams names one per line, so both the walk
@@ -188,8 +187,12 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
       .map((name) => ({ name: name.slice(epicLabelPrefix.length), native: false }));
   }
 
+  // GitHub treats label names case-insensitively, so epic names match the
+  // same way — and the label's own casing wins, so every later write uses
+  // the canonical form.
   async function getEpic(name) {
-    return (await listEpics()).find((e) => e.name === name) ?? null;
+    const wanted = String(name).toLowerCase();
+    return (await listEpics()).find((e) => e.name.toLowerCase() === wanted) ?? null;
   }
 
   async function requireEpic(name) {
@@ -211,32 +214,35 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     return { name, native: false };
   }
 
-  // Exactly one epic per issue: the new label replaces any current epic
-  // label, and null strips them all — a single `issue edit` carries both
-  // halves so no intermediate state is ever visible.
+  // Exactly one epic per issue: stale epic labels (anything that is not the
+  // target) drop and the target adds only when absent — one edit carries
+  // both halves, and null strips every epic label.
   async function setIssueEpic(issueId, name) {
     requireLabelEpics('setIssueEpic');
     const num = parseIssueNumber(issueId);
     let toAdd = null;
     if (name !== null && name !== undefined) {
-      await requireEpic(name);
-      toAdd = `${epicLabelPrefix}${name}`;
+      toAdd = `${epicLabelPrefix}${(await requireEpic(name)).name}`; // canonical casing
     }
     const issue = await getIssue(issueId);
     const current = issue.labels.filter(isEpicLabel);
-    if (toAdd && current.length === 1 && current[0] === toAdd) return;
-    if (!toAdd && current.length === 0) return;
+    const stale = toAdd === null ? current : current.filter((l) => l !== toAdd);
+    const needsAdd = toAdd !== null && !current.includes(toAdd);
+    if (stale.length === 0 && !needsAdd) return;
     const args = ['issue', 'edit', String(num), '--repo', repo];
-    for (const label of current) args.push('--remove-label', label);
-    if (toAdd) args.push('--add-label', toAdd);
+    for (const label of stale) args.push('--remove-label', label);
+    if (needsAdd) args.push('--add-label', toAdd);
     gh(args);
   }
 
   async function listEpicIssues(name, { state = 'open' } = {}) {
     requireLabelEpics('listEpicIssues');
-    await requireEpic(name);
+    if (!['open', 'closed', 'all'].includes(state)) {
+      throw new Error(`listEpicIssues: state must be "open", "closed" or "all" — got "${state}"`);
+    }
+    const epic = await requireEpic(name);
     const stdout = gh([
-      'issue', 'list', '--repo', repo, '--label', `${epicLabelPrefix}${name}`,
+      'issue', 'list', '--repo', repo, '--label', `${epicLabelPrefix}${epic.name}`,
       '--state', state, '--limit', '1000', '--json', ISSUE_FIELDS,
     ]);
     return JSON.parse(stdout).map(normalize);
