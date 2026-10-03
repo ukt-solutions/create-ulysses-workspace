@@ -18,7 +18,10 @@
 //            Pass it explicitly in the worktree flow, where <root> is the
 //            worktree and the launcher's baseline may not be reachable.
 //
-// The default mode prints JSON with these lists:
+// The default mode prints JSON with these lists; unless a bullet says
+// otherwise an entry is a plain path string — entries in differs, localOnly,
+// deletedLocally, and removed may instead be { file, reason } objects when
+// the registry claims the path (gh:194, marker paragraph below).
 //   new        — no installed counterpart and no baseline entry; safe to
 //                batch-apply after one confirm
 //   identical  — installed file already equals the payload
@@ -70,13 +73,17 @@
 //                entries (.claude/-relative paths or globs for files this
 //                workspace owns; the legacy workspace.json →
 //                workspace.localFiles array still counts, gh:180/gh:194).
-//                Two markers refine the per-file offer
-//                (gh:190): `{ file, referencedBy }` — a removed hook that a
-//                workspace-only settings.json entry still registers (the
-//                config-diff paths); the skill removes file and settings
-//                entry together. `{ file, userOwned: true }` — no baseline
-//                entry, so the template never shipped it: the workspace's
-//                own, offered a workspace.localFiles entry, not deletion.
+//                Markers refine the per-file offer: `{ file, referencedBy }`
+//                (gh:190) — a removed hook that a workspace-only
+//                settings.json entry still registers (the config-diff
+//                paths); the skill removes file and settings entry together.
+//                `{ file, userOwned: true }` — no baseline entry, so the
+//                template never shipped it: the workspace's own, offered a
+//                localFiles entry in the registry, not deletion.
+//                `{ file, unverifiable: true }` — the registry file doesn't
+//                parse, so its ownership claims cannot be read and no
+//                removal can be proven unowned; the skill stops and asks
+//                for the JSON to be fixed first (gh:194).
 //   staleTests — *.test.mjs files under .claude/ with no payload counterpart.
 //                The npm tarball ships no tests, so these came from a dev
 //                checkout and are never updated by /workspace-update; the
@@ -93,11 +100,20 @@
 //                the payload: the workspace already took the template's
 //                version, so the recorded reason describes nothing. Each
 //                reports { file, reason } so the skill can offer dropping
-//                the entry (gh:194).
+//                the entry; file is the .claude/-prefixed path — the
+//                registry key is that path with the prefix stripped — and a
+//                key naming a directory (or normalizing away) never reports,
+//                only regular files compare (gh:194).
 //   legacyKeys — template-modification data still sitting in workspace.json
 //                (`workspace.localFiles`, `workspace.templateModifications`)
 //                instead of .claude/template-modifications.json; the skill
 //                offers the migration (gh:194).
+//   ignoredKeys — registry keys that escape .claude/ ('../CLAUDE.md',
+//                absolute paths, drive letters): the registry covers .claude/
+//                paths only — root files (CLAUDE.md, .mcp.json,
+//                .claudeignore) are handled by their own merge paths — so
+//                these report for the operator to fix instead of sitting
+//                silently inert (gh:194).
 //
 // Entries in differs, localOnly, deletedLocally, and removed carry the
 // workspace's registered modification reason (gh:194): a path listed in
@@ -108,8 +124,11 @@
 // referencedBy/userOwned markers keep their fields alongside `reason`.
 // `modificationsError`, present only when the registry file doesn't parse,
 // names the parse error: reasons and localFiles exclusions from the file are
-// then unavailable (legacy keys still apply), and every per-file decision
-// still asks — nothing is applied silently.
+// then unavailable (legacy keys still apply) and classification FAILS
+// CLOSED — every removed entry is marked `unverifiable: true`, because the
+// file's ownership claims cannot be read, and the skill stops and asks the
+// operator to fix the JSON before any per-file decision. Nothing is applied
+// or deleted silently.
 //
 // Plus `hasBaseline`: whether a usable baseline was found, `baselineSource`
 // (which file it came from) and `baselineReconstructed`. The default
@@ -169,6 +188,11 @@ import {
   readBaselineFile,
   writeBaseline,
 } from './template-baseline.mjs';
+// The workspace's template-modification registry (gh:194): localFiles
+// exclusions, registered modification reasons, keys that escape .claude/,
+// the legacy workspace.json keys still present, and a parse error when the
+// file is broken. The module documents the shape, the path normalization,
+// and the one-release legacy fallback.
 import {
   readTemplateModifications,
   TEMPLATE_MODIFICATIONS_PATH,
@@ -337,14 +361,6 @@ function* walkInstalledFiles(absRoot) {
 }
 
 /**
- * The workspace's template-modification registry (gh:194), read through
- * template-modifications.mjs: localFiles exclusions, registered modification
- * reasons, the legacy workspace.json keys still present, and a parse error
- * when the registry file is broken. See that module for the shape and the
- * one-release legacy fallback.
- */
-
-/**
  * A classification path's registered modification reason, or undefined.
  * Registry keys are .claude/-relative, so only paths under .claude/ can be
  * registered — .mcp.json and .claudeignore live outside it and route to
@@ -362,6 +378,20 @@ function withReasons(list, modifications) {
     const reason = registeredReason(modifications, rel);
     return reason === undefined ? rel : { file: rel, reason };
   });
+}
+
+/**
+ * A registry key may name a directory or a path that is gone; only a regular
+ * file that exists can be content-compared, so the stale check skips
+ * everything else rather than reading (and crashing on) a directory
+ * (gh:194 review).
+ */
+function isRegularFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -486,6 +516,7 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
     implicitDefaults: [],
     staleModifications: [],
     legacyKeys: mods.legacyKeys,
+    ignoredKeys: mods.ignoredKeys,
     hasBaseline: baseline !== null,
     baselineSource: source,
     baselineReconstructed: baseline !== null && baseline.reconstructed === true,
@@ -593,18 +624,28 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
     return typeof entry === 'string' ? { file, reason } : { ...entry, reason };
   });
 
+  // A registry that doesn't parse leaves its ownership claims unreadable, so
+  // no removal can be proven unowned: fail closed — mark every removed entry
+  // unverifiable and let the skill stop and ask for the JSON to be fixed
+  // before any per-file decision (gh:194 review).
+  if (mods.parseError !== null) {
+    result.removed = result.removed.map((entry) => (typeof entry === 'string'
+      ? { file: entry, unverifiable: true }
+      : { ...entry, unverifiable: true }));
+  }
+
   // Stale registrations: the installed file now equals the payload's copy, so
   // the workspace already holds the template's version and the recorded
   // reason describes nothing. The skill offers to drop them. A path missing
   // on either side never reports — a registered deletion is a live decision
-  // (it explains a deletedLocally entry), not a stale one.
+  // (it explains a deletedLocally entry), not a stale one — and neither does
+  // a key naming a directory: only regular files on both sides compare.
   result.staleModifications = Object.entries(mods.modifications)
     .filter(([key]) => {
-      const rel = `.claude/${key}`;
-      const installed = join(absRoot, rel);
-      const inPayload = join(absPayload, rel);
-      return existsSync(installed) && existsSync(inPayload)
-        && hashBytes(readFileSync(installed)) === hashBytes(readFileSync(inPayload));
+      const installed = join(absRoot, `.claude/${key}`);
+      const inPayload = join(absPayload, `.claude/${key}`);
+      if (!isRegularFile(installed) || !isRegularFile(inPayload)) return false;
+      return hashBytes(readFileSync(installed)) === hashBytes(readFileSync(inPayload));
     })
     .map(([key, reason]) => ({ file: `.claude/${key}`, reason }));
 

@@ -148,7 +148,7 @@ console.log('# template-modifications');
   const root = makeRoot();
   writeWorkspaceJson(root, { name: 'demo' });
   const mods = readTemplateModifications(root);
-  assertEq(mods, { localFiles: [], modifications: {}, legacyKeys: [], parseError: null },
+  assertEq(mods, { localFiles: [], modifications: {}, ignoredKeys: [], legacyKeys: [], parseError: null },
     'absent file and absent legacy keys read as an empty registry');
   rmSync(root, { recursive: true, force: true });
 }
@@ -191,6 +191,46 @@ console.log('# template-modifications');
   assertEq(mods.localFiles, ['skills/ok/**'], 'only usable localFiles entries survive');
   assertEq(mods.modifications, { 'rules/ok.md': 'fine' }, 'only string-reasoned modifications survive');
   assertEq(mods.parseError, null, 'junk fields are skipped, not parse errors');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8. path normalization hardening (gh:194 review): Windows backslashes and
+//    leading './' collapse the way '.claude/' prefixes do, keys that
+//    normalize away ('.', '.claude/') are dropped, and keys that escape
+//    .claude/ ('../CLAUDE.md', absolute paths, drive letters) report in
+//    ignoredKeys instead of sitting silently inert — for localFiles entries
+//    and modifications keys alike, from the file and the legacy keys.
+{
+  const root = makeRoot();
+  writeWorkspaceJson(root, {
+    name: 'demo',
+    localFiles: ['../.mcp.json'],
+    templateModifications: { '.\\rules\\win.md': 'windows legacy form' },
+  });
+  writeRegistry(root, {
+    localFiles: ['.\\skills\\custom\\**', './rules/mine.md', '.claude/', '.'],
+    modifications: {
+      '.claude\\rules\\core.md': 'windows form',
+      './skills/keep/SKILL.md': 'dot-slash form',
+      '.claude/': 'normalizes away',
+      '': 'empty key',
+      '../CLAUDE.md': 'root file',
+      '/etc/hosts': 'absolute',
+      'C:/tmp/x.md': 'drive letter',
+      '..': 'parent',
+    },
+  });
+
+  const mods = readTemplateModifications(root);
+  assertEq(mods.localFiles, ['skills/custom/**', 'rules/mine.md'],
+    'backslashes and leading ./ normalize; entries normalizing away are dropped');
+  assertEq(mods.modifications, {
+    'rules/core.md': 'windows form',
+    'rules/win.md': 'windows legacy form',
+    'skills/keep/SKILL.md': 'dot-slash form',
+  }, 'modifications keys normalize from every tolerated form');
+  assertEq(mods.ignoredKeys, ['..', '../.mcp.json', '../CLAUDE.md', '/etc/hosts', 'C:/tmp/x.md'],
+    'keys escaping .claude/ report in ignoredKeys, sorted, from both fields and both sources');
   rmSync(root, { recursive: true, force: true });
 }
 

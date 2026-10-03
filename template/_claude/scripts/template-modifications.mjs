@@ -2,12 +2,21 @@
 // Reader for .claude/template-modifications.json — the workspace's registry
 // of how it deliberately diverges from the template (gh:194).
 //
-// Shape (paths relative to .claude/; a leading ".claude/" on a key or entry
-// is tolerated and stripped on read):
+// Shape (paths relative to .claude/; on read, backslashes become '/', and a
+// leading "./" or ".claude/" on a key or entry is tolerated and stripped, so
+// ".claude\rules\core.md", "./rules/core.md", and "rules/core.md" are the
+// same key):
 //   {
 //     "localFiles": ["skills/my-skill/**", "rules/my-rule.md"],
 //     "modifications": { "rules/core.md": "kept our stricter lint gate" }
 //   }
+//
+// The registry covers .claude/ paths only — root files (CLAUDE.md,
+// .mcp.json, .claudeignore) are handled by their own merge paths — so a key
+// that escapes .claude/ ('../CLAUDE.md', an absolute path) names nothing it
+// governs: it reports in `ignoredKeys` for the operator to fix instead of
+// sitting silently inert, and a key that normalizes away ('.', '.claude/')
+// is dropped.
 //
 // localFiles — files this workspace owns outright: never offered by
 //   /workspace-update, neither as an update nor as a removal. Semantics are
@@ -41,24 +50,46 @@ export const TEMPLATE_MODIFICATIONS_PATH = '.claude/template-modifications.json'
 // pre-gh:194 array; `templateModifications` is the improvised map.
 export const LEGACY_KEYS = ['localFiles', 'templateModifications'];
 
-// '.claude/rules/core.md' → 'rules/core.md'; repeated prefixes collapse.
+// Normalize one registry path — a localFiles entry or a modifications key —
+// to a .claude/-relative posix path: Windows backslashes become '/', repeated
+// leading './' segments collapse, then leading '.claude/' prefixes strip.
+// Returns '' when nothing usable remains ('.', '.claude/') and null when the
+// path escapes .claude/ ('../CLAUDE.md', absolute paths, drive letters) —
+// the caller reports those in ignoredKeys (gh:194).
 function normalizeRel(value) {
-  return value.replace(/^(\.claude\/)+/, '');
+  const posix = value
+    .replace(/\\/g, '/')
+    .replace(/^(?:\.\/)+/, '')
+    .replace(/^(?:\.claude\/)+/, '');
+  if (posix === '' || posix === '.') return '';
+  if (posix === '..' || posix.startsWith('../')
+    || posix.startsWith('/') || /^[A-Za-z]:/.test(posix)) {
+    return null;
+  }
+  return posix;
 }
 
-function normalizeLocalFiles(entries) {
+// `ignored` collects the raw, as-written keys that escape .claude/.
+function normalizeLocalFiles(entries, ignored) {
   if (!Array.isArray(entries)) return [];
-  return entries
-    .filter((e) => typeof e === 'string' && e.length > 0)
-    .map(normalizeRel);
+  const out = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'string' || entry.length === 0) continue;
+    const rel = normalizeRel(entry);
+    if (rel === null) { ignored.push(entry); continue; }
+    if (rel !== '') out.push(rel);
+  }
+  return out;
 }
 
-function normalizeModifications(map) {
+function normalizeModifications(map, ignored) {
   if (map === null || typeof map !== 'object' || Array.isArray(map)) return {};
   const out = {};
   for (const [key, reason] of Object.entries(map)) {
-    if (key.length === 0 || typeof reason !== 'string' || reason.length === 0) continue;
-    out[normalizeRel(key)] = reason;
+    if (typeof reason !== 'string' || reason.length === 0) continue;
+    const rel = normalizeRel(key);
+    if (rel === null) { ignored.push(key); continue; }
+    if (rel !== '') out[rel] = reason;
   }
   return out;
 }
@@ -69,6 +100,8 @@ function normalizeModifications(map) {
  *   localFiles    — normalized .claude/-relative paths/globs, unioned
  *   modifications — { '.claude/-relative path': reason }, the file winning
  *                   per path, keys sorted for deterministic output
+ *   ignoredKeys   — raw keys that escape .claude/ (they cover nothing the
+ *                   registry governs), sorted, from either field or source
  *   legacyKeys    — LEGACY_KEYS still present in workspace.json (the
  *                   migration is unfinished; /workspace-update offers it)
  *   parseError    — message when the file exists but doesn't parse. Its
@@ -87,8 +120,9 @@ export function readTemplateModifications(root) {
   const legacyKeys = ws !== null
     ? LEGACY_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(ws, k))
     : [];
-  const localFiles = normalizeLocalFiles(ws?.localFiles);
-  let modifications = normalizeModifications(ws?.templateModifications);
+  const ignored = [];
+  const localFiles = normalizeLocalFiles(ws?.localFiles, ignored);
+  let modifications = normalizeModifications(ws?.templateModifications, ignored);
 
   let parseError = null;
   const filePath = join(absRoot, TEMPLATE_MODIFICATIONS_PATH);
@@ -98,10 +132,10 @@ export function readTemplateModifications(root) {
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error('not a JSON object');
       }
-      for (const entry of normalizeLocalFiles(parsed.localFiles)) {
+      for (const entry of normalizeLocalFiles(parsed.localFiles, ignored)) {
         if (!localFiles.includes(entry)) localFiles.push(entry);
       }
-      modifications = { ...modifications, ...normalizeModifications(parsed.modifications) };
+      modifications = { ...modifications, ...normalizeModifications(parsed.modifications, ignored) };
     } catch (err) {
       parseError = err instanceof Error ? err.message : String(err);
     }
@@ -111,6 +145,7 @@ export function readTemplateModifications(root) {
   return {
     localFiles,
     modifications: Object.fromEntries(sorted.map((k) => [k, modifications[k]])),
+    ignoredKeys: [...new Set(ignored)].sort(),
     legacyKeys,
     parseError,
   };

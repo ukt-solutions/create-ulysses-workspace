@@ -604,6 +604,33 @@ console.log('# classify-update');
   rmSync(root, { recursive: true, force: true });
 }
 
+// 8i-b. non-file and escaped registry keys (gh:194 review): a key naming a
+//       directory — present as a directory on BOTH sides — or one that
+//       normalizes away ('.claude/') must not crash the stale check (only
+//       regular files compare), and a key escaping .claude/ passes through
+//       as ignoredKeys for the operator to fix.
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  // .claude/scripts exists as a directory on both sides
+  mkdirSync(join(root, '.claude', 'scripts'), { recursive: true });
+  mkdirSync(join(payload, '.claude', 'scripts'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'template-modifications.json'), JSON.stringify({
+    modifications: {
+      scripts: 'a directory key',
+      '.claude/': 'normalizes away',
+      '../CLAUDE.md': 'a root file the registry does not cover',
+    },
+  }, null, 2) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.staleModifications, [],
+    'directory keys and keys normalizing away never report stale — and never crash');
+  assertEq(result.ignoredKeys, ['../CLAUDE.md'],
+    'a key escaping .claude/ passes through as ignoredKeys');
+  rmSync(root, { recursive: true, force: true });
+}
+
 // 8j. registry localFiles exclude removals (gh:194), the legacy
 //     workspace.json array still works and reports legacyKeys, and a broken
 //     registry surfaces modificationsError without inventing reasons.
@@ -635,12 +662,18 @@ console.log('# classify-update');
   assertEq(result.legacyKeys, ['localFiles'], 'legacyKeys names the unmigrated workspace.json key');
 
   // a broken registry: the error surfaces, reasons/exclusions from the file
-  // are unavailable, and content decisions stay plain — never guessed at
+  // are unavailable, content decisions stay plain — never guessed at — and
+  // every removal fails closed as unverifiable: the file's ownership claims
+  // cannot be read, so nothing is offered as a plain removal
+  mkdirSync(join(root, '.claude', 'skills', 'claimed'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'skills', 'claimed', 'SKILL.md'), '# Claimed by the broken registry\n');
   writeFileSync(join(root, '.claude', 'template-modifications.json'), '{ not json\n');
   result = classifyUpdate({ root });
   assertTrue(typeof result.modificationsError === 'string' && result.modificationsError.length > 0,
     'a broken registry reports modificationsError');
   assertEq(result.differs, ['.claude/hooks/session-start.mjs'], 'a broken registry attaches no reasons');
+  assertEq(result.removed, [{ file: '.claude/skills/claimed/SKILL.md', unverifiable: true }],
+    'a file only the broken registry could claim is never offered as a plain removal');
   rmSync(root, { recursive: true, force: true });
 }
 

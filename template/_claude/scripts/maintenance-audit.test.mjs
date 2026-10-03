@@ -826,9 +826,11 @@ console.log('# maintenance-audit');
 }
 
 // 19. template-modification registry (gh:194), reported under structure:
-//     legacy workspace.json keys and stale registrations are info, a
-//     registration whose file still carries its edit reports nothing, and a
-//     registry that doesn't parse is a warning.
+//     legacy workspace.json keys, keys escaping .claude/, and stale
+//     registrations are info; a registration whose file still carries its
+//     edit reports nothing; a registration naming a directory never reports
+//     (and never crashes the staleness read); a registry that doesn't parse
+//     is a warning.
 {
   const sha = (s) => createHash('sha256').update(s).digest('hex');
   const root = makeWorkspace({}, (r) => {
@@ -836,17 +838,23 @@ console.log('# maintenance-audit');
     writeFileSync(join(r, '.claude', 'rules', 'reverted.md'), 'template v1\n');
     // a registration whose file still carries the local edit: live
     writeFileSync(join(r, '.claude', 'rules', 'live.md'), 'our local take\n');
+    // a registration naming a directory the baseline records as a file:
+    // not stale, and the staleness read must not crash on it
+    mkdirSync(join(r, '.claude', 'rules', 'dir-case.md'));
     writeFileSync(join(r, '.claude', '.template-baseline.json'), JSON.stringify({
       templateVersion: '0.22.0',
       files: {
         '.claude/rules/reverted.md': sha('template v1\n'),
         '.claude/rules/live.md': sha('template v1\n'),
+        '.claude/rules/dir-case.md': sha('template v1\n'),
       },
     }, null, 2) + '\n');
     writeFileSync(join(r, '.claude', 'template-modifications.json'), JSON.stringify({
       modifications: {
         'rules/reverted.md': 'took the template back during the last update',
         'rules/live.md': 'kept our stricter wording',
+        'rules/dir-case.md': 'names a directory, not a file',
+        '../CLAUDE.md': 'a root file the registry does not cover',
       },
     }, null, 2) + '\n');
     // legacy keys still in workspace.json, unmigrated
@@ -869,8 +877,17 @@ console.log('# maintenance-audit');
     'a registration back at baseline content is a stale info',
   );
   assertTrue(
+    st.some((f) => f.severity === 'info' && f.file === '.claude/template-modifications.json'
+      && f.message.includes('../CLAUDE.md') && f.message.includes('ignored')),
+    'a key escaping .claude/ is an ignored-key info',
+  );
+  assertTrue(
     !st.some((f) => f.message.includes('rules/live.md')),
     'a registration whose file still carries its edit reports nothing',
+  );
+  assertTrue(
+    !st.some((f) => f.message.includes('rules/dir-case.md')),
+    'a registration naming a directory reports nothing — the read cannot crash on it',
   );
   assertEq(result.summary.exitCode, 0, 'registry infos alone exit 0');
   cleanup(root);
