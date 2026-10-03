@@ -209,7 +209,7 @@ console.log('# prView');
 {
   const spawnFn = buildSpawn({
     'remote get-url origin': GL_ORIGIN,
-    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity({ sha: HEAD_SHA }),
+    [`mr view 42 --repo ${PROJECT} --output json`]: mrEntity({ sha: HEAD_SHA, created_at: '2026-09-01T00:00:00Z' }),
   });
   const forge = createForge({ type: 'gitlab' }, { spawnFn });
   const view = await forge.prView({ id: `${PROJECT}!42` });
@@ -221,6 +221,8 @@ console.log('# prView');
   else fail(`prView headSha wrong: ${view.headSha}`);
   if (view.mergeable === 'MERGEABLE') ok();
   else fail(`prView mergeable wrong: ${view.mergeable}`);
+  if (view.createdAt === '2026-09-01T00:00:00Z') ok();
+  else fail(`prView createdAt wrong: ${view.createdAt}`);
 }
 
 // Conflicts and draft surface through the same fields; a view without a
@@ -390,6 +392,136 @@ console.log('# prList');
   const prs = await forge.prList({});
   if (Array.isArray(prs) && prs.length === 0) ok();
   else fail(`prList on empty stdout should be [], got ${JSON.stringify(prs)}`);
+}
+
+console.log('# prChecks');
+
+// prChecks reads the MR's head_pipeline through `glab api` — there is no
+// `glab mr checks` (it prints help and exits 0, which would read as "no
+// checks"), and commit statuses would mix external CI with pipeline jobs.
+// Every test below therefore also asserts the glab surface used: api calls
+// against the MR entity and, on failure, the pipeline's failed jobs.
+const MR_API = `api projects/${encodeURIComponent(PROJECT)}/merge_requests/42 --hostname gitlab.com`;
+const mrWithPipeline = (pipeline) => mrEntity(pipeline ? { head_pipeline: pipeline } : {});
+const PIPE_URL = 'https://gitlab.com/group/sub/proj/-/pipelines/9';
+
+// A successful head pipeline → success, url the pipeline's.
+{
+  const spawnFn = buildSpawn({
+    [MR_API]: mrWithPipeline({ id: 9, status: 'success', web_url: PIPE_URL }),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'success' && checks.url === PIPE_URL && checks.failing.length === 0) ok();
+  else fail(`prChecks success wrong: ${JSON.stringify(checks)}`);
+  if (spawnFn.calls.length === 1 && spawnFn.calls[0].args[0] === 'api') ok();
+  else fail(`prChecks must use glab api, got: ${JSON.stringify(spawnFn.calls.map((c) => c.args))}`);
+}
+
+// A failed pipeline → failure, with the failed jobs named from the
+// pipeline jobs API filtered to scope[]=failed, a full page at a time.
+{
+  const jobsApi = `api projects/${encodeURIComponent(PROJECT)}/pipelines/9/jobs?scope[]=failed&per_page=100 --hostname gitlab.com`;
+  const spawnFn = buildSpawn({
+    [MR_API]: mrWithPipeline({ id: 9, status: 'failed', web_url: PIPE_URL }),
+    [jobsApi]: JSON.stringify([
+      { name: 'rspec', web_url: `${PIPE_URL}/rspec` },
+      { name: 'audit', web_url: `${PIPE_URL}/audit` },
+    ]),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'failure' && checks.url === PIPE_URL
+      && checks.failing.length === 2 && checks.failing[0].name === 'rspec') ok();
+  else fail(`prChecks failure wrong: ${JSON.stringify(checks)}`);
+  if (spawnFn.calls.every((c) => c.args[0] === 'api') && spawnFn.calls.length === 2) ok();
+  else fail(`prChecks failure surface wrong: ${JSON.stringify(spawnFn.calls.map((c) => c.args))}`);
+}
+
+// allow_failure jobs are allowed to fail — they did not break the
+// pipeline, so they are not what the failure names.
+{
+  const jobsApi = `api projects/${encodeURIComponent(PROJECT)}/pipelines/9/jobs?scope[]=failed&per_page=100 --hostname gitlab.com`;
+  const spawnFn = buildSpawn({
+    [MR_API]: mrWithPipeline({ id: 9, status: 'failed', web_url: PIPE_URL }),
+    [jobsApi]: JSON.stringify([
+      { name: 'rspec', web_url: `${PIPE_URL}/rspec` },
+      { name: 'audit', web_url: `${PIPE_URL}/audit`, allow_failure: true },
+    ]),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'failure' && checks.failing.length === 1 && checks.failing[0].name === 'rspec') ok();
+  else fail(`prChecks allow_failure wrong: ${JSON.stringify(checks)}`);
+}
+
+// canceled reads as failure too, on the same two-call path.
+{
+  const jobsApi = `api projects/${encodeURIComponent(PROJECT)}/pipelines/9/jobs?scope[]=failed&per_page=100 --hostname gitlab.com`;
+  const spawnFn = buildSpawn({
+    [MR_API]: mrWithPipeline({ id: 9, status: 'canceled', web_url: PIPE_URL }),
+    [jobsApi]: '[]',
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'failure' && checks.failing.length === 0) ok();
+  else fail(`prChecks canceled wrong: ${JSON.stringify(checks)}`);
+}
+
+// Every still-moving status is pending — running, and the queued forms.
+for (const status of ['running', 'created', 'pending', 'preparing', 'waiting_for_resource', 'scheduled']) {
+  const spawnFn = buildSpawn({
+    [MR_API]: mrWithPipeline({ id: 9, status, web_url: PIPE_URL }),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'pending' && !checks.note) ok();
+  else fail(`prChecks ${status} wrong: ${JSON.stringify(checks)}`);
+}
+
+// manual is pending with a note — approving the manual job resumes the
+// pipeline, so it is not done, and the reader needs to know why it waits.
+{
+  const spawnFn = buildSpawn({
+    [MR_API]: mrWithPipeline({ id: 9, status: 'manual', web_url: PIPE_URL }),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'pending' && /manual job/.test(checks.note ?? '')) ok();
+  else fail(`prChecks manual wrong: ${JSON.stringify(checks)}`);
+}
+
+// skipped counts as success — an expected skip satisfies CI, like
+// GitHub's skipping bucket.
+{
+  const spawnFn = buildSpawn({
+    [MR_API]: mrWithPipeline({ id: 9, status: 'skipped', web_url: PIPE_URL }),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'success') ok();
+  else fail(`prChecks skipped wrong: ${JSON.stringify(checks)}`);
+}
+
+// No head pipeline → 'none' (no CI on the MR), url the MR's own page.
+{
+  const spawnFn = buildSpawn({ [MR_API]: mrEntity() });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  const checks = await forge.prChecks({ id: `${PROJECT}!42` });
+  if (checks.state === 'none' && checks.url === `${MR_URL}/42`) ok();
+  else fail(`prChecks none wrong: ${JSON.stringify(checks)}`);
+}
+
+// An api failure on the MR read surfaces its stderr; a 404 is PrNotFound.
+{
+  const spawnFn = buildSpawn({
+    [MR_API]: () => ({ status: 1, stdout: '', stderr: '404 Not Found' }),
+  });
+  const forge = createForge({ type: 'gitlab', repo: PROJECT }, { spawnFn });
+  let threw = null;
+  try { await forge.prChecks({ id: `${PROJECT}!42` }); } catch (e) { threw = e; }
+  if (threw instanceof PrNotFound) ok();
+  else fail(`prChecks not-found wrong: ${threw?.message ?? 'no throw'}`);
 }
 
 console.log('# releaseView');

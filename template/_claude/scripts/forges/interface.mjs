@@ -15,8 +15,11 @@
 //     → { merged: true, url }
 //     strategy: 'merge' | 'squash' | 'rebase'
 //   prView({ id, repo?, json? })
-//     → { id, url, state, mergeable, mergeStateStatus, reviewDecision, title }
-//     json may name additional fields to pass through
+//     → { id, url, state, mergeable, mergeStateStatus, reviewDecision, title,
+//         createdAt }
+//     json may name additional fields to pass through. createdAt (an ISO
+//     timestamp) is when the PR opened — a caller judging whether a
+//     "no checks yet" read is a race needs it.
 //   prList({ state = 'merged', base?, head?, search?, limit = 100, repo? })
 //     → [{ id, number, title, url, headRefName, baseRefName, mergedAt, state }]
 //     `base`/`head` filter by target/source branch (e.g. the open PR for a
@@ -29,6 +32,20 @@
 //     older results may exist beyond it the returned array carries a
 //     non-enumerable `truncated: true` (callers that only map the list
 //     never see it).
+//   prChecks({ id, repo? })
+//     → { state: 'pending' | 'success' | 'failure' | 'none', url,
+//         failing: [{ name, url }], note? }
+//     The PR's CI picture: 'success' or 'failure' once its checks finished,
+//     'pending' while they run, 'none' when the PR has no checks at all.
+//     `failing` lists the failing check runs (name + url) when the state is
+//     'failure'; `url` points where a human looks — the PR's checks page
+//     (GitHub) or the head pipeline (GitLab). A GitLab pipeline on a
+//     `manual` job reads as pending with a `note` saying so (approving the
+//     job resumes the pipeline), and `skipped` counts as success, matching
+//     GitHub's skipping bucket. The read is conservative on both forges:
+//     GitHub weighs every check on the PR, required or not, and GitLab's
+//     `failing` excludes allow_failure jobs — allowed to fail, they do not
+//     fail the pipeline.
 //   releaseView({ tag, repo? })
 //     → { tag, url, name, publishedAt }
 //     throws ReleaseNotFound if the tag has no release

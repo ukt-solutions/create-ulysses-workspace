@@ -142,4 +142,25 @@ function mergeModeFor(root, repo, deps = {}) {
   return parseForgeRemote(String(res.stdout || '').trim(), { hosts: forgeHosts(ws) }) ? 'forge' : null;
 }
 
-export { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, perRepoForge, forgeConfigForRepo, mergeModeFor };
+/**
+ * Resolve who approves a task repo's merge (gh:202): "ask" — the default —
+ * /complete-work presents the summary and asks once before merging;
+ * "operator" — the skill stops after the PRs are created and their checks
+ * read, merging only when the operator says so in a later turn (or never:
+ * a merge done in the forge UI is detected by --merge's re-run). The
+ * setting is per repo — repos.{repo}.mergeApproval, or
+ * workspace.mergeApproval for the workspace repo — addressed exactly the
+ * way `merge` is (mergeModeFor above). An unrecognized value throws: a
+ * typo silently read as "ask" would change who merges without anyone
+ * noticing.
+ */
+function mergeApprovalFor(root, repo) {
+  const ws = readWorkspace(resolve(root));
+  const setting = repo === WORKSPACE_REPO ? 'workspace.mergeApproval' : `repos.${repo}.mergeApproval`;
+  const value = repo === WORKSPACE_REPO ? ws?.workspace?.mergeApproval : ws?.repos?.[repo]?.mergeApproval;
+  if (value === undefined || value === null) return 'ask';
+  if (value === 'ask' || value === 'operator') return value;
+  throw new Error(`unknown ${setting} "${value}" — expected "ask" or "operator"`);
+}
+
+export { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, perRepoForge, forgeConfigForRepo, mergeModeFor, mergeApprovalFor };
