@@ -5,7 +5,7 @@ description: Begin or resume a work session. Creates a self-contained work-sessi
 
 # Start Work
 
-Two lifecycles share this skill. `workspace.sessionModel` in `workspace.json` selects for new work: `"task"` routes new work to **Flow: Task** (session model v2 — no session folder, no `session.md`); absent or `"session"` keeps the existing flows below, unchanged. Resuming an existing `work-sessions/` session always uses the existing Resume flow regardless of the setting.
+Two lifecycles share this skill. `workspace.sessionModel` in `workspace.json` selects for new work: `"task"` routes new work to **Flow: Task** (session model v2 — no session folder, no `session.md`); absent or `"session"` keeps the existing flows below, unchanged. Resuming an existing `work-sessions/` session always uses the existing Resume flow regardless of the setting. CLAUDE.md no longer imports `workspace.json`: take `sessionModel`, `tracker`, and the repo names from the SessionStart hook's `Workspace config (workspace.json):` line when it is in context, else read `workspace.json`.
 
 Begin or resume a persistent work session. Each session lives in its own `work-sessions/{name}/` folder containing one workspace worktree, nested project worktrees, and a unified `session.md` tracker. Sessions can run in parallel from separate terminals.
 
@@ -19,7 +19,7 @@ Begin or resume a persistent work session. Each session lives in its own `work-s
 
 New work as a task: one tracker issue, one branch, one worktree per repo the work touches. This flow creates no `work-sessions/` folder, no `session.md`, and seeds no task list — the issue, the branch, and the chat record are the entire state. The chat stays at the workspace root — `{launcher-root}`, the absolute path on the `Workspace root:` line the SessionStart hook injects (at /start-work time you are normally already there); the worktrees are reached by path.
 
-If `workspace.tracker` is absent, say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. What that costs: without a tracker there is no `workItem` and no issue to close at completion — the task is still recorded on the chat record (with no work item, keyed by repo + branch), so `/complete-work` finds it from the launcher like any other task.
+If `workspace.tracker` is absent (the hook's `Workspace config` line reads `tracker: off`), say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. What that costs: without a tracker there is no `workItem` and no issue to close at completion — the task is still recorded on the chat record (with no work item, keyed by repo + branch), so `/complete-work` finds it from the launcher like any other task.
 
 1. **Identify or create the tracker issue and claim it.** If the invocation's arguments already name an issue — `gh:N`, `#N`, or an issue URL — normalize it to the adapter's id (`#42` and a `.../issues/42` URL both mean `gh:42`) and fetch it with `tracker.getIssue(id)`. Then check whether the issue already has a task before claiming anything — another chat may have started it (gh:188):
 

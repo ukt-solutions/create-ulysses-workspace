@@ -11,6 +11,7 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - Run `/rename` to label this chat before `/clear` — keeps the chat findable in your CLI history after the context is wiped
 
 ## Workspace Config
+Config lives in `workspace.json` — read it when a skill needs a value.
 @local-only-template-freshness.md
 
 ## Team Knowledge
@@ -51,4 +52,4 @@ Drop from the summary:
 - Exploratory reads that did not lead to a change
 - Conversational asides
 
-Files in `workspace-context/`, the session tracker (`session.md`) or chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` survive compaction — they're on disk. Re-read them on demand instead of trying to keep their contents in summary.
+Files in `workspace-context/`, the session tracker (`session.md`) or chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` survive compaction — they're on disk; re-read them on demand.

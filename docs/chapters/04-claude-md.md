@@ -31,6 +31,7 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - Shared memory lives in `shared-context/`
 
 ## Workspace Config
+Config lives in `workspace.json` — read it when a skill needs a value.
 @local-only-template-freshness.md
 
 ## Team Knowledge (always loaded)
@@ -55,7 +56,7 @@ Each section has a purpose:
 
 **Quick Reference** gives Claude (and you) the essential rules at a glance. These are the constraints that apply on every turn — where work happens, what is writable from the root, where shared memory lives.
 
-**Workspace Config** once imported `workspace.json` here; the import is gone. Most of that file exists for scripts (repo remotes, budgets, directory locations), and paying for all of it on every turn buys nothing. Instead, the SessionStart hook injects a one-line summary at the start of every chat — session model, tracker, forge, and the repo names — and skills read `workspace.json` itself when they need the details. What remains under the heading is the machine-local template-freshness note.
+**Workspace Config** once imported `workspace.json` here; the import is gone. Most of that file exists for scripts (repo remotes, budgets, directory locations), and paying for all of it on every turn buys nothing. Instead, the SessionStart hook injects a one-line summary at the start of every chat — session model, tracker, forge, and the repo names — and skills read `workspace.json` itself when they need the details (the section keeps a plain pointer line, because ACP clients don't surface hook output). What remains under the heading besides the pointer is the machine-local template-freshness note.
 
 **Team Knowledge** uses `@shared-context/locked/` to pull all locked context files into Claude's context. This is where team truths — project status, architectural decisions, risk warnings — get loaded automatically. Every file in this directory is read on every turn.
 
