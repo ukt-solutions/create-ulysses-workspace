@@ -37,7 +37,7 @@ Two checks before anything is pushed. First the tag: if `v{version}` already exi
 git -C repos/{repo} ls-remote --exit-code origin refs/tags/v{version}
 ```
 
-Second the release path. Build the repo's forge with `forgeConfigForRepo(root, '{repo}', ws)` from `.claude/scripts/merge-mode.mjs` — it picks the adapter from the repo's own origin, so a GitLab repo gets the gitlab adapter whatever `workspace.forge` says — and decide now who creates the release (Step 5): the repo's CI, or this skill. If the flow needs something the forge cannot do, stop here — past this point the tag is pushed, and a publish that cannot run is much harder to unwind.
+Second the release path. Build the repo's forge with `forgeConfigForRepo(root, '{repo}', ws)` from `.claude/scripts/merge-mode.mjs` — it picks the adapter from the repo's own origin, so a GitLab repo gets the gitlab adapter whatever `workspace.forge` says — and decide now who creates the release (Step 6): the repo's CI, or this skill. If the flow needs something the forge cannot do, stop here — past this point the tag is pushed, and a publish that cannot run is much harder to unwind.
 
 **Step 3: Bump on a branch**
 
@@ -47,18 +47,32 @@ Create a task worktree for the release branch:
 node .claude/scripts/task-worktree.mjs --root . --create --repo "{repo}" --branch "release/v{version}"
 ```
 
-If the repo has a `package.json` with a `version`, set it to `{version}` (edit the JSON; keep formatting) and update `package-lock.json`'s top-level version fields if that file is present. Commit `chore: release v{version}`. If the repo has no version file, skip the commit — step 5 tags the current default-branch head instead.
+If the repo has a `package.json` with a `version`, set it to `{version}` (edit the JSON; keep formatting) and update `package-lock.json`'s top-level version fields if that file is present. Commit `chore: release v{version}`. If the repo has no version file, skip the commit — step 6 tags the current default-branch head instead.
 
 **Step 4: Merge**
 
 Push the branch and open a PR through the same per-repo forge (`forgeConfigForRepo` from Step 2) with head `release/v{version}`. Ask `Merge? [Y/n]`, then merge (squash, delete branch).
 
-**Step 5: Tag and publish**
+**Step 5: Leak audit (optional)**
 
-Pull the merge, tag it, and push the tag:
+Pull the merge, then audit what is about to be tagged:
 
 ```bash
 git -C repos/{repo} pull --ff-only
+node .claude/scripts/release-leak-audit.mjs --root . --repo "{repo}"
+```
+
+Patterns live in `workspace.json` — `repos.{repo}.release.leakPatterns` for one repo, `workspace.release.leakPatterns` for every repo — as arrays of strings: `/…/flags` is that regex, anything else a case-insensitive literal. Mind the seam between the forms: a path-like literal whose tail parses as a flags run (`/keys/i`) reads as a regex — write such literals without the leading slash or escape them as a regex.
+
+The script scans what this release publishes: for a publishable package the `npm pack --dry-run --ignore-scripts` file list (the root package only — a monorepo's workspace packages are not enumerated, and build artifacts a publish workflow generates only in CI are not in npm's local list) together with the files changed since the last tag, else the changed files alone (`--tag-range <from>..<to>` overrides, reading contents from the range's end commit when it is not HEAD) — plus every commit message in the range, squash-merged PR bodies included. The worktree must be clean, since contents are read from disk (`--allow-dirty` overrides). Matched spans are masked in the excerpt, so showing a match never echoes the secret.
+
+Exit 1 lists matches as `{ file, line, pattern, excerpt }` plus a `skipped` list of files it could not read: stop and show them; never edit files to silence the audit. Exit 0 with `no leak patterns configured` is the no-patterns case — the step still runs and exits 0, so a workspace that never opts in needs no special-casing. Exit 2 means the audit itself could not run (including a dirty worktree); report that too. Whether a match is a true leak, an over-broad pattern, or a release to redo is the operator's call — cheap before the tag is pushed, impossible after.
+
+**Step 6: Tag and publish**
+
+Tag the merge and push the tag:
+
+```bash
 git -C repos/{repo} tag v{version}
 git -C repos/{repo} push origin v{version}
 ```
@@ -86,7 +100,7 @@ await forge.releaseCreate({ tag: 'v{version}', repo, generateNotes: false,
 
 If a `publish.yml` (or a publish job) without release creation exists, still find and watch its run the same way.
 
-**Step 6: Tear down and report**
+**Step 7: Tear down and report**
 
 Remove the release worktree:
 
@@ -96,7 +110,7 @@ node .claude/scripts/task-worktree.mjs --root . --remove --repo "{repo}" --branc
 
 Report the PR, the tag, the release URL, and the publish status.
 
-**Step 7: Update workspace release state**
+**Step 8: Update workspace release state**
 
 If the workspace keeps release state in `workspace-context/` (for example a current-release line in a status file under `shared/locked/`), offer to update it — through a workspace task worktree and PR, never on the launcher.
 
