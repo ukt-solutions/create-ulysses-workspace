@@ -20,7 +20,9 @@
 //                    --body-file <forge-repo>=<path> ... [--out <file>]
 //                    [--force-with-lease]
 //   node task-pr.mjs --merge --root <launcher> --prs <json-from-create>
-//                    [--work-item gh:N|gl:N]
+//                    [--work-item gh:N|gl:N] [--wait] [--wait-timeout <min>]
+//                    [--skip-checks]
+//   node task-pr.mjs --checks --root <launcher> --prs <json-from-create>
 //
 // Every repo of the task resolves to a merge mode (mergeModeFor below):
 // "forge" — its origin is forge-hosted (github.com, gitlab.com, or the
@@ -45,34 +47,55 @@
 // GitHub `owner/repo#N` reference cannot resolve on GitLab). Prints
 // `{ prs, empty, pushed }` — prs holds forge entries (mode "forge") and
 // local entries (mode "local") alike, every entry carrying its commit
-// count — and, with --out, writes the same JSON to a file — a mid-run
-// failure still writes what has landed so far, so the state survives the
-// error. A repo that already has an open PR for the branch gets it
-// reused, so a re-run never opens a duplicate.
+// count and its resolved merge-approval policy (mergeApprovalFor below:
+// "ask" or "operator", from repos.{repo}.mergeApproval /
+// workspace.mergeApproval, default "ask" — gh:202) so the skill reads it
+// instead of re-deriving — and, with --out, writes the same JSON to a
+// file — a mid-run failure still writes what has landed so far, so the
+// state survives the error. A repo that already has an open PR for the
+// branch gets it reused, so a re-run never opens a duplicate.
 //
-// --merge finishes every entry in the file: forge PRs first (squash,
-// delete branch) and local branches as a `git merge --ff-only` in the
-// repo's source clone — repos/{repo}, or the launcher itself for "." —
-// which must sit clean on its default branch, and whose task branch must
-// fast-forward or be rebased by hand. The project repos merge first, the
-// workspace repo only when every project merge succeeded; a PR the forge
-// reports as already MERGED and a local branch already contained in the
-// default branch both count as done, which is what makes re-running after
-// a partial failure safe. An empty or malformed PRs file — or one naming
-// a repo other than "." or a plain repo name, since a local entry's repo
-// becomes a path — is refused outright: no entries means nothing to merge
-// and nothing to close. Once everything is merged the launcher is pulled
-// --ff-only — only when it sits on the workspace default branch (else
-// pullSkipped), never when "." was itself merged locally (the launcher
-// already has that work), when the workspace repo is local (no forge
-// merge happened that a pull could fetch), or when the launcher branch
-// has no upstream to pull from — pullSkipped names which — and a failed
-// pull is reported as pullFailed in the JSON rather than an error,
-// because the merges stand and the issue still closes — and then the
-// linked issue closes with a Merged: comment, but only when --work-item
-// is given AND a tracker is configured; with no tracker the JSON reports
-// closed: null and closeSkipped. On a merge failure it stops and names
-// what is still open.
+// --merge finishes every entry in the file, gated on CI (gh:201): before
+// each forge PR merges, its checks are read through the forge adapter
+// (prChecks). "none" (no CI configured) and "success" proceed; "failure"
+// stops the whole run naming the failing jobs — nothing after it merges;
+// "pending" stops it — the run is re-runnable once checks finish —
+// unless --wait was given, which polls at 20-second intervals up to
+// --wait-timeout minutes (default 30). --skip-checks bypasses the gate
+// and is recorded as checksSkipped in the output — the escape hatch for
+// CI broken in ways the PR cannot fix. Local entries skip checks: there
+// is no forge to ask. Forge PRs merge squash + delete branch; local
+// branches merge as a `git merge --ff-only` in the repo's source clone —
+// repos/{repo}, or the launcher itself for "." — which must sit clean on
+// its default branch, and whose task branch must fast-forward or be
+// rebased by hand. The project repos merge first, the workspace repo only
+// when every project merge succeeded; a PR the forge reports as already
+// MERGED and a local branch already contained in the default branch both
+// count as done — and read no checks — which is what makes re-running
+// after a partial failure, or after the operator merged the PRs in the
+// forge UI (gh:202's operator mode), safe. An empty or malformed PRs
+// file — or one naming a repo other than "." or a plain repo name, since
+// a local entry's repo becomes a path — is refused outright: no entries
+// means nothing to merge and nothing to close. Once everything is merged
+// the launcher is pulled --ff-only — only when it sits on the workspace
+// default branch (else pullSkipped), never when "." was itself merged
+// locally (the launcher already has that work), when the workspace repo
+// is local (no forge merge happened that a pull could fetch), or when the
+// launcher branch has no upstream to pull from — pullSkipped names which —
+// and a failed pull is reported as pullFailed in the JSON rather than an
+// error, because the merges stand and the issue still closes — and then
+// the linked issue closes with a Merged: comment, but only when
+// --work-item is given AND a tracker is configured; with no tracker the
+// JSON reports closed: null and closeSkipped. On a merge failure it stops
+// and names what is still open.
+//
+// --checks reads every entry's CI state without merging anything — the
+// same prChecks read --merge gates on, surfaced for the summary
+// /complete-work presents before the merge question (and before stopping
+// in operator mode). Prints { checks: [...] } — one { repo, mode, state,
+// url, failing } per forge PR, plus the adapter's note when it carries
+// one (GitLab's manual-pipeline case); a local entry reports "none":
+// there is no forge to ask.
 
 import '../lib/require-node.mjs';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
@@ -80,7 +103,7 @@ import { resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { taskWorktreePath, defaultBranchFor } from './task-worktree.mjs';
-import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, perRepoForge, mergeModeFor } from './merge-mode.mjs';
+import { WORKSPACE_REPO, repoDirFor, readWorkspace, parseForgeRemote, forgeHosts, perRepoForge, mergeModeFor, mergeApprovalFor } from './merge-mode.mjs';
 import { readRecord } from './chat-record.mjs';
 import { createForge } from './forges/interface.mjs';
 import { createTracker } from './trackers/interface.mjs';
@@ -243,8 +266,11 @@ async function createPrs(args, deps) {
 
   // Mode first, because the commit count itself depends on it: a local
   // repo counts against its local default branch, not the origin ref that
-  // never advances (gh:173).
+  // never advances (gh:173). The merge-approval policy (gh:202) resolves
+  // the same way — per repo, with the workspace repo reading its own key —
+  // and rides every entry below so the skill never re-derives it.
   for (const t of targets) t.mode = mergeModeFor(rootDir, t.repo, { gitFn: deps.gitFn });
+  for (const t of targets) t.mergeApproval = mergeApprovalFor(rootDir, t.repo);
   for (const t of targets) t.commits = commitsOverBase(deps.gitFn, t, args.branch);
   const empty = targets.filter((t) => t.commits === 0).map((t) => t.repo);
   const active = targets.filter((t) => t.commits !== 0);
@@ -294,7 +320,7 @@ async function createPrs(args, deps) {
     .filter((t) => t.mode === 'local')
     .map((t) => ({
       repo: t.repo, mode: 'local', branch: args.branch, base: t.defaultBranch,
-      worktree: t.worktree, commits: t.commits,
+      worktree: t.worktree, commits: t.commits, mergeApproval: t.mergeApproval,
     }));
   const pushed = [];
   try {
@@ -317,7 +343,7 @@ async function createPrs(args, deps) {
       const pr = existing ?? await forge.prCreate({ title, body, head: args.branch, base: t.defaultBranch });
       prs.push({
         repo: t.repo, mode: 'forge', owner: t.owner, name: t.name,
-        forge: t.forge, host: t.host,
+        forge: t.forge, host: t.host, mergeApproval: t.mergeApproval,
         number: pr.number, id: pr.id, url: pr.url, isWorkspace: t.isWorkspace, commits: t.commits,
       });
     }
@@ -368,31 +394,30 @@ function mergeLocalEntry(gitFn, rootDir, entry) {
   return { alreadyMerged: false };
 }
 
-async function mergePrs(args, deps) {
-  const rootDir = resolve(args.root);
-  const ws = readWorkspace(rootDir);
+// Entries written before modes existed carry no `mode`; they are forge
+// PRs, the only kind --create used to emit.
+const modeOfEntry = (p) => p?.mode ?? 'forge';
 
+// The PRs file --create wrote, validated once for --merge and --checks
+// alike. An empty or malformed file is a refusal, not a no-op: with
+// nothing to merge there is nothing that earns an issue close, and
+// "Merged: " with no URLs would tell the tracker a lie. A local entry's
+// repo becomes a path under repos/, so the file cannot be allowed to name
+// anything but "." or a plain single segment.
+function loadPrs(path) {
   let parsed;
   try {
-    parsed = JSON.parse(stripBom(readFileSync(args.prs, 'utf-8')));
+    parsed = JSON.parse(stripBom(readFileSync(path, 'utf-8')));
   } catch (err) {
-    throw new Error(`cannot read PRs file ${args.prs}: ${err.message}`);
+    throw new Error(`cannot read PRs file ${path}: ${err.message}`);
   }
-  // An empty or malformed file is a refusal, not a no-op: with nothing to
-  // merge there is nothing that earns an issue close, and "Merged: " with
-  // no URLs would tell the tracker a lie.
   if (!parsed || !Array.isArray(parsed.prs)) {
-    throw new Error(`PRs file ${args.prs} is malformed — expected the JSON from a --create run ({ prs: [...] })`);
+    throw new Error(`PRs file ${path} is malformed — expected the JSON from a --create run ({ prs: [...] })`);
   }
   const prs = parsed.prs;
   if (prs.length === 0) {
-    throw new Error(`PRs file ${args.prs} lists no PRs — nothing to merge and nothing to close; --merge refuses to close an issue on an empty merge`);
+    throw new Error(`PRs file ${path} lists no PRs — nothing to merge, nothing to check, nothing to close; an empty merge never earns an issue close`);
   }
-  // Entries written before modes existed carry no `mode`; they are forge
-  // PRs, the only kind --create used to emit. A local entry's repo becomes
-  // a path under repos/, so the file cannot be allowed to name anything
-  // but "." or a plain single segment.
-  const modeOf = (p) => p?.mode ?? 'forge';
   const REPO_NAME_RE = /^[A-Za-z0-9._-]+$/;
   for (const p of prs) {
     if (!p) throw new Error(`PRs file entry is missing owner/name/id: ${JSON.stringify(p)}`);
@@ -400,21 +425,74 @@ async function mergePrs(args, deps) {
       && (typeof p.repo !== 'string' || p.repo === '..' || !REPO_NAME_RE.test(p.repo))) {
       throw new Error(`PRs file entry has an invalid repo name: ${JSON.stringify(p.repo)} — expected "." or a plain repo name`);
     }
-    if (modeOf(p) === 'local') {
+    if (modeOfEntry(p) === 'local') {
       if (!p.branch) throw new Error(`PRs file entry is missing branch: ${JSON.stringify(p)}`);
     } else if (!p.owner || !p.name || !p.id) {
       throw new Error(`PRs file entry is missing owner/name/id: ${JSON.stringify(p)}`);
     }
   }
-  if (prs.some((p) => modeOf(p) === 'forge')) assertForgeEnabled(ws);
-  // Entries carry their repo's forge and host since GitLab support landed;
-  // older files predate the fields and fall back to the workspace block —
-  // the GitHub default those runs were built under.
-  const forgeFor = (p) => deps.forgeFactory({
+  return prs;
+}
+
+// Entries carry their repo's forge and host since GitLab support landed;
+// older files predate the fields and fall back to the workspace block —
+// the GitHub default those runs were built under.
+function entryForge(ws, deps, p) {
+  return deps.forgeFactory({
     ...(ws.workspace?.forge ?? {}),
     ...(p.forge ? { type: p.forge, host: p.host } : {}),
     repo: `${p.owner}/${p.name}`,
   });
+}
+
+// --wait polls a pending PR at this interval, giving up after this many
+// minutes unless --wait-timeout said otherwise.
+const CHECK_POLL_MS = 20000;
+const CHECK_WAIT_DEFAULT_MIN = 30;
+
+// A check-gate stop: flagged so the merge loop can hard-stop — merging on
+// past red CI is exactly what the gate exists to prevent — where a plain
+// merge failure keeps today's behavior (later project entries still try;
+// the workspace waits).
+function checksError(message) {
+  const err = new Error(message);
+  err.checksBlocked = true;
+  return err;
+}
+
+// Read one forge PR's CI before merging it (gh:201): 'none' (no CI
+// configured) and 'success' proceed; 'failure' stops the run naming the
+// failing jobs; 'pending' stops it — the run is re-runnable once checks
+// finish — unless --wait was given, which polls here up to --wait-timeout
+// minutes. --skip-checks bypasses the gate (recorded as checksSkipped in
+// the output). Local entries never reach this — there is no forge to ask.
+async function gateOnChecks(forge, entry, args, deps) {
+  if (args.skipChecks) return;
+  const waitMin = args.waitTimeout ? Number(args.waitTimeout) : CHECK_WAIT_DEFAULT_MIN;
+  const deadline = Date.now() + waitMin * 60000;
+  let checks = await forge.prChecks({ id: entry.id });
+  while (checks.state === 'pending') {
+    if (!args.wait) {
+      throw checksError(`CI checks pending (${checks.url}${checks.note ? ` — ${checks.note}` : ''}) — re-run --merge once they finish, or pass --wait to poll here`);
+    }
+    if (Date.now() >= deadline) {
+      throw checksError(`CI checks still pending after ${waitMin} minutes (${checks.url}) — re-run --merge later`);
+    }
+    await deps.sleepFn(CHECK_POLL_MS);
+    checks = await forge.prChecks({ id: entry.id });
+  }
+  if (checks.state === 'failure') {
+    const jobs = checks.failing.map((f) => `${f.name} ${f.url}`).join(', ');
+    throw checksError(`CI checks failed (${checks.url}) — failing: ${jobs || 'no failing jobs listed'}`);
+  }
+}
+
+async function mergePrs(args, deps) {
+  const rootDir = resolve(args.root);
+  const ws = readWorkspace(rootDir);
+
+  const prs = loadPrs(args.prs);
+  if (prs.some((p) => modeOfEntry(p) === 'forge')) assertForgeEnabled(ws);
 
   // State first, so a re-run knows what an earlier run already finished.
   // A PR the forge reports MERGED is done; anything else is offered to
@@ -423,9 +501,9 @@ async function mergePrs(args, deps) {
   // produces the honest error when something is genuinely wrong.
   const alreadyMerged = new Set();
   for (const p of prs) {
-    if (modeOf(p) !== 'forge') continue;
+    if (modeOfEntry(p) !== 'forge') continue;
     try {
-      const view = await forgeFor(p).prView({ id: p.id });
+      const view = await entryForge(ws, deps, p).prView({ id: p.id });
       if (view?.state === 'MERGED') alreadyMerged.add(p.id);
     } catch { /* state unknown — the merge attempt below decides */ }
   }
@@ -438,15 +516,22 @@ async function mergePrs(args, deps) {
   const failures = [];
   const workspaceEntry = prs.find((p) => p.repo === WORKSPACE_REPO) ?? null;
   const mergeOne = async (p) => {
-    if (modeOf(p) === 'local') {
+    if (modeOfEntry(p) === 'local') {
       await mergeLocalEntry(deps.gitFn, rootDir, p);
     } else if (!alreadyMerged.has(p.id)) {
-      await forgeFor(p).prMerge({ id: p.id, strategy: 'squash', deleteBranch: true });
+      const forge = entryForge(ws, deps, p);
+      await gateOnChecks(forge, p, args, deps);
+      await forge.prMerge({ id: p.id, strategy: 'squash', deleteBranch: true });
     }
     merged.push(p);
   };
   for (const p of prs.filter((x) => x !== workspaceEntry)) {
-    try { await mergeOne(p); } catch (err) { failures.push(`${p.repo}: ${err.message}`); }
+    try {
+      await mergeOne(p);
+    } catch (err) {
+      failures.push(`${p.repo}: ${err.message}`);
+      if (err?.checksBlocked) break; // red or waiting CI ends the run here
+    }
   }
   if (failures.length === 0 && workspaceEntry) {
     try { await mergeOne(workspaceEntry); } catch (err) { failures.push(`${workspaceEntry.repo}: ${err.message}`); }
@@ -465,12 +550,15 @@ async function mergePrs(args, deps) {
   // reported flag rather than an error (the merges stand and the issue
   // still closes), and the user is told to pull by hand before teardown.
   const result = {
-    merged: merged.map((p) => (modeOf(p) === 'local'
+    merged: merged.map((p) => (modeOfEntry(p) === 'local'
       ? { repo: p.repo, mode: 'local', branch: p.branch, base: p.base }
       : { repo: p.repo, mode: 'forge', number: p.number, url: p.url })),
     closed: null,
   };
-  if (merged.some((p) => p.repo === WORKSPACE_REPO && modeOf(p) === 'local')) {
+  // The bypass is logged, not silent: whoever reads the JSON can see the
+  // gate was skipped, not passed.
+  if (args.skipChecks) result.checksSkipped = true;
+  if (merged.some((p) => p.repo === WORKSPACE_REPO && modeOfEntry(p) === 'local')) {
     result.pullSkipped = 'workspace merged locally';
   } else {
     const launcherBranch = gitOut(deps.gitFn, rootDir, ['branch', '--show-current']) || '(detached HEAD)';
@@ -497,7 +585,7 @@ async function mergePrs(args, deps) {
       result.closeSkipped = 'no tracker configured';
     } else {
       const tracker = deps.trackerFactory(ws.workspace.tracker);
-      const parts = merged.map((p) => (modeOf(p) === 'local' ? `${p.repo} ${p.branch}->${p.base}` : p.url));
+      const parts = merged.map((p) => (modeOfEntry(p) === 'local' ? `${p.repo} ${p.branch}->${p.base}` : p.url));
       await tracker.closeIssue(args.workItem, { comment: `Merged: ${parts.join(' ')}` });
       result.closed = args.workItem;
     }
@@ -505,13 +593,38 @@ async function mergePrs(args, deps) {
   return result;
 }
 
-const MODE_FLAGS = new Set(['--create', '--merge']);
-const VALUE_FLAGS = new Set(['--root', '--branch', '--work-item', '--chat', '--prs', '--out']);
+// --checks (gh:201/gh:202): read every entry's CI through the same
+// prChecks call --merge gates on, without merging anything — the state
+// /complete-work shows before the merge question, and before stopping in
+// operator mode. Local entries report 'none': there is no forge to ask.
+async function readChecks(args, deps) {
+  const rootDir = resolve(args.root);
+  const ws = readWorkspace(rootDir);
+  const prs = loadPrs(args.prs);
+  if (prs.some((p) => modeOfEntry(p) === 'forge')) assertForgeEnabled(ws);
+  const checks = [];
+  for (const p of prs) {
+    if (modeOfEntry(p) === 'local') {
+      checks.push({ repo: p.repo, mode: 'local', state: 'none', url: null, failing: [] });
+      continue;
+    }
+    const result = await entryForge(ws, deps, p).prChecks({ id: p.id });
+    checks.push({
+      repo: p.repo, mode: 'forge', state: result.state, url: result.url,
+      failing: result.failing ?? [], ...(result.note ? { note: result.note } : {}),
+    });
+  }
+  return { checks };
+}
+
+const MODE_FLAGS = new Set(['--create', '--merge', '--checks']);
+const VALUE_FLAGS = new Set(['--root', '--branch', '--work-item', '--chat', '--prs', '--out', '--wait-timeout']);
 
 function parseArgs(argv) {
   const args = {
     root: '.', mode: null, branch: null, workItem: null, chat: null,
     repos: [], bodyFiles: new Map(), prs: null, out: null, forceWithLease: false,
+    wait: false, waitTimeout: null, skipChecks: false,
   };
   const rest = argv.slice(2);
   const value = (i, flag) => {
@@ -522,7 +635,7 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     if (MODE_FLAGS.has(a)) {
-      if (args.mode) throw new Error(`only one of --create, --merge may be given (already have --${args.mode})`);
+      if (args.mode) throw new Error(`only one of --create, --merge, --checks may be given (already have --${args.mode})`);
       args.mode = a.slice(2);
       continue;
     }
@@ -536,6 +649,8 @@ function parseArgs(argv) {
       continue;
     }
     if (a === '--force-with-lease') { args.forceWithLease = true; continue; }
+    if (a === '--wait') { args.wait = true; continue; }
+    if (a === '--skip-checks') { args.skipChecks = true; continue; }
     if (VALUE_FLAGS.has(a)) {
       args[a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = value(i, a);
       i += 1;
@@ -543,13 +658,16 @@ function parseArgs(argv) {
     }
     throw new Error(`unknown argument: ${a}`);
   }
-  if (!args.mode) throw new Error('one of --create, --merge is required');
+  if (!args.mode) throw new Error('one of --create, --merge, --checks is required');
   if (args.mode === 'create') {
     if (!args.branch) throw new Error('--create requires --branch');
     if (!args.chat && args.repos.length === 0) throw new Error('--create requires --chat or at least one --repo');
-    if (args.prs) throw new Error('--prs is only valid with --merge');
+    if (args.prs) throw new Error('--prs is only valid with --merge or --checks');
+    if (args.wait) throw new Error('--wait is only valid with --merge');
+    if (args.waitTimeout) throw new Error('--wait-timeout is only valid with --merge');
+    if (args.skipChecks) throw new Error('--skip-checks is only valid with --merge');
   } else {
-    if (!args.prs) throw new Error('--merge requires --prs');
+    if (!args.prs) throw new Error(`--${args.mode} requires --prs`);
     for (const flag of ['branch', 'chat']) {
       if (args[flag]) throw new Error(`--${flag} is only valid with --create`);
     }
@@ -557,14 +675,27 @@ function parseArgs(argv) {
     if (args.bodyFiles.size > 0) throw new Error('--body-file is only valid with --create');
     if (args.forceWithLease) throw new Error('--force-with-lease is only valid with --create');
     if (args.out) throw new Error('--out is only valid with --create');
+    if (args.mode === 'checks') {
+      if (args.workItem) throw new Error('--work-item is only valid with --create or --merge');
+      if (args.wait) throw new Error('--wait is only valid with --merge');
+      if (args.waitTimeout) throw new Error('--wait-timeout is only valid with --merge');
+      if (args.skipChecks) throw new Error('--skip-checks is only valid with --merge');
+    } else if (args.waitTimeout) {
+      if (!args.wait) throw new Error('--wait-timeout is only valid with --wait');
+      const n = Number(args.waitTimeout);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new Error(`--wait-timeout needs a positive number of minutes, got: ${args.waitTimeout}`);
+      }
+    }
   }
   return args;
 }
 
 /**
  * Run one task-pr command. `argv` is a process.argv-shaped array; `deps`
- * is injectable so tests can fake git, the forge, and the tracker:
- *   { gitFn, forgeFactory, trackerFactory }
+ * is injectable so tests can fake git, the forge, the tracker, and the
+ * --wait polling sleep:
+ *   { gitFn, forgeFactory, trackerFactory, sleepFn }
  * Resolves with the command's JSON result; throws on any failure.
  */
 async function run(argv, deps = {}) {
@@ -572,10 +703,13 @@ async function run(argv, deps = {}) {
     gitFn: spawnSync,
     forgeFactory: createForge,
     trackerFactory: createTracker,
+    sleepFn: (ms) => new Promise((r) => setTimeout(r, ms)),
     ...deps,
   };
   const args = parseArgs(argv);
-  return args.mode === 'create' ? createPrs(args, resolved) : mergePrs(args, resolved);
+  if (args.mode === 'create') return createPrs(args, resolved);
+  if (args.mode === 'merge') return mergePrs(args, resolved);
+  return readChecks(args, resolved);
 }
 
 async function main() {
@@ -591,4 +725,4 @@ if (isMainModule(import.meta.url)) {
 }
 
 export { run, parseArgs };
-export { parseForgeRemote, mergeModeFor, perRepoForge, forgeConfigForRepo } from './merge-mode.mjs';
+export { parseForgeRemote, mergeModeFor, mergeApprovalFor, perRepoForge, forgeConfigForRepo } from './merge-mode.mjs';

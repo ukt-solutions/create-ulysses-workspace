@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { run, parseArgs, parseForgeRemote, mergeModeFor } from './task-pr.mjs';
+import { run, parseArgs, parseForgeRemote, mergeModeFor, mergeApprovalFor } from './task-pr.mjs';
 import { createGitlabAdapter } from './forges/gitlab.mjs';
 import { createTaskWorktree, taskWorktreePath } from './task-worktree.mjs';
 import { reconcile, addTask } from './chat-record.mjs';
@@ -130,11 +130,12 @@ const pushNonFF = {
 };
 
 // A forge factory that records every call and can be told to fail merges,
-// report PRs as already merged, hold pre-existing open PRs, or fail PR
-// creation per repo. The per-repo config (type, host, repo) is logged so
-// adapter selection is observable.
+// report PRs as already merged, hold pre-existing open PRs, fail PR
+// creation per repo, or answer prChecks per id (a function value answers
+// per call — a poll that flips states). The per-repo config (type, host,
+// repo) is logged so adapter selection is observable.
 function fakeForgeFactory(log, {
-  failMergeIds = [], mergedIds = [], openPrsFor = null, failCreateRepos = [],
+  failMergeIds = [], mergedIds = [], openPrsFor = null, failCreateRepos = [], checks = {},
 } = {}) {
   let n = 0;
   const cfg = (config) => ({ type: config.type, host: config.host, repo: config.repo });
@@ -159,6 +160,16 @@ function fakeForgeFactory(log, {
     async prView({ id }) {
       log.push({ op: 'prView', ...cfg(config), id });
       return { id, state: mergedIds.includes(id) ? 'MERGED' : 'OPEN', number: Number(String(id).split('#')[1]) };
+    },
+    async prChecks({ id }) {
+      // Default 'none' — no CI configured — so the gate stays transparent
+      // for tests that do not care about checks.
+      const base = checks[id];
+      const result = typeof base === 'function'
+        ? base()
+        : (base ?? { state: 'none', url: `https://ci.example/${id}`, failing: [] });
+      log.push({ op: 'prChecks', ...cfg(config), id, state: result.state });
+      return result;
     },
     async prMerge({ id, strategy, deleteBranch }) {
       if (failMergeIds.includes(id)) throw new Error('merge rejected by the forge');
@@ -246,6 +257,54 @@ console.log('# mergeModeFor: override, no origin, forge, non-forge origin');
     delete ws.workspace.merge;
     writeFileSync(wsPath, JSON.stringify(ws, null, 2));
     assertEq(mergeModeFor(root, '.'), 'local', 'the launcher with no origin is local mode');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# mergeApprovalFor: default ask, per-repo and workspace overrides, typo throws');
+{
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git' });
+  try {
+    assertEq(mergeApprovalFor(root, 'app'), 'ask', 'absent resolves to ask');
+    assertEq(mergeApprovalFor(root, '.'), 'ask', 'absent resolves to ask for the workspace repo');
+
+    const wsPath = join(root, 'workspace.json');
+    const ws = JSON.parse(readFileSync(wsPath, 'utf-8'));
+    ws.repos.app.mergeApproval = 'operator';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+    assertEq(mergeApprovalFor(root, 'app'), 'operator', 'repos.{repo}.mergeApproval overrides');
+    assertEq(mergeApprovalFor(root, '.'), 'ask', "a repo's override does not leak to the workspace repo");
+
+    ws.workspace.mergeApproval = 'operator';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+    assertEq(mergeApprovalFor(root, '.'), 'operator', 'workspace.mergeApproval overrides for the workspace repo');
+
+    ws.repos.app.mergeApproval = 'auto';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+    let err = null;
+    try { mergeApprovalFor(root, 'app'); } catch (e) { err = e; }
+    assert(err && /repos\.app\.mergeApproval/.test(err.message), `a typo throws naming the setting: ${err?.message}`);
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --create stamps each entry with its resolved mergeApproval');
+{
+  const { root, bares } = makeLauncher({ app: 'git@github.com:acme/app.git', lone: 'none' });
+  try {
+    const wsPath = join(root, 'workspace.json');
+    const ws = JSON.parse(readFileSync(wsPath, 'utf-8'));
+    ws.repos.app.mergeApproval = 'operator';
+    writeFileSync(wsPath, JSON.stringify(ws, null, 2));
+
+    for (const repo of ['app', 'lone']) {
+      const wt = createTaskWorktree(root, { repo, branch: 'feature/x' });
+      git(wt.path, ['commit', '-q', '--allow-empty', '-m', `feat: ${repo}`]);
+    }
+    const bodyFile = join(root, 'body-app.md');
+    writeFileSync(bodyFile, 'Summary.\n');
+    const log = [];
+    const out = await run(argvCreate(['--root', root, '--branch', 'feature/x', '--repo', 'app', '--repo', 'lone', '--body-file', `app=${bodyFile}`]),
+      { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.prs.map((p) => [p.repo, p.mergeApproval]), [['lone', 'ask'], ['app', 'operator']], 'each entry carries its resolved policy');
   } finally { clean(root); bares.forEach(clean); }
 }
 
@@ -349,27 +408,35 @@ console.log('# a merge: "local" override repo counts commits against its local d
       { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
     assertEq(out.prs, [{
       repo: 'app', mode: 'local', branch: 'feature/two', base: 'main',
-      worktree: taskWorktreePath(root, 'app', 'feature/two'), commits: 1,
+      worktree: taskWorktreePath(root, 'app', 'feature/two'), commits: 1, mergeApproval: 'ask',
     }], 'the count is against the local main, not the stale origin ref');
   } finally { clean(root); bares.forEach(clean); }
 }
 
 console.log('# parseArgs validation');
 {
-  await rejects(() => run(['node', 'task-pr.mjs']), 'a mode is required');
+  await rejects(() => run(['node', 'task-pr.mjs']), 'one of --create, --merge, --checks is required');
   await rejects(() => run(argvCreate(['--root', '/w'])), '--create needs a branch');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b'])), '--create needs repos');
-  await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w']), '--merge needs --prs');
+  await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w']), '--merge requires --prs');
+  await rejects(() => run(['node', 'task-pr.mjs', '--checks', '--root', '/w']), '--checks requires --prs');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--prs', 'x.json'])), '--prs rejected with --create');
   await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--force-with-lease']), '--force-with-lease rejected with --merge');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--body-file', 'nopath'])), '--body-file needs repo=path');
   await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--out', 'y.json']), '--out rejected with --merge');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--bogus'])), 'unknown flag rejected');
+  // The check-gate flags are --merge's alone, and --wait-timeout rides on --wait.
+  await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--skip-checks'])), '--skip-checks rejected with --create');
+  await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--wait-timeout', '10']), '--wait-timeout needs --wait');
+  await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--wait', '--wait-timeout', 'soon']), 'wait-timeout needs a number');
+  await rejects(() => run(['node', 'task-pr.mjs', '--checks', '--root', '/w', '--prs', 'x.json', '--wait']), '--wait rejected with --checks');
   const ok = parseArgs(['node', 's', '--create', '--root', '/w', '--branch', 'feature/x',
     '--work-item', 'gh:163', '--repo', 'app', '--repo', '.', '--body-file', 'app=/tmp/a.md', '--body-file', '.=/tmp/w.md',
     '--out', '/tmp/prs.json']);
   assertEq([ok.mode, ok.branch, ok.workItem, ok.repos, ok.out], ['create', 'feature/x', 'gh:163', ['app', '.'], '/tmp/prs.json'], 'repeated --repo accumulates');
   assertEq([...ok.bodyFiles.entries()], [['app', '/tmp/a.md'], ['.', '/tmp/w.md']], 'body files map repo to path');
+  const waiting = parseArgs(['node', 's', '--merge', '--root', '/w', '--prs', 'x.json', '--wait', '--wait-timeout', '15', '--skip-checks']);
+  assertEq([waiting.mode, waiting.wait, waiting.waitTimeout, waiting.skipChecks], ['merge', true, '15', true], 'merge flags parse');
 }
 
 console.log('# --create with a work item: push, PR, closing line (same-repo ref)');
@@ -712,7 +779,7 @@ console.log('# an all-local task: create records local entries, merge fast-forwa
     assertEq(out.pushed, [], 'nothing was pushed');
     assertEq(out.prs, [{
       repo: 'app', mode: 'local', branch: 'feature/x', base: 'main',
-      worktree: taskWorktreePath(root, 'app', 'feature/x'), commits: 1,
+      worktree: taskWorktreePath(root, 'app', 'feature/x'), commits: 1, mergeApproval: 'ask',
     }], 'a local entry is recorded instead of a PR');
     assertEq(log.filter((e) => e.op.startsWith('pr')).length, 0, 'the forge was never consulted');
     assertEq(gitFn.calls.filter((c) => c.args.includes('push')).length, 0, 'no push was attempted');
@@ -721,6 +788,7 @@ console.log('# an all-local task: create records local entries, merge fast-forwa
     const deps = { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
     const merged = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--work-item', 'gh:173'], deps);
     assertEq(merged.merged, [{ repo: 'app', mode: 'local', branch: 'feature/x', base: 'main' }], 'the local merge is reported');
+    assertEq(log.filter((e) => e.op === 'prChecks').length, 0, 'a local entry never reads checks');
     assertEq(git(join(root, 'repos', 'app'), ['log', '-1', '--format=%s']).trim(), 'feat: do the thing', "the source clone's main fast-forwarded to the task branch");
     assertEq(merged.closed, 'gh:173', 'the issue closed with the tracker configured');
 
@@ -1000,17 +1068,27 @@ console.log('# a queued GitLab MR merge (glab exits 0, MR still open) stops the 
   // rejection.
   const { root, bares } = makeLauncher({});
   try {
-    const mr = (n, repo) => JSON.stringify({
+    const mr = (n, repo, over = {}) => JSON.stringify({
       iid: n, title: 'The MR', state: 'opened', draft: false,
       source_branch: 'feature/x', target_branch: 'main',
       web_url: `https://gitlab.com/${repo}/-/merge_requests/${n}`,
       detailed_merge_status: 'ci_still_running', merged_at: null, has_conflicts: false,
+      ...over,
     });
     const glabCalls = [];
     const spawnFn = (cmd, args) => {
       const key = args.join(' ');
       glabCalls.push(key);
       if (key === 'mr view 1 --repo acme/app --output json') return { status: 0, stdout: mr(1, 'acme/app'), stderr: '' };
+      // The check gate reads the MR's head pipeline through glab api —
+      // green, so the merge is attempted and the queue trap plays out.
+      if (key === 'api projects/acme%2Fapp/merge_requests/1 --hostname gitlab.com') {
+        return {
+          status: 0,
+          stdout: mr(1, 'acme/app', { head_pipeline: { id: 7, status: 'success', web_url: 'https://gitlab.com/acme/app/-/pipelines/7' } }),
+          stderr: '',
+        };
+      }
       // The queued merge: glab exits 0, but the MR never landed.
       if (key === 'mr merge 1 --repo acme/app --yes --auto-merge=false --squash --remove-source-branch') {
         return { status: 0, stdout: '', stderr: '' };
@@ -1226,6 +1304,140 @@ console.log('# --merge re-run: PRs already merged count as done, and the complet
     assertEq(log2.find((e) => e.op === 'closeIssue').comment,
       'Merged: https://github.com/acme/app/pull/1 https://github.com/acme/workspace/pull/3',
       'the close comment names every merged URL');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge: a failing check stops the whole run, nothing after it merges');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const gitFn = gitWith([pullOk]);
+    const prs = [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
+      { repo: 'api', owner: 'acme', name: 'api', number: 2, id: 'acme/api#2', url: 'https://github.com/acme/api/pull/2', isWorkspace: false },
+      { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace#3', url: 'https://github.com/acme/workspace/pull/3', isWorkspace: true },
+    ];
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
+        { gitFn, forgeFactory: fakeForgeFactory(log, {
+          checks: { 'acme/api#2': { state: 'failure', url: 'https://ci.example/2', failing: [{ name: 'test', url: 'https://ci.example/2/test' }] } },
+        }), trackerFactory: fakeTrackerFactory(log) }),
+      'a failing check stops the merge',
+      'failing: test https://ci.example/2/test',
+    );
+    assertEq(log.filter((e) => e.op === 'prMerge').map((m) => m.repo), ['acme/app'], 'the PR before the red one merged, nothing after');
+    assertEq(log.filter((e) => e.op === 'prChecks').map((e) => e.id), ['acme/app#1', 'acme/api#2'], 'the third PR was never even checked');
+    assertEq(gitFn.calls.filter((c) => c.args.includes('pull')).length, 0, 'no pull after red CI');
+    assertEq(log.filter((e) => e.op === 'closeIssue').length, 0, 'no issue close after red CI');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge: pending checks stop the run; --wait polls to green');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const file = prsFile(root, [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
+    ]);
+    const stopped = [];
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file],
+        { gitFn: gitWith(), forgeFactory: fakeForgeFactory(stopped, { checks: { 'acme/app#1': { state: 'pending', url: 'https://ci.example/1' } } }), trackerFactory: fakeTrackerFactory(stopped) }),
+      'pending checks stop the merge',
+      'CI checks pending',
+    );
+    assertEq(stopped.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged while pending');
+
+    const log = [];
+    let reads = 0;
+    const sleeps = [];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', file, '--wait'],
+      { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log, {
+        checks: { 'acme/app#1': () => ({ state: ++reads === 3 ? 'success' : 'pending', url: 'https://ci.example/1', failing: [] }) },
+      }), trackerFactory: fakeTrackerFactory(log), sleepFn: (ms) => { sleeps.push(ms); } });
+    assertEq(out.merged.map((m) => m.repo), ['app'], 'the PR merged once checks turned green');
+    assertEq(sleeps, [20000, 20000], 'polling waited the interval between reads');
+    assertEq(log.filter((e) => e.op === 'prChecks').length, 3, 'three reads: two pending, one green');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge --wait gives up at --wait-timeout and stays re-runnable');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    let err = null;
+    try {
+      await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, [
+        { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'u1', isWorkspace: false },
+      ]), '--wait', '--wait-timeout', '0.001'],
+        { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log, { checks: { 'acme/app#1': { state: 'pending', url: 'https://ci.example/1' } } }), trackerFactory: fakeTrackerFactory(log), sleepFn: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))) });
+    } catch (e) { err = e; }
+    assert(err && /still pending after 0\.001 minutes/.test(err.message), `the timeout names the bound: ${err?.message}`);
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged at the timeout');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --merge --skip-checks bypasses the gate and says so in the output');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'u1', isWorkspace: false },
+    ]), '--skip-checks'],
+      { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log, {
+        checks: { 'acme/app#1': { state: 'failure', url: 'https://ci.example/1', failing: [{ name: 'test', url: 'https://ci.example/1/test' }] } },
+      }), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(log.filter((e) => e.op === 'prChecks').length, 0, 'checks were never read');
+    assertEq(out.checksSkipped, true, 'the skip is recorded in the JSON');
+    assertEq(out.merged.map((m) => m.repo), ['app'], 'the merge proceeded anyway');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# an operator merge in the forge UI: --merge re-runs clean, closing and reporting');
+{
+  // gh:202's operator path: the PRs were merged by hand in the forge UI.
+  // The re-run detects them merged — skipping both the merge and the
+  // check gate; red CI on an already-merged PR must not block — and
+  // finishes the pull and the close.
+  const { root, bares } = makeLauncher({}, { launcherOrigin: true });
+  try {
+    const log = [];
+    const prs = [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'https://github.com/acme/app/pull/1', isWorkspace: false },
+      { repo: '.', owner: 'acme', name: 'workspace', number: 3, id: 'acme/workspace#3', url: 'https://github.com/acme/workspace/pull/3', isWorkspace: true },
+    ];
+    const out = await run(['node', 'task-pr.mjs', '--merge', '--root', root, '--prs', prsFile(root, prs), '--work-item', 'gh:163'],
+      { gitFn: gitWith([pullOk]), forgeFactory: fakeForgeFactory(log, {
+        mergedIds: ['acme/app#1', 'acme/workspace#3'],
+        checks: { 'acme/workspace#3': { state: 'failure', url: 'https://ci.example/3', failing: [] } },
+      }), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out.merged.map((m) => m.repo), ['app', '.'], 'both PRs count as merged');
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing re-merged');
+    assertEq(log.filter((e) => e.op === 'prChecks').length, 0, 'an already-merged PR reads no checks');
+    assertEq(out.closed, 'gh:163', 'the re-run completed the close');
+  } finally { clean(root); bares.forEach(clean); }
+}
+
+console.log('# --checks reads each entry state: forge through the adapter, local none');
+{
+  const { root, bares } = makeLauncher({});
+  try {
+    const log = [];
+    const prs = [
+      { repo: 'app', owner: 'acme', name: 'app', number: 1, id: 'acme/app#1', url: 'u1', isWorkspace: false },
+      { repo: 'lone', mode: 'local', branch: 'feature/x', base: 'main' },
+    ];
+    const out = await run(['node', 'task-pr.mjs', '--checks', '--root', root, '--prs', prsFile(root, prs)],
+      { gitFn: gitWith(), forgeFactory: fakeForgeFactory(log, { checks: { 'acme/app#1': { state: 'pending', url: 'https://ci.example/1', failing: [], note: 'pipeline waiting on a manual job' } } }), trackerFactory: fakeTrackerFactory(log) });
+    assertEq(out, { checks: [
+      { repo: 'app', mode: 'forge', state: 'pending', url: 'https://ci.example/1', failing: [], note: 'pipeline waiting on a manual job' },
+      { repo: 'lone', mode: 'local', state: 'none', url: null, failing: [] },
+    ] }, 'one check line per entry');
+    assertEq(log.filter((e) => e.op === 'prMerge').length, 0, 'nothing merged by --checks');
+    assertEq(log.filter((e) => e.op === 'closeIssue').length, 0, 'nothing closed by --checks');
   } finally { clean(root); bares.forEach(clean); }
 }
 
