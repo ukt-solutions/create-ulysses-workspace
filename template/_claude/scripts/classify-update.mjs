@@ -160,15 +160,18 @@
 //                     present as `updated` again next time; see
 //                     template-baseline.mjs. Throws rather than writing an
 //                     empty baseline.
-//   --merge-claude-md print JSON { claudeMd, missingIncludes }: CLAUDE.md
-//                     with the payload's CLAUDE.md.tmpl merged in — template
-//                     lines updated, the workspace's own lines (custom skill
-//                     entries, sections) kept — plus the `@{path}` include
-//                     lines the merged file carries whose targets don't
-//                     exist at the root (machine-local local-only-* targets
-//                     exempt). The skill shows the diff against the current
-//                     file before writing, and asks on each missing include
-//                     instead of leaving it dangling (gh:190).
+//   --merge-claude-md print JSON { claudeMd, droppedIncludes, missingIncludes }:
+//                     CLAUDE.md with the payload's CLAUDE.md.tmpl merged in —
+//                     template lines updated, the workspace's own lines (custom
+//                     skill entries, sections) kept — minus the retired
+//                     @-includes the workspace still carries but this payload
+//                     no longer ships (droppedIncludes names them, gh:196) —
+//                     plus the `@{path}` include lines the merged file carries
+//                     whose targets don't exist at the root (machine-local
+//                     local-only-* targets exempt). The skill shows the diff
+//                     against the current file before writing, and asks on
+//                     each missing include instead of leaving it dangling
+//                     (gh:190).
 
 import {
   existsSync,
@@ -700,6 +703,41 @@ function linkRemovedHooks(result, absRoot) {
 
 // ---------- CLAUDE.md merge ----------
 
+// @-includes the template has retired. The merge keeps "lines the template
+// doesn't have" — a workspace's `@workspace.json` line would otherwise survive
+// every update forever. A retired include is dropped only when THIS payload no
+// longer ships it; an older payload whose template still carries the line
+// merges it like any other template line. The SessionStart hook now supplies
+// the config summary the import existed for (gh:196).
+const RETIRED_INCLUDES = ['workspace.json'];
+
+function hasIncludeLine(text, name) {
+  return text.split(/\r?\n/).some((l) => l.trim() === `@${name}`);
+}
+
+/** Every `@{name}` include line removed from `text`, preserving its EOLs. */
+function dropIncludeLines(text, name) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  return text.split(/\r?\n/).filter((l) => l.trim() !== `@${name}`).join(eol);
+}
+
+/**
+ * Retired includes still present in the workspace's CLAUDE.md: each is named
+ * in the output so the skill can call the drop out, and stripped from the
+ * current text before the merge so the merged result loses the line.
+ */
+function stripRetiredIncludes(currentText, nextText) {
+  const dropped = [];
+  let stripped = currentText;
+  for (const name of RETIRED_INCLUDES) {
+    if (!hasIncludeLine(currentText, name)) continue;
+    if (hasIncludeLine(nextText, name)) continue; // this payload still ships it
+    dropped.push(name);
+    stripped = dropIncludeLines(stripped, name);
+  }
+  return { stripped, dropped };
+}
+
 /**
  * Split markdown into blocks: the preamble (heading null) plus one block per
  * `## ` heading. Deeper headings belong to their enclosing section, and `## `
@@ -884,12 +922,16 @@ function mergeClaudeMdMode(args) {
   const next = readFileSync(tmplPath, 'utf8').replace(/\{\{project-name\}\}/g, name);
   const claudeMdPath = join(absRoot, 'CLAUDE.md');
   const current = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf8') : '';
-  const claudeMd = mergeClaudeMd(current, next);
+  const { stripped, dropped } = stripRetiredIncludes(current, next);
+  const claudeMd = mergeClaudeMd(stripped, next);
   // The gained-@include check is deterministic, not something to eyeball in
   // the diff: every include line whose target is absent here is reported so
   // the skill asks (stub or omit) instead of writing it silently (gh:190).
+  // A retired include the workspace still carried is the mirror decision —
+  // reported as dropped so the diff the operator approves says so (gh:196).
   process.stdout.write(JSON.stringify({
     claudeMd,
+    droppedIncludes: dropped,
     missingIncludes: missingIncludes(absRoot, claudeMd),
   }, null, 2) + '\n');
 }

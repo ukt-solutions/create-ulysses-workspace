@@ -35,6 +35,14 @@ if (!config) {
 
 lines.push(`Workspace: ${config.workspace?.name || 'unnamed'}`);
 
+// One compact config summary (gh:196). CLAUDE.md no longer imports
+// workspace.json, so this line is what a session sees of the config without
+// reading the file — it names the file so sessions know where the values
+// live, and skills that need more than these fields read it on demand. Keep
+// it small: every session pays for it, which is exactly why the import was
+// dropped.
+lines.push(`Workspace config (workspace.json): ${configSummary(config)}`);
+
 // Keep this chat's record in step with its identity (gh:132). The record is
 // keyed on sessionId and filed under the chat name, so a rename moves the file
 // and its drawer rather than orphaning them.
@@ -182,6 +190,27 @@ if (existsSync(sharedDir)) {
     lines.push('Workspace context:');
     lines.push(...entries);
   }
+}
+
+/**
+ * The `Workspace config (workspace.json):` summary line: sessionModel,
+ * tracker, forge, and the repo names (primary marked). Absent config degrades
+ * to its default (sessionModel "session", forge github) the same way the
+ * scripts that read workspace.json treat it, so the line never contradicts
+ * the file.
+ */
+function configSummary(config) {
+  const w = config.workspace || {};
+  const parts = [`sessionModel: ${w.sessionModel || 'session'}`];
+  const tracker = w.tracker
+    ? `${w.tracker.type || 'github-issues'}${w.tracker.repo ? ` on ${w.tracker.repo}` : ''}`
+    : 'off';
+  parts.push(`tracker: ${tracker}`);
+  parts.push(`forge: ${w.forge === false ? 'off' : (w.forge?.type || 'github')}`);
+  const repos = config.repos || {};
+  const names = Object.keys(repos);
+  parts.push(`repos: ${names.length === 0 ? 'none' : names.map((n) => (repos[n]?.primary ? `${n} (primary)` : n)).join(', ')}`);
+  return parts.join(' | ');
 }
 
 respond(lines.join('\n'));

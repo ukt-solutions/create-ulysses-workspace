@@ -31,7 +31,7 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 - Shared memory lives in `shared-context/`
 
 ## Workspace Config
-@workspace.json
+@local-only-template-freshness.md
 
 ## Team Knowledge (always loaded)
 @shared-context/locked/
@@ -55,7 +55,7 @@ Each section has a purpose:
 
 **Quick Reference** gives Claude (and you) the essential rules at a glance. These are the constraints that apply on every turn — where work happens, what is writable from the root, where shared memory lives.
 
-**Workspace Config** uses the `@workspace.json` reference to pull the workspace configuration into Claude's context. Claude sees the repo manifest, the template version, and the workspace settings without you needing to paste them.
+**Workspace Config** once imported `workspace.json` here; the import is gone. Most of that file exists for scripts (repo remotes, budgets, directory locations), and paying for all of it on every turn buys nothing. Instead, the SessionStart hook injects a one-line summary at the start of every chat — session model, tracker, forge, and the repo names — and skills read `workspace.json` itself when they need the details. What remains under the heading is the machine-local template-freshness note.
 
 **Team Knowledge** uses `@shared-context/locked/` to pull all locked context files into Claude's context. This is where team truths — project status, architectural decisions, risk warnings — get loaded automatically. Every file in this directory is read on every turn.
 
@@ -63,9 +63,9 @@ Each section has a purpose:
 
 ## The @-Reference Pattern
 
-The `@` prefix tells Claude Code to include the contents of a file or directory. When CLAUDE.md contains `@workspace.json`, Claude reads workspace.json and includes its contents as part of the context. When it contains `@shared-context/locked/`, Claude reads every file in that directory.
+The `@` prefix tells Claude Code to include the contents of a file or directory. When CLAUDE.md contains `@shared-context/locked/`, Claude reads every file in that directory; a single file works the same way (`@workspace-context/canonical.md`).
 
-This is how CLAUDE.md connects disparate pieces of configuration into a coherent picture without duplicating content. The workspace config lives in workspace.json (where scripts and the CLI read it), team knowledge lives in shared-context/locked/ (where release and promote manage it), and CLAUDE.md references both.
+This is how CLAUDE.md connects team knowledge into the context without duplicating content. Workspace config used to be pulled in the same way, via `@workspace.json` — but almost all of that file exists for scripts, so the import was replaced by a SessionStart hook line that summarizes it (session model, tracker, forge, repos) and by skills reading the file on demand.
 
 You can add your own @-references. If your project has a critical architecture document that Claude should always see, add `@docs/architecture.md` to CLAUDE.md. If you have a local-only file with temporary context, add `@shared-context/locked/local-only-my-notes.md`.
 
@@ -73,7 +73,7 @@ You can add your own @-references. If your project has a critical architecture d
 
 The always-loaded context has a token cost. Every file pulled into CLAUDE.md is read on every turn, consuming context window space that could otherwise hold conversation history or tool results.
 
-The default workspace template costs approximately 1,500 tokens always-loaded — CLAUDE.md itself, workspace.json, active rules, and settings. That is roughly 0.15% of the Opus context window. This leaves ample room for conversation, but the cost grows with each file added to locked context.
+The default workspace template costs approximately 1,500 tokens always-loaded — CLAUDE.md itself, its @-imports, active rules, and settings. That is roughly 0.15% of the Opus context window. This leaves ample room for conversation, but the cost grows with each file added to locked context.
 
 This is why locked context has a 10KB budget target. A 10KB locked directory adds approximately 2,500 tokens to the always-loaded cost, bringing the total to around 4,000 tokens — still well under 1% of the context window, but enough that discipline matters.
 
@@ -88,10 +88,12 @@ The practical implication: do not put large documents in locked context. A 5,000
 When Claude processes a turn, configuration loads in a specific order. Understanding this order helps you know where to put things and what takes priority:
 
 1. **CLAUDE.md** — the entry point. Quick reference, @-references, skill listing.
-2. **workspace.json** — via @-reference. Repo manifest, settings.
+2. **SessionStart hook context** — the workspace summary line (session model, tracker, forge, repos), chat record, and open sessions, injected when the chat begins.
 3. **Rules** — all `.md` files in `.claude/rules/`. Behavioral constraints.
 4. **Locked context** — via @-reference. All files in `shared-context/locked/`.
 5. **Skills** — loaded on invocation, not on every turn.
+
+`workspace.json` itself sits outside this order: scripts read it directly, and skills read it on demand.
 
 User instructions in CLAUDE.md take the highest priority. If CLAUDE.md says "never use semicolons" and a rule says "always use semicolons," CLAUDE.md wins. Rules override default Claude behavior but yield to explicit user instructions. Skills override rules where the skill explicitly says so (for example, the handoff skill auto-commits, which overrides the git-conventions rule's normal commit workflow).
 
@@ -107,14 +109,14 @@ CLAUDE.md is a template file that you own. The scaffold provides a default, but 
 
 **Remove what does not apply.** If your team does not use a particular skill, removing it from the listing reduces noise. The skill still exists in `.claude/skills/` — it just will not be suggested.
 
-The one thing to preserve: the `@workspace.json` and `@shared-context/locked/` references. These are how Claude stays aware of the workspace configuration and team knowledge. Removing them disconnects Claude from the workspace model.
+The one thing to preserve: the `@shared-context/locked/` reference. That is how Claude stays aware of team knowledge — removing it disconnects Claude from the workspace's shared memory. The connection to `workspace.json` needs no import to preserve: the SessionStart hook summarizes it in every chat, and skills read the file when they need it.
 
 ---
 
 ## Key Takeaways
 
 - CLAUDE.md is the entry point — Claude reads it on every turn in the highest-priority context position.
-- The `@` pattern pulls in workspace.json and locked context without duplication.
+- The `@` pattern pulls in locked context without duplication; workspace.json is summarized by the SessionStart hook instead of imported, and skills read it on demand.
 - Always-loaded context costs ~1,500 tokens by default. Keep locked context under 10KB to stay lean.
-- Loading order: CLAUDE.md → workspace.json → rules → locked context → skills on invocation.
+- Loading order: CLAUDE.md → hook-injected workspace summary → rules → locked context → skills on invocation.
 - Customize CLAUDE.md for your project, but preserve the @-references that connect Claude to the workspace.
