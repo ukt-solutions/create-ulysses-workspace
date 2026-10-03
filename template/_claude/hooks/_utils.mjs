@@ -50,6 +50,49 @@ export function getWorkspacePaths(root) {
   };
 }
 
+const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * The `Workspace config (workspace.json):` summary line session-start injects
+ * (gh:196): sessionModel, tracker, forge, and the repo names (primary
+ * marked). The labels mirror what the scripts reading workspace.json actually
+ * do — no invented defaults: an absent tracker is `off`, a tracker object
+ * without a type (or a non-object in its place) is `invalid`, an absent
+ * forge type leaves each repo's origin to pick its adapter, and `repos` that
+ * isn't a plain object is `invalid` rather than a silent empty manifest.
+ * sessionModel defaults to "session", matching how /start-work routes absent
+ * config.
+ */
+export function configSummary(config) {
+  const w = config?.workspace || {};
+  const model = typeof w.sessionModel === 'string' && w.sessionModel ? w.sessionModel : 'session';
+  const parts = [`sessionModel: ${model}`];
+
+  let tracker;
+  if (!w.tracker) tracker = 'off';
+  else if (!isPlainObject(w.tracker)) tracker = 'invalid';
+  else if (typeof w.tracker.type !== 'string' || !w.tracker.type) tracker = 'invalid (no type)';
+  else tracker = w.tracker.repo ? `${w.tracker.type} on ${w.tracker.repo}` : w.tracker.type;
+  parts.push(`tracker: ${tracker}`);
+
+  let forge;
+  if (w.forge === false) forge = 'off';
+  else if (!isPlainObject(w.forge)) forge = w.forge ? 'invalid' : 'auto (from origin)';
+  else if (typeof w.forge.type !== 'string' || !w.forge.type) forge = 'auto (from origin)';
+  else forge = w.forge.type;
+  parts.push(`forge: ${forge}`);
+
+  let repos;
+  if (!isPlainObject(config?.repos)) repos = config?.repos ? 'invalid' : 'none';
+  else {
+    const names = Object.keys(config.repos);
+    repos = names.length === 0 ? 'none'
+      : names.map((n) => (config.repos[n]?.primary ? `${n} (primary)` : n)).join(', ');
+  }
+  parts.push(`repos: ${repos}`);
+  return parts.join(' | ');
+}
+
 /**
  * Defensive normalization for a session tracker's `repos` field. A fresh
  * tracker written by create-work-session always holds an array, but an

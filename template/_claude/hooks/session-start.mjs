@@ -15,6 +15,7 @@ import {
   updateSessionTracker,
   sessionFolderPath,
   timeAgo,
+  configSummary,
 } from './_utils.mjs';
 import { reconcile, readSessionRegistry, resolveChatName } from '../scripts/chat-record.mjs';
 
@@ -34,6 +35,15 @@ if (!config) {
 }
 
 lines.push(`Workspace: ${config.workspace?.name || 'unnamed'}`);
+
+// One compact config summary (gh:196). CLAUDE.md no longer imports
+// workspace.json, so this line is what a session sees of the config without
+// reading the file — it names the file so sessions know where the values
+// live, and skills that need more than these fields read it on demand. Keep
+// it small: every session pays for it, which is exactly why the import was
+// dropped. configSummary (_utils.mjs) prints invalid/absent states rather
+// than inventing defaults the scripts don't apply.
+lines.push(`Workspace config (workspace.json): ${configSummary(config)}`);
 
 // Keep this chat's record in step with its identity (gh:132). The record is
 // keyed on sessionId and filed under the chat name, so a rename moves the file
