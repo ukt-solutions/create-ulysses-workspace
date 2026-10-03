@@ -37,11 +37,13 @@
 //                         info, never a dirty-tree warning (gh:190). Leftover
 //                         Claude Code agent worktrees (worktree-agent-*
 //                         branches, gh:205) are each listed as info with the
-//                         facts and a strict removable verdict — clean,
-//                         own-work analysis against the default branch
-//                         (merge commits, git-cherry patch-id landing),
-//                         locked, idle over an hour, chat-record claims —
-//                         also exposed as summary.agentWorktrees for --json
+//                         facts and a strict removable verdict that fails
+//                         closed — worktree integrity, clean, own-work
+//                         analysis against the default branch (merge
+//                         commits, git-cherry patch-id landing), locked,
+//                         idle over an hour, chat-record claims (unreadable
+//                         records block removal) — also exposed as
+//                         summary.agentWorktrees for --json
 //   5. auto-files       — workspace-context catalogs current (the same
 //                         semantics as build-workspace-context.mjs --check)
 //   6. budget           — always-loaded context within
@@ -624,17 +626,39 @@ export async function runAudit({
       for (const line of String(res.stdout).split(/\r?\n/)) {
         if (!line) { cur = null; continue; }
         if (line.startsWith('worktree ')) {
-          cur = { path: line.slice('worktree '.length), branch: null, locked: false, lockReason: null };
+          cur = { path: line.slice('worktree '.length), branch: null, locked: false, lockReason: null, prunable: false };
           out.push(cur);
         } else if (cur && line.startsWith('branch ')) {
           cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
         } else if (cur && line.startsWith('locked')) {
           cur.locked = true;
           cur.lockReason = line.slice('locked'.length).trim() || null;
+        } else if (cur && line.startsWith('prunable')) {
+          cur.prunable = true;
         }
       }
       return out.filter((w) => typeof w.branch === 'string'
         && w.branch.startsWith('worktree-agent-') && inAgentSlot(w.path));
+    };
+    // Native path resolution (Windows 8.3 short names) with a plain
+    // fallback. On win32 the filesystem is case-insensitive and git may
+    // spell a path with different casing than Node does, so real-path
+    // comparisons there are case-insensitive too.
+    const realPathNative = (p) => {
+      try { return realpathSync.native(p); } catch { /* fall through */ }
+      try { return realpathSync(p); } catch { /* fall through */ }
+      return resolve(p);
+    };
+    const sameRealPath = (a, b) => {
+      const x = realPathNative(a);
+      const y = realPathNative(b);
+      return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+    };
+    // Counts arrive from git stdout; anything but a plain integer is a null
+    // answer, never a coerced zero.
+    const parseCount = (stdout) => {
+      const t = String(stdout).trim();
+      return /^[0-9]+$/.test(t) ? Number(t) : null;
     };
     // A repos/{name}/ directory that is not a git toplevel of its own would
     // make every git query walk up to the launcher and list the launcher's
@@ -642,29 +666,42 @@ export async function runAudit({
     const isOwnToplevel = (dir) => {
       const res = gitIn(dir, ['rev-parse', '--show-toplevel']);
       if (res.status !== 0) return false;
-      try {
-        return realpathSync(String(res.stdout).trim()) === realpathSync(dir);
-      } catch {
-        return false;
-      }
+      return sameRealPath(String(res.stdout).trim(), dir);
     };
     // A worktree-agent-* branch a chat record still lists as a task belongs
     // to a chat, not to cleanup. The records are read directly (the same
     // layout chat-record.mjs owns) rather than imported, so the audit keeps
     // running from the upgrade payload, which stages only part of scripts/.
+    // Every way a record can fail to be read — an unreadable chats
+    // directory (anything but ENOENT), unparseable JSON, a tasks field
+    // present but not an array — makes claims UNKNOWN, and unknown fails
+    // closed: no agent worktree is removable while any record is unreadable.
     const claimedBranches = new Set();
+    let claimsUnknown = false;
     {
       const chatsDir = join(reposRoot, 'workspace-scratchpad', 'chats');
       let names = [];
-      try { names = readdirSync(chatsDir); } catch { /* no records on this machine */ }
+      try {
+        names = readdirSync(chatsDir);
+      } catch (err) {
+        if (err?.code !== 'ENOENT') claimsUnknown = true;
+      }
       for (const name of names) {
         if (!name.endsWith('.json')) continue;
+        let rec;
         try {
-          const rec = JSON.parse(readFileSync(join(chatsDir, name), 'utf8'));
-          for (const t of Array.isArray(rec.tasks) ? rec.tasks : []) {
-            if (t && typeof t.branch === 'string') claimedBranches.add(t.branch);
-          }
-        } catch { /* a half-written record is not our problem */ }
+          rec = JSON.parse(readFileSync(join(chatsDir, name), 'utf8'));
+        } catch {
+          claimsUnknown = true;
+          continue;
+        }
+        if (rec && rec.tasks !== undefined && !Array.isArray(rec.tasks)) {
+          claimsUnknown = true;
+          continue;
+        }
+        for (const t of Array.isArray(rec?.tasks) ? rec.tasks : []) {
+          if (t && typeof t.branch === 'string') claimedBranches.add(t.branch);
+        }
       }
     }
     const reposToScan = [
@@ -699,10 +736,12 @@ export async function runAudit({
       if (!existsSync(repoDir)) continue; // an uncloned repo is section 3's finding
       if (!isOwnToplevel(repoDir)) continue; // not a repo of its own — see isOwnToplevel
       for (const w of agentEntries(repoDir)) {
+        const wtRealPath = asReal(w.path);
         const facts = {
           repo,
           branch: w.branch,
-          path: toRootRelative(reposAnchor, asReal(w.path)),
+          path: toRootRelative(reposAnchor, wtRealPath),
+          absolutePath: wtRealPath,
           clean: null,
           commitsBeyond: null,
           patchIdsOnDefault: null,
@@ -712,12 +751,25 @@ export async function runAudit({
         const reasons = [];
         // Ref queries run from the repo, not the worktree, so the facts
         // survive a prunable entry whose directory is already gone.
-        // Gate 1 — clean, untracked files included.
+        // Gate 1 — integrity: git must still map this directory to the
+        // recorded worktree. A deleted .git file leaves a plain directory
+        // whose git queries silently run against the owning repo (which may
+        // well be clean) — the toplevel check is what catches that, and a
+        // prunable record means the directory is already gone.
+        if (w.prunable) {
+          reasons.push('prunable worktree record — git no longer resolves this worktree');
+        } else {
+          const top = gitIn(w.path, ['rev-parse', '--show-toplevel']);
+          if (top.status !== 0 || !sameRealPath(String(top.stdout).trim(), w.path)) {
+            reasons.push('worktree integrity unverifiable — directory does not match its record');
+          }
+        }
+        // Gate 2 — clean, untracked files included.
         const wtStatus = gitIn(w.path, ['status', '--porcelain']);
         if (wtStatus.status === 0) facts.clean = String(wtStatus.stdout).trim() === '';
         if (facts.clean === false) reasons.push('dirty worktree');
         else if (facts.clean === null) reasons.push('cleanliness unknown');
-        // Gate 2 — no work of its own on the line. The base is the repo's
+        // Gate 3 — no work of its own on the line. The base is the repo's
         // configured default, origin's copy when it exists, else the local
         // ref; with neither there is nothing to measure against.
         const configured = repo === '.'
@@ -733,7 +785,7 @@ export async function runAudit({
         } else {
           facts.base = base;
           const cnt = gitIn(repoDir, ['rev-list', '--count', `${base}..${w.branch}`]);
-          if (cnt.status === 0) facts.commitsBeyond = Number.parseInt(String(cnt.stdout).trim(), 10) || 0;
+          if (cnt.status === 0) facts.commitsBeyond = parseCount(cnt.stdout);
           if (facts.commitsBeyond === null) {
             reasons.push(`commits beyond ${base} unknown`);
           } else if (facts.commitsBeyond > 0) {
@@ -747,13 +799,15 @@ export async function runAudit({
             // non-merge commit before its verdict is trusted.
             const merges = gitIn(repoDir, ['rev-list', '--merges', '--count', `${base}..${w.branch}`]);
             const noMerges = gitIn(repoDir, ['rev-list', '--no-merges', '--count', `${base}..${w.branch}`]);
-            const mergeCount = merges.status === 0 ? Number.parseInt(String(merges.stdout).trim(), 10) || 0 : null;
-            const noMergeCount = noMerges.status === 0 ? Number.parseInt(String(noMerges.stdout).trim(), 10) || 0 : null;
+            const mergeCount = merges.status === 0 ? parseCount(merges.stdout) : null;
+            const noMergeCount = noMerges.status === 0 ? parseCount(noMerges.stdout) : null;
             const cherry = gitIn(repoDir, ['cherry', base, w.branch]);
             const cherryLines = cherry.status === 0
               ? String(cherry.stdout).split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
               : null;
-            if (mergeCount !== null && mergeCount > 0) {
+            if (mergeCount === null) {
+              reasons.push(`landing on ${base} unverifiable — merge count unreadable`);
+            } else if (mergeCount > 0) {
               reasons.push(`${mergeCount} merge commit(s) beyond ${base} — patch-ids do not apply to merges`);
             } else if (cherryLines === null || noMergeCount === null || cherryLines.length !== noMergeCount) {
               reasons.push(`landing on ${base} unverifiable — git cherry could not account for every commit`);
@@ -767,16 +821,18 @@ export async function runAudit({
             facts.patchIdsOnDefault = true; // nothing beyond the base at all
           }
         }
-        // Gate 3 — locked. Claude Code locks a worktree while its agent
+        // Gate 4 — locked. Claude Code locks a worktree while its agent
         // runs; a stale lock still means removal needs a human decision.
         if (facts.locked) reasons.push(`locked${facts.lockReason ? ` (${facts.lockReason})` : ''}`);
-        // Gate 4 — idle (see lastActivityMs above).
+        // Gate 5 — idle (see lastActivityMs above).
         const activity = lastActivityMs(w.path);
         if (Number.isNaN(activity)) reasons.push('last activity unknown');
         else if (nowFn().getTime() - activity < IDLE_MS) reasons.push('active within the last hour');
-        // Gate 5 — not claimed (see claimedBranches above).
-        facts.claimed = claimedBranches.has(w.branch);
-        if (facts.claimed) reasons.push('claimed by a chat record');
+        // Gate 6 — not claimed (see claimedBranches above). Claims that
+        // could not be read fail closed: unknown is not none.
+        facts.claimed = !claimsUnknown && claimedBranches.has(w.branch);
+        if (claimsUnknown) reasons.push('chat records unreadable — claims unknown');
+        else if (facts.claimed) reasons.push('claimed by a chat record');
         facts.removable = reasons.length === 0;
         facts.reasons = reasons;
         agentWorktrees.push(facts);

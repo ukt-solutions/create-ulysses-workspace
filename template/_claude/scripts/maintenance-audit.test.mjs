@@ -18,6 +18,7 @@ import {
   existsSync,
   readFileSync,
   utimesSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -46,6 +47,10 @@ function assertTrue(cond, msg) {
 function git(root, args) {
   return spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
 }
+
+// mkdtemp paths live behind the macOS /var -> /private/var symlink; git
+// reports the resolved spelling, so expected absolute paths must resolve too.
+const real = (p) => realpathSync(p);
 
 /**
  * A mostly-clean fixture workspace. `mutate(root)` applies the per-test
@@ -1027,18 +1032,21 @@ console.log('# maintenance-audit');
   assertEq(
     byBranch['worktree-agent-clean'],
     { repo: 'app', branch: 'worktree-agent-clean', path: 'repos/app/.claude/worktrees/agent-clean',
+      absolutePath: join(real(root), 'repos', 'app', '.claude', 'worktrees', 'agent-clean'),
       clean: true, commitsBeyond: 0, patchIdsOnDefault: true, locked: false, base: 'main',
       claimed: false, removable: true, reasons: [] },
     'a clean, commit-less, idle worktree is removable with no reasons');
   assertEq(
     byBranch['worktree-agent-picked'],
     { repo: 'app', branch: 'worktree-agent-picked', path: 'repos/app/.claude/worktrees/agent-picked',
+      absolutePath: join(real(root), 'repos', 'app', '.claude', 'worktrees', 'agent-picked'),
       clean: true, commitsBeyond: 1, patchIdsOnDefault: true, locked: false, base: 'main',
       claimed: false, removable: true, reasons: [] },
     'a cherry-picked commit counts as beyond main yet fully landed — removable');
   assertEq(
     byBranch['worktree-agent-ws'],
     { repo: '.', branch: 'worktree-agent-ws', path: '.claude/worktrees/agent-ws',
+      absolutePath: join(real(root), '.claude', 'worktrees', 'agent-ws'),
       clean: true, commitsBeyond: 0, patchIdsOnDefault: true, locked: false, base: 'main',
       claimed: false, removable: true, reasons: [] },
     'a workspace-repo agent worktree is reported against repo "." and removable');
@@ -1183,6 +1191,52 @@ console.log('# maintenance-audit');
   const result = await audit(root, { nowFn: () => new Date(Date.now() + 2 * 60 * 60 * 1000) });
   assertEq(result.summary.agentWorktrees.map((w) => w.repo), ['.'],
     'only the workspace repo is scanned — a non-git repos/app does not walk up to the launcher');
+  cleanup(root);
+}
+
+// 20f. gh:205 — claims fail closed: a chats record that cannot be parsed
+//      makes claims unknown, and no agent worktree is removable until the
+//      records read again — unknown is not none.
+{
+  const root = makeWorkspace();
+  const FUTURE = () => new Date(Date.now() + 2 * 60 * 60 * 1000);
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-quiet', join(root, '.claude', 'worktrees', 'agent-quiet')]);
+  mkdirSync(join(root, 'workspace-scratchpad', 'chats'), { recursive: true });
+  writeFileSync(join(root, 'workspace-scratchpad', 'chats', 'broken.json'), '{ not json\n');
+
+  const result = await audit(root, { nowFn: FUTURE });
+  const w = result.summary.agentWorktrees[0];
+  assertEq(w.removable, false, 'claims unknown means not removable');
+  assertEq(w.claimed, false, 'claimed is not asserted while records are unreadable');
+  assertTrue(w.reasons.includes('chat records unreadable — claims unknown'),
+    'the reason names the unreadable records');
+
+  // The same fixture with the record readable again — the gate lifts.
+  writeFileSync(join(root, 'workspace-scratchpad', 'chats', 'broken.json'), JSON.stringify({
+    chat: 'ok', sessionId: 'sid-1', scope: {}, concerns: [], tasks: [],
+  }, null, 2) + '\n');
+  const healed = await audit(root, { nowFn: FUTURE });
+  assertEq(healed.summary.agentWorktrees[0].removable, true, 'readable records restore the verdict');
+  cleanup(root);
+}
+
+// 20g. gh:205 — integrity: a worktree whose .git file was deleted no longer
+//      resolves (git marks the record prunable), and its git queries would
+//      silently run against the owning repo (which is clean here) — the
+//      integrity gate must catch it either way.
+{
+  const root = makeWorkspace();
+  const wtPath = join(root, '.claude', 'worktrees', 'agent-broken');
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-broken', wtPath]);
+  rmSync(join(wtPath, '.git'));
+
+  const result = await audit(root, { nowFn: () => new Date(Date.now() + 2 * 60 * 60 * 1000) });
+  const w = result.summary.agentWorktrees[0];
+  assertEq(w.removable, false, 'a directory that no longer maps to its worktree record is not removable');
+  assertTrue(
+    w.reasons.some((r) => r.includes('prunable') || r.includes('integrity')),
+    'the reason names the integrity gate',
+  );
   cleanup(root);
 }
 
