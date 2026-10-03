@@ -23,19 +23,19 @@
 //   node chat-record.mjs --root <dir> --whoami
 //   node chat-record.mjs --root <dir> --owner <work-item>
 //   node chat-record.mjs --root <dir> --add-task    --chat <n> --branch <b> [--repo <r>] [--work-item <id>]
-//   node chat-record.mjs --root <dir> --remove-task --chat <n> (--work-item <id> | --branch <b>) [--repo <r>]
+//   node chat-record.mjs --root <dir> --remove-task --chat <n> (--work-item <id> [--branch <b>] | --branch <b>) [--repo <r>]
 //
-// --add-task / --remove-task report `action`: "added" | "updated" for
-// --add-task, "removed" | "unchanged" for --remove-task. They also keep the
-// older `updated` boolean / `removed` count fields — `updated` means "an
-// existing entry was replaced", not "anything changed" — but new callers
-// should read `action`. --whoami prints this chat's record name by matching
+// --add-task / --remove-task report `action`: "added" | "unchanged" for
+// --add-task, "removed" | "unchanged" for --remove-task, which also reports
+// a `removed` count — removing by work item without a branch takes every
+// branch of the item. --whoami prints this chat's record name by matching
 // $CLAUDE_CODE_SESSION_ID against the records' sessionId, nothing and exit
 // 1 when there is no match: the `Chat record:` hook line can be missing
 // after context compaction, and this is the recovery path. --owner prints
-// the chat a work item's open task belongs to as `{ chat, branch, repos }`,
-// and nothing with exit 1 when no record lists it — /start-work uses it to
-// offer adopting a task another chat started (gh:188).
+// the chat a work item's open task belongs to as `{ chat, branches }` — one
+// `{ branch, repos }` per branch the item is open on — and nothing with
+// exit 1 when no record lists it: /start-work uses it to offer adopting a
+// task another chat started (gh:188).
 
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync,
@@ -200,35 +200,43 @@ function resolveChatName(root, { sessionId, registryName = null } = {}) {
 // merges — nothing about it is durable except the issue and the commits, so
 // the record holds only the pointer, never a copy of the issue.
 //
-// Identity is workItem + repo: the same issue can legitimately be open against
-// two repos in a multi-repo task, and re-recording the same one must update
-// rather than duplicate. /start-work is not always run exactly once. A task
-// recorded without a tracker (gh:173) carries `workItem: null` and is keyed
-// by branch + repo instead — the branch is the only identity it has — so
-// both add and remove take the branch for those entries.
+// Identity is workItem + repo + branch (gh:206). The same issue can
+// legitimately be open against two repos in a multi-repo task, and equally
+// on two branches of the same repo — a second attempt, a scoped alternative
+// — each with its own worktree and its own PR, so a different branch is
+// added alongside rather than replacing what was there, and re-recording
+// the same triple is a no-op. /start-work is not always run exactly once. A
+// task recorded without a tracker (gh:173) carries `workItem: null` and is
+// keyed by branch + repo instead — the branch is the only identity it has —
+// so add always takes the branch, and remove by branch alone touches only
+// those tracker-less entries.
 function addTask(root, chatName, { workItem = null, branch, repo = null } = {}) {
   if (!branch) throw new Error('addTask: branch is required');
   const rec = readRecord(root, chatName);
   if (!rec) throw new Error(`addTask: no chat record for "${chatName}"`);
   const i = rec.tasks.findIndex(
-    (t) => (t.workItem ?? null) === workItem && (t.repo ?? null) === repo
-      && (workItem !== null || t.branch === branch),
+    (t) => (t.workItem ?? null) === workItem && (t.repo ?? null) === repo && t.branch === branch,
   );
-  const task = { workItem, branch, repo };
-  if (i >= 0) rec.tasks[i] = task;
-  else rec.tasks.push(task);
+  if (i < 0) rec.tasks.push({ workItem, branch, repo });
   writeRecord(root, rec);
-  return { record: rec, action: i >= 0 ? 'updated' : 'added', updated: i >= 0 };
+  return { record: rec, action: i >= 0 ? 'unchanged' : 'added' };
 }
 
+// Removal selects by the same identity, one dimension at a time: a given
+// work item matches only its own entries (absent, only tracker-less ones),
+// while a given branch or repo narrows within whatever the work item
+// selected — an omitted branch or repo matches any. `--work-item` with
+// neither takes every branch of the item across repos; `--branch` narrows
+// the removal to that one branch.
 function removeTask(root, chatName, { workItem = null, branch = null, repo = null } = {}) {
   if (workItem === null && !branch) throw new Error('removeTask: workItem or branch is required');
   const rec = readRecord(root, chatName);
   if (!rec) throw new Error(`removeTask: no chat record for "${chatName}"`);
   const before = rec.tasks.length;
   rec.tasks = rec.tasks.filter(
-    (t) => !((t.workItem ?? null) === workItem && (t.repo ?? null) === repo
-      && (workItem !== null || t.branch === branch)),
+    (t) => !((t.workItem ?? null) === workItem
+      && (branch === null || t.branch === branch)
+      && (repo === null || (t.repo ?? null) === repo)),
   );
   writeRecord(root, rec);
   return { record: rec, action: before - rec.tasks.length > 0 ? 'removed' : 'unchanged', removed: before - rec.tasks.length };
@@ -252,6 +260,11 @@ function whoami(root, { env = process.env } = {}) {
 // by, so it doubles as the address for "ask the owner". Records are scanned
 // most-recently-modified first, so a stray duplicate answers with the chat
 // that touched its record last. Null when no record lists the work item.
+//
+// One issue may be open on several branches (gh:206), so the answer carries
+// one `{ branch, repos }` per branch — a multi-repo task is several entries
+// sharing a branch — rather than one flattened branch that would hide the
+// rest behind whichever entry happened to come first.
 function findOwner(root, workItem) {
   if (!workItem) return null;
   const dir = chatsDir(root);
@@ -268,9 +281,13 @@ function findOwner(root, workItem) {
       ? rec.tasks.filter((t) => (t.workItem ?? null) === workItem)
       : [];
     if (hits.length === 0) continue;
-    // One issue is one task: a shared branch across repos. All matching
-    // entries are that task's repos.
-    return { chat: rec.chat, branch: hits[0].branch, repos: hits.map((t) => t.repo) };
+    const branches = [];
+    for (const t of hits) {
+      const b = branches.find((x) => x.branch === t.branch);
+      if (b) { if (!b.repos.includes(t.repo)) b.repos.push(t.repo); }
+      else branches.push({ branch: t.branch, repos: [t.repo] });
+    }
+    return { chat: rec.chat, branches };
   }
   return null;
 }

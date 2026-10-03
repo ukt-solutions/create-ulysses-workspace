@@ -152,38 +152,90 @@ console.log('# task lifecycle');
 
     const added = addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a', repo: 'app' });
     assertEq(added.action, 'added', 'a new task reports action "added"');
-    assertEq(added.updated, false, 'the legacy updated flag stays false for a new task');
     addTask(r, 'worker', { workItem: 'gh:2', branch: 'feature/b', repo: 'app' });
     assertEq(readRecord(r, 'worker').tasks.length, 2, 'two tasks recorded');
 
-    // Re-recording the same work item must update, not duplicate — /start-work
-    // is not guaranteed to run exactly once per task.
-    const again = addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a-v2', repo: 'app' });
-    assertEq(again.action, 'updated', 're-adding reports action "updated"');
-    assert(again.updated === true, 'the legacy updated flag still means "an entry was replaced"');
+    // Re-recording the same work item + repo + branch is idempotent —
+    // /start-work is not guaranteed to run exactly once per task.
+    const again = addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a', repo: 'app' });
+    assertEq(again.action, 'unchanged', 're-adding the same triple reports action "unchanged"');
     assertEq(readRecord(r, 'worker').tasks.length, 2, 'no duplicate created');
+
+    // A second branch for the same issue in the same repo is added
+    // alongside, never a replacement (gh:206): each branch is its own
+    // worktree and its own PR.
+    const second = addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a-alt', repo: 'app' });
+    assertEq(second.action, 'added', 'a second branch for the same issue is added, not a swap');
     assertEq(
-      readRecord(r, 'worker').tasks.find((t) => t.workItem === 'gh:1').branch,
-      'feature/a-v2',
-      'branch updated in place',
+      readRecord(r, 'worker').tasks.filter((t) => t.workItem === 'gh:1' && t.repo === 'app').map((t) => t.branch),
+      ['feature/a', 'feature/a-alt'],
+      'both branches of the issue in the repo are kept',
     );
 
     // The same issue against two repos is a legitimate multi-repo task.
-    addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a-v2', repo: 'api' });
-    assertEq(readRecord(r, 'worker').tasks.length, 3, 'same issue in a second repo is a separate task');
+    addTask(r, 'worker', { workItem: 'gh:1', branch: 'feature/a', repo: 'api' });
+    assertEq(readRecord(r, 'worker').tasks.length, 4, 'same issue in a second repo is a separate task');
 
-    const rm = removeTask(r, 'worker', { workItem: 'gh:1', repo: 'app' });
-    assertEq(rm.action, 'removed', 'a real removal reports action "removed"');
-    assertEq(rm.removed, 1, 'one task removed');
-    assertEq(readRecord(r, 'worker').tasks.length, 2, 'only the matching repo removed');
+    // --branch narrows removal to one branch of the item/repo.
+    const one = removeTask(r, 'worker', { workItem: 'gh:1', repo: 'app', branch: 'feature/a' });
+    assertEq(one.action, 'removed', 'a real removal reports action "removed"');
+    assertEq(one.removed, 1, 'one branch removed');
+    assert(
+      !readRecord(r, 'worker').tasks.some((t) => t.branch === 'feature/a' && t.repo === 'app'),
+      'the named branch is gone',
+    );
+    assert(
+      readRecord(r, 'worker').tasks.some((t) => t.workItem === 'gh:1' && t.branch === 'feature/a-alt' && t.repo === 'app'),
+      'the other branch of the issue survives',
+    );
     assert(
       readRecord(r, 'worker').tasks.some((t) => t.workItem === 'gh:1' && t.repo === 'api'),
       'the other repo\'s task survives',
     );
 
+    // No --branch removes every branch of the item/repo.
+    const rest = removeTask(r, 'worker', { workItem: 'gh:1', repo: 'app' });
+    assertEq(rest.removed, 1, 'the remaining branch of the item/repo removed');
+    assert(
+      !readRecord(r, 'worker').tasks.some((t) => t.workItem === 'gh:1' && t.repo === 'app'),
+      'nothing of the item/repo remains',
+    );
+    assertEq(readRecord(r, 'worker').tasks.length, 2, 'gh:2 and the api entry remain');
+
     const noop = removeTask(r, 'worker', { workItem: 'nope' });
     assertEq(noop.action, 'unchanged', 'removing an absent task reports action "unchanged"');
     assertEq(noop.removed, 0, 'removing an absent task is a no-op');
+  } finally { clean(r); }
+}
+
+console.log('# remove-all: --work-item with no branch takes every branch across repos');
+{
+  const r = root();
+  try {
+    reconcile(r, { sessionId: 'sid-rm', name: 'remover' });
+    addTask(r, 'remover', { workItem: 'gh:3', branch: 'feature/one', repo: 'app' });
+    addTask(r, 'remover', { workItem: 'gh:3', branch: 'feature/two', repo: 'app' });
+    addTask(r, 'remover', { workItem: 'gh:3', branch: 'feature/two', repo: 'api' });
+    addTask(r, 'remover', { workItem: 'gh:4', branch: 'feature/other', repo: 'app' });
+
+    // With --repo: every branch of the item in that repo.
+    const inRepo = removeTask(r, 'remover', { workItem: 'gh:3', repo: 'app' });
+    assertEq(inRepo.action, 'removed', 'removal across branches reports action "removed"');
+    assertEq(inRepo.removed, 2, 'both branches in the repo removed at once');
+    assertEq(
+      readRecord(r, 'remover').tasks.filter((t) => t.workItem === 'gh:3').map((t) => t.repo),
+      ['api'],
+      'the item\'s entry in the other repo survives',
+    );
+
+    // Without --repo: every branch of the item everywhere.
+    const everywhere = removeTask(r, 'remover', { workItem: 'gh:3' });
+    assertEq(everywhere.removed, 1, 'the last entry of the item removed');
+    assert(
+      !readRecord(r, 'remover').tasks.some((t) => t.workItem === 'gh:3'),
+      'nothing of the item remains',
+    );
+    assertEq(readRecord(r, 'remover').tasks.length, 1, 'the unrelated task survives');
   } finally { clean(r); }
 }
 
@@ -201,21 +253,31 @@ console.log('# tasks without a tracker: workItem null, keyed by branch + repo');
       'the entry carries workItem: null',
     );
 
-    // Re-recording the same branch + repo updates in place, exactly as
-    // re-recording the same issue + repo does — /start-work is not always
-    // run exactly once, with or without a tracker.
+    // Re-recording the same branch + repo is idempotent, exactly as
+    // re-recording a tracked task is — /start-work is not always run exactly
+    // once, with or without a tracker.
     const again = addTask(r, 'nowork', { branch: 'feature/local', repo: 'app' });
-    assertEq(again.action, 'updated', 'identity without a work item is branch + repo');
+    assertEq(again.action, 'unchanged', 'identity without a work item is branch + repo');
     assertEq(readRecord(r, 'nowork').tasks.length, 1, 'no duplicate created');
     addTask(r, 'nowork', { branch: 'feature/other', repo: 'app' });
     assertEq(readRecord(r, 'nowork').tasks.length, 2, 'a second branch in the same repo is a separate task');
 
-    const rm = removeTask(r, 'nowork', { branch: 'feature/local', repo: 'app' });
+    // Branch-only removal needs no repo — the branch names the task in any
+    // repo — and never touches a tracked entry on the same branch.
+    addTask(r, 'nowork', { workItem: 'gh:5', branch: 'feature/other', repo: 'app' });
+    const rm = removeTask(r, 'nowork', { branch: 'feature/local' });
     assertEq(rm.action, 'removed', 'remove works without a work item, by branch');
     assertEq(
       readRecord(r, 'nowork').tasks,
-      [{ workItem: null, branch: 'feature/other', repo: 'app' }],
+      [{ workItem: null, branch: 'feature/other', repo: 'app' }, { workItem: 'gh:5', branch: 'feature/other', repo: 'app' }],
       'only the matching branch removed',
+    );
+    const guarded = removeTask(r, 'nowork', { branch: 'feature/other' });
+    assertEq(guarded.removed, 1, 'the tracker-less entry on the branch is removed');
+    assertEq(
+      readRecord(r, 'nowork').tasks,
+      [{ workItem: 'gh:5', branch: 'feature/other', repo: 'app' }],
+      'a tracked entry on the same branch survives a branch-only removal',
     );
 
     throws(() => removeTask(r, 'nowork', {}), 'removeTask needs a work item or a branch');
@@ -233,8 +295,8 @@ console.log('# a task may target the workspace repo (repo: ".")');
       [{ workItem: 'gh:6', branch: 'feature/ws', repo: '.' }],
       'repo "." round-trips through the record',
     );
-    // Identity is workItem + repo, so the same issue against "." and a
-    // project repo are two entries — a multi-repo task including the
+    // Identity is workItem + repo + branch, so the same issue against "." and
+    // a project repo are two entries — a multi-repo task including the
     // workspace itself.
     addTask(r, 'wsworker', { workItem: 'gh:6', branch: 'feature/ws', repo: 'app' });
     assertEq(readRecord(r, 'wsworker').tasks.length, 2, '"." and a project repo are distinct targets');
@@ -341,7 +403,7 @@ console.log('# whoami CLI: bare name on stdout, silence and exit 1 without a mat
   } finally { clean(r); }
 }
 
-console.log('# findOwner: the chat a work item\'s task belongs to (gh:188)');
+console.log('# findOwner: the chat a work item\'s tasks belong to (gh:188)');
 {
   const r = root();
   try {
@@ -353,11 +415,25 @@ console.log('# findOwner: the chat a work item\'s task belongs to (gh:188)');
 
     assertEq(
       findOwner(r, 'gh:40'),
-      { chat: 'owner', branch: 'feature/shared', repos: ['app', '.'] },
-      'the owning chat, its branch, and every repo of the task',
+      { chat: 'owner', branches: [{ branch: 'feature/shared', repos: ['app', '.'] }] },
+      'the owning chat, its branch, and every repo of that branch',
     );
     assertEq(findOwner(r, 'gh:999'), null, 'an unowned work item is null');
     assertEq(findOwner(r, null), null, 'a missing work item is null');
+
+    // One issue on two branches: the answer carries both, each with its own
+    // repos — the first must not hide the second (gh:206).
+    addTask(r, 'owner', { workItem: 'gh:42', branch: 'feature/one', repo: 'app' });
+    addTask(r, 'owner', { workItem: 'gh:42', branch: 'feature/two', repo: 'app' });
+    addTask(r, 'owner', { workItem: 'gh:42', branch: 'feature/two', repo: 'api' });
+    assertEq(
+      findOwner(r, 'gh:42'),
+      { chat: 'owner', branches: [
+        { branch: 'feature/one', repos: ['app'] },
+        { branch: 'feature/two', repos: ['app', 'api'] },
+      ] },
+      'every branch of the issue, each with its own repos',
+    );
 
     // A tracker-less task carries workItem null — it is never an owner hit.
     reconcile(r, { sessionId: 'sid-n', name: 'nowork' });
@@ -396,7 +472,11 @@ console.log('# --owner CLI: JSON on stdout, silence and exit 1 without an owner'
     addTask(r, 'cliowner', { workItem: 'gh:60', branch: 'feature/cli-owner', repo: 'app' });
     const script = fileURLToPath(new URL('./chat-record.mjs', import.meta.url));
     const out = JSON.parse(execFileSync(process.execPath, [script, '--root', r, '--owner', 'gh:60'], { encoding: 'utf8' }));
-    assertEq(out, { chat: 'cliowner', branch: 'feature/cli-owner', repos: ['app'] }, 'CLI prints the owner payload');
+    assertEq(
+      out,
+      { chat: 'cliowner', branches: [{ branch: 'feature/cli-owner', repos: ['app'] }] },
+      'CLI prints the owner payload',
+    );
 
     let exit = null;
     let silent = '';
