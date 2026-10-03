@@ -29,6 +29,17 @@
 //     older results may exist beyond it the returned array carries a
 //     non-enumerable `truncated: true` (callers that only map the list
 //     never see it).
+//   prChecks({ id, repo? })
+//     → { state: 'pending' | 'success' | 'failure' | 'none', url,
+//         failing: [{ name, url }], note? }
+//     The PR's CI picture: 'success' or 'failure' once its checks finished,
+//     'pending' while they run, 'none' when the PR has no checks at all.
+//     `failing` lists the failing check runs (name + url) when the state is
+//     'failure'; `url` points where a human looks — the PR's checks page
+//     (GitHub) or the head pipeline (GitLab). A GitLab pipeline on a
+//     `manual` job reads as pending with a `note` saying so (approving the
+//     job resumes the pipeline), and `skipped` counts as success, matching
+//     GitHub's skipping bucket.
 //   releaseView({ tag, repo? })
 //     → { tag, url, name, publishedAt }
 //     throws ReleaseNotFound if the tag has no release

@@ -214,6 +214,102 @@ console.log('# prList');
   else fail(`prList head filter wrong: ${JSON.stringify(prs)}`);
 }
 
+console.log('# prChecks');
+
+const CHECKS_KEY = 'pr checks 42 --repo foo/bar --json name,state,bucket,link';
+const CHECKS_URL = 'https://github.com/foo/bar/pull/42/checks';
+
+// All-pass rows → success; the argv asks for the bucket categorization
+// the aggregate state is derived from.
+{
+  const spawnFn = buildSpawn({
+    [CHECKS_KEY]: JSON.stringify([
+      { name: 'build', state: 'SUCCESS', bucket: 'pass', link: 'https://x/build' },
+      { name: 'lint', state: 'SKIPPED', bucket: 'skipping', link: 'https://x/lint' },
+    ]),
+  });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const checks = await forge.prChecks({ id: 'foo/bar#42' });
+  if (checks.state === 'success' && checks.url === CHECKS_URL && checks.failing.length === 0) ok();
+  else fail(`prChecks success wrong: ${JSON.stringify(checks)}`);
+  if (spawnFn.calls[0].args.join(' ') === CHECKS_KEY) ok();
+  else fail(`prChecks argv wrong: ${spawnFn.calls[0].args.join(' ')}`);
+}
+
+// A failing row: gh exits 1 with the checks JSON still on stdout — the
+// JSON is the answer, the exit status carries nothing it does not. The
+// failing list names the failed check and its link.
+{
+  const spawnFn = buildSpawn({
+    [CHECKS_KEY]: () => ({
+      status: 1,
+      stdout: JSON.stringify([
+        { name: 'build', state: 'SUCCESS', bucket: 'pass', link: 'https://x/build' },
+        { name: 'test', state: 'FAILURE', bucket: 'fail', link: 'https://x/test' },
+      ]),
+      stderr: 'some checks were failing',
+    }),
+  });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const checks = await forge.prChecks({ id: 'foo/bar#42' });
+  if (checks.state === 'failure' && checks.failing.length === 1
+      && checks.failing[0].name === 'test' && checks.failing[0].url === 'https://x/test') ok();
+  else fail(`prChecks failure wrong: ${JSON.stringify(checks)}`);
+}
+
+// Pending rows: gh exits 8 — again the JSON decides, and the state is
+// pending, not failure.
+{
+  const spawnFn = buildSpawn({
+    [CHECKS_KEY]: () => ({
+      status: 8,
+      stdout: JSON.stringify([
+        { name: 'build', state: 'IN_PROGRESS', bucket: 'pending', link: 'https://x/build' },
+      ]),
+      stderr: '',
+    }),
+  });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const checks = await forge.prChecks({ id: 'foo/bar#42' });
+  if (checks.state === 'pending' && checks.failing.length === 0) ok();
+  else fail(`prChecks pending wrong: ${JSON.stringify(checks)}`);
+}
+
+// No rows at all → 'none' (no CI configured on the PR).
+{
+  const spawnFn = buildSpawn({ [CHECKS_KEY]: '[]' });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const checks = await forge.prChecks({ id: 'foo/bar#42' });
+  if (checks.state === 'none' && checks.failing.length === 0) ok();
+  else fail(`prChecks none wrong: ${JSON.stringify(checks)}`);
+}
+
+// A cancelled check never passed — it counts as failing, not as done.
+{
+  const spawnFn = buildSpawn({
+    [CHECKS_KEY]: JSON.stringify([
+      { name: 'e2e', state: 'CANCELLED', bucket: 'cancel', link: 'https://x/e2e' },
+    ]),
+  });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  const checks = await forge.prChecks({ id: 'foo/bar#42' });
+  if (checks.state === 'failure' && checks.failing[0]?.name === 'e2e') ok();
+  else fail(`prChecks cancel wrong: ${JSON.stringify(checks)}`);
+}
+
+// Output that is not JSON — gh printing prose on an auth or network
+// failure — is the one real error, whatever the exit status.
+{
+  const spawnFn = buildSpawn({
+    [CHECKS_KEY]: () => ({ status: 1, stdout: '', stderr: 'gh: authentication required' }),
+  });
+  const forge = createForge({ type: 'github', repo: 'foo/bar' }, { spawnFn });
+  let threw = null;
+  try { await forge.prChecks({ id: 'foo/bar#42' }); } catch (e) { threw = e; }
+  if (threw && /authentication required/.test(threw.message)) ok();
+  else fail(`prChecks non-JSON wrong: ${threw?.message ?? 'no throw'}`);
+}
+
 console.log('# releaseView');
 
 // Normalizes the JSON gh release view returns.

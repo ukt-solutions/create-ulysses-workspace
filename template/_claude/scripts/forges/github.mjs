@@ -139,6 +139,42 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     }));
   }
 
+  // The PR's CI picture, from `gh pr checks` (which categorizes each check
+  // row into a `bucket`: pass, fail, pending, skipping, cancel — the
+  // aggregate state derives from those, not from `state`, whose vocabulary
+  // is wider and matters less). gh exits non-zero when any check fails or
+  // is pending, so the exit status carries nothing the JSON does not;
+  // output that is not JSON at all — gh printing prose on an auth or
+  // network failure — is the only real error. A cancelled check never
+  // passed and reads as failing; a skipped one is an expected matrix leg
+  // and counts as a pass.
+  async function prChecks({ id, repo }) {
+    if (!id) throw new Error('prChecks: id is required');
+    const { number, repo: parsedRepo } = parsePrId(id, repoFor(repo));
+    const result = gh(['pr', 'checks', String(number), '--repo', parsedRepo, '--json', 'name,state,bucket,link']);
+    let rows;
+    try {
+      rows = JSON.parse(result.stdout || '');
+    } catch {
+      throw new Error(`gh pr checks ${number} failed: ${(result.stderr || result.stdout || '').trim()}`);
+    }
+    if (!Array.isArray(rows)) {
+      throw new Error(`gh pr checks ${number} returned unparseable output: ${result.stdout}`);
+    }
+    const failing = rows
+      .filter((c) => c.bucket === 'fail' || c.bucket === 'cancel')
+      .map((c) => ({ name: c.name, url: c.link }));
+    const state = failing.length > 0 ? 'failure'
+      : rows.some((c) => c.bucket === 'pending') ? 'pending'
+      : rows.length === 0 ? 'none'
+      : 'success';
+    return {
+      state,
+      url: `https://github.com/${parsedRepo}/pull/${number}/checks`,
+      failing,
+    };
+  }
+
   async function releaseView({ tag, repo }) {
     if (!tag) throw new Error('releaseView: tag is required');
     const target = repoFor(repo);
@@ -226,6 +262,7 @@ export function createGithubAdapter(config, { spawnFn = nodeSpawnSync } = {}) {
     prMerge,
     prView,
     prList,
+    prChecks,
     releaseView,
     releaseCreate,
     workflowRunFind,
