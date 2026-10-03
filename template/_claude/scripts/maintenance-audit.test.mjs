@@ -9,6 +9,7 @@
 
 import { runAudit, renderReport, parseArgs } from './maintenance-audit.mjs';
 import { regenerateAll } from './build-workspace-context.mjs';
+import { createHash } from 'node:crypto';
 import {
   mkdtempSync,
   mkdirSync,
@@ -543,7 +544,7 @@ console.log('# maintenance-audit');
   const payloadClaude = join(root, '.workspace-update', '.claude');
   const nestedScripts = join(payloadClaude, 'scripts');
   mkdirSync(nestedScripts, { recursive: true });
-  for (const f of ['maintenance-audit.mjs', 'context-footprint.mjs', 'build-workspace-context.mjs', 'template-baseline.mjs']) {
+  for (const f of ['maintenance-audit.mjs', 'context-footprint.mjs', 'build-workspace-context.mjs', 'template-baseline.mjs', 'template-modifications.mjs']) {
     writeFileSync(join(nestedScripts, f), readFileSync(join(here, f), 'utf8'));
   }
   mkdirSync(join(payloadClaude, 'lib'), { recursive: true });
@@ -822,6 +823,110 @@ console.log('# maintenance-audit');
     'a repo missing at the launcher warns from a worktree',
   );
   cleanup(root);
+}
+
+// 19. template-modification registry (gh:194), reported under structure:
+//     legacy workspace.json keys, keys escaping .claude/, and stale
+//     registrations are info; a registration whose file still carries its
+//     edit reports nothing; a registration naming a directory never reports
+//     (and never crashes the staleness read); a registry that doesn't parse
+//     is a warning.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = makeWorkspace({}, (r) => {
+    // a registration whose file is back to the baseline content: stale
+    writeFileSync(join(r, '.claude', 'rules', 'reverted.md'), 'template v1\n');
+    // a registration whose file still carries the local edit: live
+    writeFileSync(join(r, '.claude', 'rules', 'live.md'), 'our local take\n');
+    // a registration naming a directory the baseline records as a file:
+    // not stale, and the staleness read must not crash on it
+    mkdirSync(join(r, '.claude', 'rules', 'dir-case.md'));
+    writeFileSync(join(r, '.claude', '.template-baseline.json'), JSON.stringify({
+      templateVersion: '0.22.0',
+      files: {
+        '.claude/rules/reverted.md': sha('template v1\n'),
+        '.claude/rules/live.md': sha('template v1\n'),
+        '.claude/rules/dir-case.md': sha('template v1\n'),
+      },
+    }, null, 2) + '\n');
+    writeFileSync(join(r, '.claude', 'template-modifications.json'), JSON.stringify({
+      modifications: {
+        'rules/reverted.md': 'took the template back during the last update',
+        'rules/live.md': 'kept our stricter wording',
+        'rules/dir-case.md': 'names a directory, not a file',
+        '../CLAUDE.md': 'a root file the registry does not cover',
+      },
+    }, null, 2) + '\n');
+    // legacy keys still in workspace.json, unmigrated
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.workspace.localFiles = ['skills/custom/**'];
+    config.workspace.templateModifications = { 'rules/live.md': 'kept our stricter wording' };
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  const result = await audit(root);
+  const st = bySection(result, 'structure');
+  assertTrue(
+    st.some((f) => f.severity === 'info' && f.file === 'workspace.json' && f.message.includes('workspace.localFiles')
+      && f.message.includes('workspace.templateModifications') && f.message.includes('template-modifications.json')),
+    'legacy workspace.json keys are one info naming both keys and the target file',
+  );
+  assertTrue(
+    st.some((f) => f.severity === 'info' && f.file === '.claude/template-modifications.json'
+      && f.message.includes('rules/reverted.md') && f.message.includes('stale')),
+    'a registration back at baseline content is a stale info',
+  );
+  assertTrue(
+    st.some((f) => f.severity === 'info' && f.file === '.claude/template-modifications.json'
+      && f.message.includes('../CLAUDE.md') && f.message.includes('ignored')),
+    'a key escaping .claude/ is an ignored-key info',
+  );
+  assertTrue(
+    !st.some((f) => f.message.includes('rules/live.md')),
+    'a registration whose file still carries its edit reports nothing',
+  );
+  assertTrue(
+    !st.some((f) => f.message.includes('rules/dir-case.md')),
+    'a registration naming a directory reports nothing — the read cannot crash on it',
+  );
+  assertEq(result.summary.exitCode, 0, 'registry infos alone exit 0');
+  cleanup(root);
+}
+
+// 19b. no baseline → staleness is undecidable, never guessed; a registry
+//      that doesn't parse is a warning; nothing registered reports nothing.
+{
+  const root = makeWorkspace({}, (r) => {
+    writeFileSync(join(r, '.claude', 'rules', 'reverted.md'), 'template v1\n');
+    writeFileSync(join(r, '.claude', 'template-modifications.json'), JSON.stringify({
+      modifications: { 'rules/reverted.md': 'took the template back' },
+    }, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  let result = await audit(root);
+  assertTrue(
+    !bySection(result, 'structure').some((f) => f.message.includes('rules/reverted.md')),
+    'without a baseline a registration is never called stale',
+  );
+
+  writeFileSync(join(root, '.claude', 'template-modifications.json'), '{ not json\n');
+  git(root, ['add', '-A']);
+  git(root, ['commit', '-m', 'broken registry']);
+  result = await audit(root);
+  assertTrue(
+    bySection(result, 'structure').some((f) => f.severity === 'warning' && f.file === '.claude/template-modifications.json'
+      && f.message.includes('does not parse')),
+    'a broken registry is a warning',
+  );
+
+  const bare = makeWorkspace();
+  result = await audit(bare);
+  assertTrue(
+    !bySection(result, 'structure').some((f) => f.file === '.claude/template-modifications.json'),
+    'a workspace with no registry reports nothing about one',
+  );
+  cleanup(root);
+  cleanup(bare);
 }
 
 console.log('');

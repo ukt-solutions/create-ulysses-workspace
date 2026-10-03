@@ -16,7 +16,12 @@
 //                         .indexignore excludes, anything under an archive/
 //                         directory) and closed-out lifecycles are skipped
 //   3. structure        — workspace.json and CLAUDE.md present and parseable,
-//                         manifest repos cloned, expected directories there
+//                         manifest repos cloned, expected directories there,
+//                         and the template-modification registry sane:
+//                         legacy workspace.json keys, keys that escape
+//                         .claude/, and registrations the workspace abandoned
+//                         are info, a registry that doesn't parse is a
+//                         warning (gh:194)
 //   4. git              — launcher on its default branch with a clean tracked
 //                         tree. Audited from a linked worktree (task or
 //                         session), the launcher-level questions — the
@@ -86,7 +91,8 @@ import {
   readIgnorePrefixes,
   isIgnored,
 } from './build-workspace-context.mjs';
-import { hashBytes } from './template-baseline.mjs';
+import { hashBytes, readBaseline } from './template-baseline.mjs';
+import { readTemplateModifications } from './template-modifications.mjs';
 import { refreshIfStale } from '../lib/freshness.mjs';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
 
@@ -276,6 +282,55 @@ export async function runAudit({
   for (const name of Object.keys(reposManifest)) {
     if (!existsSync(join(reposRoot, 'repos', name))) {
       add('structure', 'warning', 'workspace.json', `repo '${name}' is in the manifest but repos/${name}/ is not cloned`);
+    }
+  }
+
+  // Template-modification registry (gh:194), still under section 3 — it is
+  // workspace structure: which files the workspace owns outright and which
+  // template files it deliberately edits, and why. Legacy workspace.json
+  // keys awaiting migration, keys that escape .claude/ (the registry covers
+  // .claude/ paths only), and registrations the workspace has abandoned are
+  // info (all are /workspace-update offers, nothing is broken); a registry
+  // that doesn't parse silently disables its exclusions and reasons, which
+  // is worth a warning.
+  {
+    const mods = readTemplateModifications(absRoot);
+    if (mods.parseError !== null) {
+      add('structure', 'warning', '.claude/template-modifications.json',
+        `does not parse (${mods.parseError}) — localFiles exclusions and modification reasons are being ignored; fix the JSON`);
+    }
+    if (mods.legacyKeys.length > 0) {
+      add('structure', 'info', 'workspace.json',
+        `legacy template-modification key(s) still present: ${mods.legacyKeys.map((k) => `workspace.${k}`).join(', ')} — /workspace-update offers to migrate them into .claude/template-modifications.json`);
+    }
+    if (mods.ignoredKeys.length > 0) {
+      add('structure', 'info', '.claude/template-modifications.json',
+        `key(s) outside .claude/ are ignored: ${mods.ignoredKeys.join(', ')} — the registry covers .claude/ paths only (root files are handled by their own merge paths); drop or fix them`);
+    }
+    const entries = Object.entries(mods.modifications);
+    if (entries.length > 0) {
+      const baseline = readBaseline(absRoot);
+      if (baseline) {
+        for (const [key, reason] of entries) {
+          const rel = `.claude/${key}`;
+          const baselineHash = baseline.files[rel];
+          const installed = join(absRoot, rel);
+          // Stale = the installed file is back to exactly what the template
+          // last shipped (its baseline hash): the recorded edit is gone. A
+          // missing file is NOT stale — a deliberate deletion is a live
+          // decision the next update's deletedLocally ask will explain with
+          // this very reason — and neither is a key naming a directory:
+          // only regular files compare.
+          if (typeof baselineHash !== 'string') continue;
+          let st;
+          try { st = statSync(installed); } catch { continue; }
+          if (!st.isFile()) continue;
+          if (hashBytes(readFileSync(installed)) === baselineHash) {
+            add('structure', 'info', '.claude/template-modifications.json',
+              `entry for ${rel} is stale — the file matches the template baseline again, the recorded edit is gone (reason: ${reason}); drop the entry`);
+          }
+        }
+      }
     }
   }
 

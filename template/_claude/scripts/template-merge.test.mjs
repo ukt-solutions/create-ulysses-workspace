@@ -318,6 +318,40 @@ console.log('# template-merge');
   }
 }
 
+// 9. Registered modification reasons (gh:194) ride along on the output: a
+//    differs path listed in .claude/template-modifications.json gains a
+//    `reason` on its merged/conflicted entry, and a noBase path becomes
+//    { path, reason }; unregistered entries keep the plain shapes.
+{
+  const { root, payload } = buildFixture();
+  try {
+    // register the clean merge, the conflict, and the never-staged base;
+    // leave the hash-mismatched base and the no-entry file unregistered
+    writeRel(root, '.claude/template-modifications.json', JSON.stringify({
+      modifications: {
+        'skills/demo/clean.md': 'our intro banner',
+        'skills/demo/conflict.md': 'team-specific wording',
+        'skills/demo/no-base.md': 'restructured for our flow',
+      },
+    }, null, 2) + '\n');
+    const result = mergeTemplateFiles({ root, files: [CLEAN, CONFLICT, MISMATCH, NO_BASE, NO_ENTRY].join(',') });
+    assertEq(result.merged.map((e) => ({ path: e.path, conflicts: e.conflicts, reason: e.reason })), [
+      { path: CLEAN, conflicts: 0, reason: 'our intro banner' },
+      { path: NO_ENTRY, conflicts: 0, reason: undefined },
+    ], 'a registered clean merge carries its reason; an unregistered one does not');
+    assertEq(result.conflicted.map((e) => ({ path: e.path, reason: e.reason })), [{
+      path: CONFLICT,
+      reason: 'team-specific wording',
+    }], 'a registered conflict carries its reason');
+    assertEq(result.noBase, [
+      MISMATCH,
+      { path: NO_BASE, reason: 'restructured for our flow' },
+    ], 'a registered noBase becomes { path, reason }; unregistered stays a plain path');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 if (failed > 0) {
   console.error(`${failed} check(s) failed, ${passed} passed`);
   process.exit(1);
