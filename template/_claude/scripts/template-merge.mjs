@@ -45,6 +45,12 @@
 //     "out":          "<resolved output dir>",
 //     "templateBase": "<resolved base dir, or null when none was staged>" }
 //
+// A differs file registered in .claude/template-modifications.json carries
+// its recorded reason (gh:194): merged/conflicted entries gain a `reason`
+// field, and a noBase path becomes { path, reason } — unregistered entries
+// keep the plain shapes above, so the skill can show WHY a file differs at
+// each per-file decision.
+//
 // Merged text — conflict markers `<<<<<<< local` / `>>>>>>> template`
 // included — lands ONLY in the output dir. Applying an approved result is
 // /workspace-update's job: copying the file into the workspace one
@@ -184,7 +190,16 @@ export function mergeTemplateFiles({ root, payload = null, baseline = null, out 
   }
 
   const classification = classifyUpdate({ root: absRoot, payload: absPayload, baseline });
-  const differsSet = new Set(classification.differs);
+  // differs entries are plain paths, or { file, reason } for paths with a
+  // registered modification (gh:194). Normalize to one shape and keep the
+  // reasons so they ride along on the merge output.
+  const differsFiles = classification.differs.map((e) => (typeof e === 'string' ? e : e.file));
+  const reasonByFile = new Map(
+    classification.differs
+      .filter((e) => typeof e === 'object' && typeof e.reason === 'string')
+      .map((e) => [e.file, e.reason]),
+  );
+  const differsSet = new Set(differsFiles);
   const baseDir = join(absPayload, TEMPLATE_BASE_DIR);
 
   const result = {
@@ -196,7 +211,7 @@ export function mergeTemplateFiles({ root, payload = null, baseline = null, out 
     templateBase: existsSync(baseDir) ? baseDir : null,
   };
 
-  let targets = classification.differs;
+  let targets = differsFiles;
   if (files !== null) {
     const wanted = files.split(',').map((s) => s.trim()).filter(Boolean);
     targets = [];
@@ -208,6 +223,7 @@ export function mergeTemplateFiles({ root, payload = null, baseline = null, out 
 
   const { baseline: resolvedBaseline } = resolveBaseline({ root: absRoot, payload: absPayload, baseline });
   for (const rel of targets) {
+    const reason = reasonByFile.get(rel);
     const local = join(absRoot, rel);
     const template = join(absPayload, rel);
     const base = join(baseDir, rel);
@@ -216,12 +232,12 @@ export function mergeTemplateFiles({ root, payload = null, baseline = null, out 
       continue;
     }
     if (!existsSync(base)) {
-      result.noBase.push(rel);
+      result.noBase.push(reason === undefined ? rel : { path: rel, reason });
       continue;
     }
     const baselineHash = resolvedBaseline ? resolvedBaseline.files[rel] : undefined;
     if (baselineHash !== undefined && hashBytes(readFileSync(base)) !== baselineHash) {
-      result.noBase.push(rel);
+      result.noBase.push(reason === undefined ? rel : { path: rel, reason });
       continue;
     }
     const merge = mergeTrio(local, base, template);
@@ -233,6 +249,7 @@ export function mergeTemplateFiles({ root, payload = null, baseline = null, out 
     mkdirSync(dirname(outFile), { recursive: true });
     writeFileSync(outFile, merge.bytes);
     const entry = { path: rel, conflicts: merge.conflicts, out: outFile };
+    if (reason !== undefined) entry.reason = reason;
     if (merge.conflicts === 0) result.merged.push(entry);
     else result.conflicted.push(entry);
   }

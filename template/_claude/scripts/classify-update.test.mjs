@@ -136,6 +136,10 @@ console.log('# classify-update');
     join(nestedScripts, 'template-baseline.mjs'),
     readFileSync(join(here, 'template-baseline.mjs'), 'utf8'),
   );
+  writeFileSync(
+    join(nestedScripts, 'template-modifications.mjs'),
+    readFileSync(join(here, 'template-modifications.mjs'), 'utf8'),
+  );
   mkdirSync(join(payload, '.claude', 'lib'), { recursive: true });
   for (const f of ['session-frontmatter.mjs', 'registry-check.mjs', 'require-node.mjs']) {
     writeFileSync(
@@ -163,6 +167,7 @@ console.log('# classify-update');
       '.claude/scripts/build-workspace-context.mjs',
       '.claude/scripts/classify-update.mjs',
       '.claude/scripts/template-baseline.mjs',
+      '.claude/scripts/template-modifications.mjs',
       '.claude/skills/new-skill/SKILL.md',
     ],
     'CLI classifies the --root workspace',
@@ -459,6 +464,183 @@ console.log('# classify-update');
   assertEq(result.deletedLocally, ['.claude/hooks/session-start.mjs'], 'baseline-recorded missing file is deletedLocally');
   assertTrue(!result.new.includes('.claude/hooks/session-start.mjs'), 'deletedLocally files are never new');
   assertEq(result.new, ['.claude/skills/new-skill/SKILL.md'], 'a file the baseline never recorded stays new');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8h. modification reasons (gh:194): a path registered in
+//     .claude/template-modifications.json's `modifications` map carries its
+//     reason on every list where a local divergence is visible — differs,
+//     localOnly, deletedLocally, and removed — while unregistered paths stay
+//     plain strings, and the registry file itself is never offered as a
+//     removal (workspace-owned, the template never ships it).
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  // differs: a registered local edit meeting a template change
+  mkdirSync(join(payload, '.claude', 'rules'), { recursive: true });
+  mkdirSync(join(root, '.claude', 'rules'), { recursive: true });
+  writeFileSync(join(payload, '.claude', 'rules', 'core.md'), 'core v2\n');
+  writeFileSync(join(root, '.claude', 'rules', 'core.md'), 'my local take\n');
+  // an unregistered differs file for contrast
+  writeFileSync(join(payload, '.claude', 'rules', 'other.md'), 'other v2\n');
+  writeFileSync(join(root, '.claude', 'rules', 'other.md'), 'other local\n');
+  // localOnly: a registered local edit on a file the template didn't touch
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v1\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// my take\n');
+  // deletedLocally: baseline records it, payload ships it, workspace lacks it
+  writeFileSync(join(payload, '.claude', 'rules', 'missing.md'), 'missing v2\n');
+  // removed: baseline records it, payload dropped it, workspace keeps it
+  mkdirSync(join(root, '.claude', 'skills', 'gone'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'skills', 'gone', 'SKILL.md'), '# Gone\n');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.22.0',
+    files: {
+      '.claude/rules/core.md': sha('core v1\n'),
+      '.claude/rules/other.md': sha('other v1\n'),
+      '.claude/hooks/session-start.mjs': sha('// template v1\n'),
+      '.claude/rules/missing.md': sha('missing v1\n'),
+      '.claude/skills/gone/SKILL.md': sha('# Gone\n'),
+    },
+  }) + '\n');
+  writeFileSync(join(root, '.claude', 'template-modifications.json'), JSON.stringify({
+    localFiles: [],
+    modifications: {
+      'rules/core.md': 'kept our stricter lint gate',
+      'hooks/session-start.mjs': 'local hook tweak',
+      'rules/missing.md': 'removed on purpose',
+      'skills/gone/SKILL.md': 'kept for the legacy flow',
+    },
+  }, null, 2) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.differs, [
+    { file: '.claude/rules/core.md', reason: 'kept our stricter lint gate' },
+    '.claude/rules/other.md',
+  ], 'a registered differs entry carries its reason; unregistered ones stay plain');
+  assertEq(result.localOnly,
+    [{ file: '.claude/hooks/session-start.mjs', reason: 'local hook tweak' }],
+    'a registered localOnly entry carries its reason');
+  assertEq(result.deletedLocally,
+    [{ file: '.claude/rules/missing.md', reason: 'removed on purpose' }],
+    'a registered deletedLocally entry carries its reason');
+  assertEq(result.removed,
+    [{ file: '.claude/skills/gone/SKILL.md', reason: 'kept for the legacy flow' }],
+    'a registered removed entry carries its reason');
+  assertTrue(!result.removed.some((e) => (typeof e === 'string' ? e : e.file) === '.claude/template-modifications.json'),
+    'the registry file itself is never a removal');
+  assertEq(result.legacyKeys, [], 'no legacy keys when workspace.json carries none');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8h-b. a reason rides on a userOwned removed entry too, alongside its
+//       existing marker fields (gh:194).
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  mkdirSync(join(root, '.claude', 'skills', 'custom'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'skills', 'custom', 'SKILL.md'), '# Mine\n');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.22.0',
+    files: {},
+  }) + '\n');
+  writeFileSync(join(root, '.claude', 'template-modifications.json'), JSON.stringify({
+    modifications: { 'skills/custom/SKILL.md': 'our team-specific skill' },
+  }, null, 2) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.removed,
+    [{ file: '.claude/skills/custom/SKILL.md', userOwned: true, reason: 'our team-specific skill' }],
+    'a userOwned removal keeps its marker and gains the reason');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8i. staleModifications (gh:194): a registration whose installed file now
+//     equals the payload — the workspace already took the template's version
+//     — is offered for dropping. A registration whose file still differs, or
+//     whose file is absent (a deliberate deletion, explained via
+//     deletedLocally), is live and never reports.
+{
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  mkdirSync(join(payload, '.claude', 'rules'), { recursive: true });
+  mkdirSync(join(root, '.claude', 'rules'), { recursive: true });
+  // took the template's version already: installed == payload
+  writeFileSync(join(payload, '.claude', 'rules', 'same.md'), 'v2\n');
+  writeFileSync(join(root, '.claude', 'rules', 'same.md'), 'v2\n');
+  // still locally edited: differs from the payload
+  writeFileSync(join(payload, '.claude', 'rules', 'kept.md'), 'v2\n');
+  writeFileSync(join(root, '.claude', 'rules', 'kept.md'), 'ours\n');
+  // deleted deliberately: installed missing, payload ships it
+  writeFileSync(join(payload, '.claude', 'rules', 'absent.md'), 'v2\n');
+  writeFileSync(join(root, '.claude', '.template-baseline.json'), JSON.stringify({
+    templateVersion: '0.22.0',
+    files: {
+      '.claude/rules/same.md': sha('v1\n'),
+      '.claude/rules/kept.md': sha('v1\n'),
+      '.claude/rules/absent.md': sha('v1\n'),
+    },
+  }) + '\n');
+  writeFileSync(join(root, '.claude', 'template-modifications.json'), JSON.stringify({
+    modifications: {
+      'rules/same.md': 'took the template back',
+      'rules/kept.md': 'still ours',
+      'rules/absent.md': 'deleted deliberately',
+    },
+  }, null, 2) + '\n');
+
+  const result = classifyUpdate({ root });
+  assertEq(result.staleModifications,
+    [{ file: '.claude/rules/same.md', reason: 'took the template back' }],
+    'only the registration matching the payload reports stale');
+  assertEq(result.deletedLocally,
+    [{ file: '.claude/rules/absent.md', reason: 'deleted deliberately' }],
+    'an absent registered file is a live deletion decision, not stale');
+  assertTrue(!result.staleModifications.some((e) => e.file === '.claude/rules/kept.md'),
+    'a still-edited registration is not stale');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// 8j. registry localFiles exclude removals (gh:194), the legacy
+//     workspace.json array still works and reports legacyKeys, and a broken
+//     registry surfaces modificationsError without inventing reasons.
+{
+  const root = setupWorkspace();
+  const payload = setupPayload(root);
+  mkdirSync(join(root, '.claude', 'skills', 'custom'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'skills', 'custom', 'SKILL.md'), '# Mine\n');
+  writeFileSync(join(payload, '.claude', 'hooks', 'session-start.mjs'), '// template v2\n');
+  writeFileSync(join(root, '.claude', 'hooks', 'session-start.mjs'), '// my take\n');
+  writeFileSync(join(root, '.claude', 'template-modifications.json'), JSON.stringify({
+    localFiles: ['skills/custom/**'],
+  }, null, 2) + '\n');
+
+  let result = classifyUpdate({ root });
+  assertEq(result.removed, [], 'a registry localFiles glob excludes the file from removal');
+  assertEq(result.legacyKeys, [], 'no registry file means no legacyKeys either way');
+  assertEq(result.modificationsError, undefined, 'no modificationsError on a clean registry');
+
+  // legacy fallback: the same exclusion from workspace.json, with legacyKeys
+  // naming what /workspace-update offers to migrate
+  rmSync(join(root, '.claude', 'template-modifications.json'));
+  writeFileSync(
+    join(root, 'workspace.json'),
+    JSON.stringify({ workspace: { localFiles: ['skills/custom/**'] } }, null, 2) + '\n',
+  );
+  result = classifyUpdate({ root });
+  assertEq(result.removed, [], 'the legacy workspace.json localFiles array still excludes');
+  assertEq(result.legacyKeys, ['localFiles'], 'legacyKeys names the unmigrated workspace.json key');
+
+  // a broken registry: the error surfaces, reasons/exclusions from the file
+  // are unavailable, and content decisions stay plain — never guessed at
+  writeFileSync(join(root, '.claude', 'template-modifications.json'), '{ not json\n');
+  result = classifyUpdate({ root });
+  assertTrue(typeof result.modificationsError === 'string' && result.modificationsError.length > 0,
+    'a broken registry reports modificationsError');
+  assertEq(result.differs, ['.claude/hooks/session-start.mjs'], 'a broken registry attaches no reasons');
   rmSync(root, { recursive: true, force: true });
 }
 

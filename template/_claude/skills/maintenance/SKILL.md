@@ -44,6 +44,8 @@ For each non-gitignored workspace-context `.md` and each `work-sessions/*/worksp
 ### 3. Workspace structure
 The script checks that workspace.json and CLAUDE.md are present and parseable, that `workspace-context/` and `.claude/rules`, `skills`, `scripts` directories exist, and that every manifest repo is cloned under `repos/`.
 
+It also checks the template-modification registry (`.claude/template-modifications.json`, the workspace's record of files it owns outright or deliberately edits): legacy keys still in workspace.json (`workspace.localFiles`, `workspace.templateModifications`) and registrations whose file has gone back to the template's baseline content are info — `/workspace-update` offers both cleanups. A registry that doesn't parse is a warning: its localFiles exclusions and reasons are being ignored.
+
 ### 4. Git state
 The script covers the launcher itself: on its default branch, tracked tree clean. Untracked paths are info — gitignored content is not counted.
 

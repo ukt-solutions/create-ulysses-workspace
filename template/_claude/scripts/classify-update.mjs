@@ -64,10 +64,13 @@
 //                the config files above (the template dropping one hands it
 //                to the workspace, it never deletes user content),
 //                *.test.mjs (see staleTests), anything gitignored
-//                (machine-local), paths under .claude/worktrees/, and entries
-//                of workspace.json → workspace.localFiles (array of
-//                .claude/-relative paths or globs for files this workspace
-//                owns) (gh:180). Two markers refine the per-file offer
+//                (machine-local), paths under .claude/worktrees/,
+//                .claude/template-modifications.json (the workspace's own
+//                registry, never shipped), and the registry's `localFiles`
+//                entries (.claude/-relative paths or globs for files this
+//                workspace owns; the legacy workspace.json →
+//                workspace.localFiles array still counts, gh:180/gh:194).
+//                Two markers refine the per-file offer
 //                (gh:190): `{ file, referencedBy }` — a removed hook that a
 //                workspace-only settings.json entry still registers (the
 //                config-diff paths); the skill removes file and settings
@@ -86,6 +89,27 @@
 //                An upgrade from inside that window into a workspace.json
 //                without the key reports { key, value, reason } so the skill
 //                writes the value explicitly (gh:190).
+//   staleModifications — registry entries whose installed file now equals
+//                the payload: the workspace already took the template's
+//                version, so the recorded reason describes nothing. Each
+//                reports { file, reason } so the skill can offer dropping
+//                the entry (gh:194).
+//   legacyKeys — template-modification data still sitting in workspace.json
+//                (`workspace.localFiles`, `workspace.templateModifications`)
+//                instead of .claude/template-modifications.json; the skill
+//                offers the migration (gh:194).
+//
+// Entries in differs, localOnly, deletedLocally, and removed carry the
+// workspace's registered modification reason (gh:194): a path listed in
+// .claude/template-modifications.json's `modifications` map (read through
+// template-modifications.mjs, which also honors the legacy workspace.json
+// keys for one release) becomes { file, reason } in those lists — reason
+// undefined entries stay plain paths, and a removed entry's existing
+// referencedBy/userOwned markers keep their fields alongside `reason`.
+// `modificationsError`, present only when the registry file doesn't parse,
+// names the parse error: reasons and localFiles exclusions from the file are
+// then unavailable (legacy keys still apply), and every per-file decision
+// still asks — nothing is applied silently.
 //
 // Plus `hasBaseline`: whether a usable baseline was found, `baselineSource`
 // (which file it came from) and `baselineReconstructed`. The default
@@ -145,6 +169,10 @@ import {
   readBaselineFile,
   writeBaseline,
 } from './template-baseline.mjs';
+import {
+  readTemplateModifications,
+  TEMPLATE_MODIFICATIONS_PATH,
+} from './template-modifications.mjs';
 
 function isMainModule(metaUrl) {
   if (!process.argv[1]) return false;
@@ -308,19 +336,32 @@ function* walkInstalledFiles(absRoot) {
   }
 }
 
-/** workspace.json → workspace.localFiles, normalized to .claude/-relative globs. */
-function readLocalFiles(absRoot) {
-  const configPath = join(absRoot, 'workspace.json');
-  try {
-    const config = JSON.parse(readFileSync(configPath, 'utf8'));
-    const entries = config?.workspace?.localFiles;
-    if (!Array.isArray(entries)) return [];
-    return entries
-      .filter((e) => typeof e === 'string' && e.length > 0)
-      .map((e) => e.replace(/^(\.claude\/)+/, ''));
-  } catch {
-    return [];
-  }
+/**
+ * The workspace's template-modification registry (gh:194), read through
+ * template-modifications.mjs: localFiles exclusions, registered modification
+ * reasons, the legacy workspace.json keys still present, and a parse error
+ * when the registry file is broken. See that module for the shape and the
+ * one-release legacy fallback.
+ */
+
+/**
+ * A classification path's registered modification reason, or undefined.
+ * Registry keys are .claude/-relative, so only paths under .claude/ can be
+ * registered — .mcp.json and .claudeignore live outside it and route to
+ * their own lists anyway.
+ */
+function registeredReason(modifications, rel) {
+  if (!rel.startsWith('.claude/')) return undefined;
+  const reason = modifications[rel.slice('.claude/'.length)];
+  return typeof reason === 'string' ? reason : undefined;
+}
+
+/** Attach registered reasons to a list of plain-path entries (gh:194). */
+function withReasons(list, modifications) {
+  return list.map((rel) => {
+    const reason = registeredReason(modifications, rel);
+    return reason === undefined ? rel : { file: rel, reason };
+  });
 }
 
 /**
@@ -345,6 +386,10 @@ function isOwnedByWorkspace(rel, localFiles) {
   if (rel === '.claude/settings.local.json' || rel === '.claude/.active-session.json' || rel === BASELINE_PATH) {
     return true;
   }
+  // The template-modification registry is workspace-owned state the template
+  // never ships — like the baseline, its absence from the payload is not a
+  // removal (gh:194).
+  if (rel === TEMPLATE_MODIFICATIONS_PATH) return true;
   if (!rel.startsWith('.claude/')) return false;
   const claudeRel = rel.slice('.claude/'.length);
   return localFiles.some((pattern) => globMatches(pattern, claudeRel));
@@ -425,6 +470,7 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
   const payloadFiles = [...walkFiles(absPayload)].filter(isClassified);
   const payloadSet = new Set(payloadFiles);
   const { baseline, source } = resolveBaseline({ root: absRoot, payload: absPayload, baseline: baselineArg });
+  const mods = readTemplateModifications(absRoot);
 
   const result = {
     new: [],
@@ -438,10 +484,13 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
     removed: [],
     staleTests: [],
     implicitDefaults: [],
+    staleModifications: [],
+    legacyKeys: mods.legacyKeys,
     hasBaseline: baseline !== null,
     baselineSource: source,
     baselineReconstructed: baseline !== null && baseline.reconstructed === true,
   };
+  if (mods.parseError !== null) result.modificationsError = mods.parseError;
   for (const rel of payloadFiles) {
     // Jointly-owned JSON configs never compare by content — the config
     // list carries a key-level diff for the skill to merge instead.
@@ -494,7 +543,7 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
 
   // Removed: installed verbatim-managed files with no payload counterpart.
   const skipSet = new Set(payloadFiles);
-  const localFiles = readLocalFiles(absRoot);
+  const localFiles = mods.localFiles;
   const installedFiles = [...walkInstalledFiles(absRoot)];
   const gitignored = gitIgnoredPaths(absRoot, installedFiles);
   for (const rel of installedFiles) {
@@ -529,6 +578,36 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
     }
   }
   linkRemovedHooks(result, absRoot);
+
+  // Registered reasons ride along wherever a local divergence is visible
+  // (gh:194): differs/localOnly/deletedLocally entries become { file, reason }
+  // for registered paths, and a removed entry — plain, referencedBy, or
+  // userOwned — gains the same reason field.
+  result.differs = withReasons(result.differs, mods.modifications);
+  result.localOnly = withReasons(result.localOnly, mods.modifications);
+  result.deletedLocally = withReasons(result.deletedLocally, mods.modifications);
+  result.removed = result.removed.map((entry) => {
+    const file = typeof entry === 'string' ? entry : entry.file;
+    const reason = registeredReason(mods.modifications, file);
+    if (reason === undefined) return entry;
+    return typeof entry === 'string' ? { file, reason } : { ...entry, reason };
+  });
+
+  // Stale registrations: the installed file now equals the payload's copy, so
+  // the workspace already holds the template's version and the recorded
+  // reason describes nothing. The skill offers to drop them. A path missing
+  // on either side never reports — a registered deletion is a live decision
+  // (it explains a deletedLocally entry), not a stale one.
+  result.staleModifications = Object.entries(mods.modifications)
+    .filter(([key]) => {
+      const rel = `.claude/${key}`;
+      const installed = join(absRoot, rel);
+      const inPayload = join(absPayload, rel);
+      return existsSync(installed) && existsSync(inPayload)
+        && hashBytes(readFileSync(installed)) === hashBytes(readFileSync(inPayload));
+    })
+    .map(([key, reason]) => ({ file: `.claude/${key}`, reason }));
+
   result.implicitDefaults = implicitDefaults(absRoot, absPayload);
   return result;
 }
