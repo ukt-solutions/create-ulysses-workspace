@@ -18,9 +18,11 @@ The `/release` skill is a per-repo operation — each repo has its own release c
 
 4. **Merge.** Push the branch, open a PR through the forge adapter, and merge (squash, delete branch) after the operator confirms.
 
-5. **Tag and publish.** Tag the merge commit `v{version}` and push the tag. If the repo's publish workflow (`.github/workflows/publish.yml`) creates the release itself, the skill leaves that to the workflow, watches its run, and confirms the release exists; otherwise it creates the forge release with generated notes (still watching any publish run). A failed run is reported, not thrown.
+5. **Leak audit (optional).** Workspaces or repos that configure `release.leakPatterns` in `workspace.json` get a scripted scan of exactly what the release publishes — the `npm pack` file list for a publishable package, else the files changed since the last tag, plus the release's commit subjects — before the tag is pushed. Matches stop the release for a human decision; the skill never edits files to silence the audit. Workspaces that configure no patterns skip the step entirely.
 
-6. **Tear down** the release worktree and report the PR, tag, release URL, and publish status.
+6. **Tag and publish.** Tag the merge commit `v{version}` and push the tag. If the repo's publish workflow (`.github/workflows/publish.yml`) creates the release itself, the skill leaves that to the workflow, watches its run, and confirms the release exists; otherwise it creates the forge release with generated notes (still watching any publish run). A failed run is reported, not thrown.
+
+7. **Tear down** the release worktree and report the PR, tag, release URL, and publish status.
 
 ## Where the Notes Come From
 
@@ -44,5 +46,6 @@ The version number describes what shipped, not when it was planned. A feature yo
 
 - `/release` bumps, merges through a PR, tags, and publishes a forge release with generated notes.
 - Release notes come from the forge (merged PR titles); the workspace writes none.
+- The optional leak audit (`release.leakPatterns`) scans the publish surface before the tag is pushed; matches stop for a human decision.
 - Repos with their own release tooling ignore `/release` entirely.
 - Versions are assigned at release time based on what shipped, not pre-planned.
