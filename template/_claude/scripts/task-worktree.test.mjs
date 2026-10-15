@@ -557,6 +557,36 @@ console.log('# a stale non-worktree directory under worktrees/ detects as none')
   } finally { clean(root); }
 }
 
+console.log('# a Claude Code agent worktree (worktree-agent-*) never detects as a task (gh:205)');
+{
+  const { root, app } = makeRoot();
+  try {
+    // Claude Code's naming: .claude/worktrees/agent-{id} on branch
+    // worktree-agent-{id} — the same slot task worktrees live in, but a
+    // subagent's isolation, not a task. Committed work must not change the
+    // answer: an implementer agent that commits without pushing is the
+    // exact leftover /maintenance cleanup handles.
+    const agentDir = join(app, '.claude', 'worktrees', 'agent-abc123');
+    git(app, `worktree add -q -b worktree-agent-abc123 "${agentDir}"`);
+    assertEq(detectWorkModel(agentDir, root).model, 'none', 'a project agent worktree detects as none');
+    writeFileSync(join(agentDir, 'work.txt'), 'agent work\n');
+    git(agentDir, 'add -A');
+    git(agentDir, 'commit -q -m agent-work');
+    assertEq(detectWorkModel(agentDir, root).model, 'none', 'a committed agent worktree still detects as none');
+    // A real task worktree beside it keeps detecting as one.
+    const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/real' });
+    assertEq(detectWorkModel(wt.path, root).model, 'task', 'a task worktree beside the agent worktree still detects');
+  } finally { clean(root); }
+}
+{
+  const { root, bare } = makeLauncherRoot();
+  try {
+    const agentDir = join(root, '.claude', 'worktrees', 'agent-ws1');
+    git(root, `worktree add -q -b worktree-agent-ws1 "${agentDir}"`);
+    assertEq(detectWorkModel(agentDir, root).model, 'none', 'a workspace-repo agent worktree detects as none');
+  } finally { clean(root); clean(bare); }
+}
+
 console.log('# a workspace worktree on the default branch never detects as a task');
 {
   const { root, bare } = makeLauncherRoot();

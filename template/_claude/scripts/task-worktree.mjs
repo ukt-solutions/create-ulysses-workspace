@@ -445,12 +445,19 @@ function resolveSessionId(rootDir, chat, sessionId, env) {
   return (env && env.CLAUDE_CODE_SESSION_ID) || null;
 }
 
+// Claude Code's own agent worktrees (isolation: worktree) sit at the same
+// .claude/worktrees/{slug} paths on worktree-agent-* branches (gh:205). They
+// are session machinery, not the task lifecycle — detection declines them so
+// /complete-work never treats one as a task worktree.
+const AGENT_BRANCH_PREFIX = 'worktree-agent-';
+
 // One task worktree's detect payload, or null when {path} does not really
 // hold a task: a stale plain directory under .claude/worktrees/ would
 // otherwise detect through cwd and resolve to the repo around it — for the
 // workspace layout, to the launcher itself, whose default branch
 // /complete-work would then rebase and push. So require git to confirm the
-// path is a worktree root, and never report the repo's default branch.
+// path is a worktree root, and never report the repo's default branch or a
+// Claude Code agent branch (worktree-agent-*).
 function taskWorktreeInfo(gitFn, rootReal, repo, path, chat) {
   try {
     const res = gitFn('git', ['-C', path, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
@@ -458,6 +465,7 @@ function taskWorktreeInfo(gitFn, rootReal, repo, path, chat) {
     if (!samePath(String(res.stdout).trim(), path)) return null;
     const branch = currentBranch(gitFn, path);
     if (branch && branch === defaultBranchFor(rootReal, repo, gitFn)) return null;
+    if (branch && branch.startsWith(AGENT_BRANCH_PREFIX)) return null;
     const out = { model: 'task', source: 'worktree', repo, branch, path };
     const tasks = matchingTasks(rootReal, chat, branch);
     if (tasks) out.tasks = tasks;

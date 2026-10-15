@@ -17,6 +17,8 @@ import {
   rmSync,
   existsSync,
   readFileSync,
+  utimesSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -45,6 +47,10 @@ function assertTrue(cond, msg) {
 function git(root, args) {
   return spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
 }
+
+// mkdtemp paths live behind the macOS /var -> /private/var symlink; git
+// reports the resolved spelling, so expected absolute paths must resolve too.
+const real = (p) => realpathSync(p);
 
 /**
  * A mostly-clean fixture workspace. `mutate(root)` applies the per-test
@@ -927,6 +933,311 @@ console.log('# maintenance-audit');
   );
   cleanup(root);
   cleanup(bare);
+}
+
+// 20. gh:205 — leftover Claude Code agent worktrees: every worktree-agent-*
+//     worktree under .claude/worktrees/agent-* (workspace repo and repos/*
+//     alike) is one info finding plus one summary.agentWorktrees entry, and
+//     the script decides removal: removable: true only when the worktree is
+//     clean (untracked counts as dirty), holds no work of its own beyond the
+//     base (nothing there, or only non-merge commits whose patch-ids all
+//     landed via git cherry), is unlocked, idle for over an hour, and
+//     claimed by no chat record. The fixture clock runs two hours ahead so
+//     everything built in it reads as idle; task worktrees beside the agents
+//     are never listed; leftovers are ambient, so the exit code stays 0.
+{
+  const FUTURE = () => new Date(Date.now() + 2 * 60 * 60 * 1000);
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.repos['app'] = { remote: 'x', branch: 'main' };
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  // A project repo with a real history, built after the fixture so the
+  // launcher repo exists and repos/app stays out of its commit.
+  const app = join(root, 'repos', 'app');
+  mkdirSync(app, { recursive: true });
+  git(app, ['init', '-b', 'main']);
+  git(app, ['config', 'user.email', 'fixture@example.com']);
+  git(app, ['config', 'user.name', 'Fixture']);
+  writeFileSync(join(app, 'README.md'), '# app\n');
+  git(app, ['add', '-A']);
+  git(app, ['commit', '-m', 'init']);
+  const wt = (name) => join(app, '.claude', 'worktrees', name);
+  const addAgent = (branch, name) => git(app, ['worktree', 'add', '-b', branch, wt(name)]);
+
+  // clean, nothing beyond main — the plain removable case
+  addAgent('worktree-agent-clean', 'agent-clean');
+  // committed, then landed on main by cherry-pick: 1 commit beyond main but
+  // its patch-id is there — removable, and --merged would have said no. The
+  // empty advance commit first is what keeps the pick a distinct commit:
+  // same parent, same second, same message would reproduce the identical
+  // sha and collapse "beyond" to zero.
+  addAgent('worktree-agent-picked', 'agent-picked');
+  writeFileSync(join(wt('agent-picked'), 'fix.txt'), 'fixed\n');
+  git(wt('agent-picked'), ['add', '-A']);
+  git(wt('agent-picked'), ['commit', '-m', 'fix']);
+  git(app, ['commit', '--allow-empty', '-m', 'advance']);
+  git(app, ['cherry-pick', 'worktree-agent-picked']);
+  // two commits squashed into one on main: the work IS there, but no branch
+  // commit's patch-id matches the squashed diff — not removable, and with
+  // no forge/PR clause to override the verdict.
+  addAgent('worktree-agent-squashed', 'agent-squashed');
+  writeFileSync(join(wt('agent-squashed'), 's1.txt'), 'one\n');
+  git(wt('agent-squashed'), ['add', '-A']);
+  git(wt('agent-squashed'), ['commit', '-m', 's1']);
+  writeFileSync(join(wt('agent-squashed'), 's2.txt'), 'two\n');
+  git(wt('agent-squashed'), ['add', '-A']);
+  git(wt('agent-squashed'), ['commit', '-m', 's2']);
+  git(app, ['checkout', 'worktree-agent-squashed', '--', 's1.txt', 's2.txt']);
+  git(app, ['commit', '-m', 'squash both']);
+  // a merge commit beyond main — patch-ids do not apply to merges at all
+  addAgent('worktree-agent-mergy', 'agent-mergy');
+  writeFileSync(join(wt('agent-mergy'), 'm.txt'), 'm\n');
+  git(wt('agent-mergy'), ['add', '-A']);
+  git(wt('agent-mergy'), ['commit', '-m', 'm']);
+  git(app, ['worktree', 'add', '-b', 'tmp-side', wt('tmp-side')]);
+  writeFileSync(join(wt('tmp-side'), 'side.txt'), 'side\n');
+  git(wt('tmp-side'), ['add', '-A']);
+  git(wt('tmp-side'), ['commit', '-m', 'side']);
+  git(wt('agent-mergy'), ['merge', '--no-edit', 'tmp-side']);
+  // only an untracked file — untracked counts as dirty, not clean-with-noise
+  addAgent('worktree-agent-stray', 'agent-stray');
+  writeFileSync(join(wt('agent-stray'), 'untracked.txt'), 'loose end\n');
+  // clean and quiet, but locked — Claude Code locks a running agent's worktree
+  addAgent('worktree-agent-locked', 'agent-locked');
+  git(app, ['worktree', 'lock', '--reason', 'agent running', wt('agent-locked')]);
+  // clean and quiet, but a chat record still claims the branch
+  addAgent('worktree-agent-claimed', 'agent-claimed');
+  mkdirSync(join(root, 'workspace-scratchpad', 'chats'), { recursive: true });
+  writeFileSync(join(root, 'workspace-scratchpad', 'chats', 'worker.json'), JSON.stringify({
+    chat: 'worker',
+    sessionId: 'sid-1',
+    scope: {},
+    concerns: [],
+    tasks: [{ workItem: 'gh:9', branch: 'worktree-agent-claimed', repo: 'app' }],
+  }, null, 2) + '\n');
+  // a task worktree in the agent slot's sibling path — never an agent leftover
+  git(app, ['worktree', 'add', '-b', 'feature/task', wt('feature-task')]);
+  // and one agent worktree in the workspace repo itself
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-ws', join(root, '.claude', 'worktrees', 'agent-ws')]);
+
+  const result = await audit(root, { nowFn: FUTURE });
+  const aws = result.summary.agentWorktrees;
+  const byBranch = Object.fromEntries(aws.map((w) => [w.branch, w]));
+  assertEq(Object.keys(byBranch).sort(),
+    ['worktree-agent-claimed', 'worktree-agent-clean', 'worktree-agent-locked', 'worktree-agent-mergy',
+      'worktree-agent-picked', 'worktree-agent-squashed', 'worktree-agent-stray', 'worktree-agent-ws'],
+    'every agent worktree, workspace repo and project repo alike, is listed once');
+  assertEq(
+    byBranch['worktree-agent-clean'],
+    { repo: 'app', branch: 'worktree-agent-clean', path: 'repos/app/.claude/worktrees/agent-clean',
+      absolutePath: join(real(root), 'repos', 'app', '.claude', 'worktrees', 'agent-clean'),
+      clean: true, commitsBeyond: 0, patchIdsOnDefault: true, locked: false, base: 'main',
+      claimed: false, removable: true, reasons: [] },
+    'a clean, commit-less, idle worktree is removable with no reasons');
+  assertEq(
+    byBranch['worktree-agent-picked'],
+    { repo: 'app', branch: 'worktree-agent-picked', path: 'repos/app/.claude/worktrees/agent-picked',
+      absolutePath: join(real(root), 'repos', 'app', '.claude', 'worktrees', 'agent-picked'),
+      clean: true, commitsBeyond: 1, patchIdsOnDefault: true, locked: false, base: 'main',
+      claimed: false, removable: true, reasons: [] },
+    'a cherry-picked commit counts as beyond main yet fully landed — removable');
+  assertEq(
+    byBranch['worktree-agent-ws'],
+    { repo: '.', branch: 'worktree-agent-ws', path: '.claude/worktrees/agent-ws',
+      absolutePath: join(real(root), '.claude', 'worktrees', 'agent-ws'),
+      clean: true, commitsBeyond: 0, patchIdsOnDefault: true, locked: false, base: 'main',
+      claimed: false, removable: true, reasons: [] },
+    'a workspace-repo agent worktree is reported against repo "." and removable');
+  const squashed = byBranch['worktree-agent-squashed'];
+  assertEq([squashed.repo, squashed.commitsBeyond, squashed.patchIdsOnDefault, squashed.removable],
+    ['app', 2, false, false],
+    'a squash-merged branch keeps unlanded patch-ids — not removable');
+  assertTrue(squashed.reasons.some((r) => r.includes('not landed on it')),
+    'the squash reason names the unlanded commits');
+  const mergy = byBranch['worktree-agent-mergy'];
+  assertEq([mergy.commitsBeyond, mergy.patchIdsOnDefault, mergy.removable],
+    [3, null, false],
+    'a merge commit beyond the base is not removable, patch-id verdict undefined');
+  assertTrue(mergy.reasons.some((r) => r.includes('merge commit(s) beyond main')),
+    'the merge reason names the merge commits');
+  const stray = byBranch['worktree-agent-stray'];
+  assertEq([stray.clean, stray.commitsBeyond, stray.removable], [false, 0, false],
+    'an untracked file alone makes the worktree dirty and not removable');
+  assertTrue(stray.reasons.includes('dirty worktree'), 'the dirty reason is exact');
+  const locked = byBranch['worktree-agent-locked'];
+  assertEq([locked.clean, locked.locked, locked.lockReason, locked.removable],
+    [true, true, 'agent running', false],
+    'a clean but locked worktree is not removable, lock reason included');
+  assertTrue(locked.reasons.includes('locked (agent running)'), 'the lock reason is exact');
+  const claimed = byBranch['worktree-agent-claimed'];
+  assertEq([claimed.clean, claimed.claimed, claimed.removable], [true, true, false],
+    'a claimed branch is not removable however clean');
+  assertTrue(claimed.reasons.includes('claimed by a chat record'), 'the claim reason is exact');
+  const g = bySection(result, 'git');
+  assertTrue(
+    g.some((f) => f.severity === 'info' && f.file === 'repos/app/.claude/worktrees/agent-clean'
+      && f.message.includes('clean, no commits beyond main — removable')),
+    'the info finding states the verdict for a removable worktree',
+  );
+  assertTrue(
+    g.some((f) => f.severity === 'info' && f.file === 'repos/app/.claude/worktrees/agent-locked'
+      && f.message.includes('not removable') && f.message.includes('locked (agent running)')),
+    'the info finding states the verdict and reasons for a locked one',
+  );
+  assertTrue(
+    !g.some((f) => f.message.includes('feature/task') || f.message.includes('feature-task')),
+    'a task-prefixed worktree beside them is never listed as an agent leftover',
+  );
+  assertEq(result.summary.exitCode, 0, 'agent leftovers are info, never a failing audit');
+  cleanup(root);
+}
+
+// 20b. gh:205 — the idle gate: a worktree active within the last hour is
+//      not removable however clean, and the HEAD reflog — not just the
+//      directory mtime — feeds that clock.
+{
+  const root = makeWorkspace();
+  const wtPath = join(root, '.claude', 'worktrees', 'agent-young');
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-young', wtPath]);
+  const fresh = await audit(root, { nowFn: () => new Date() });
+  assertEq(fresh.summary.agentWorktrees[0].removable, false,
+    'a worktree active within the last hour is not removable');
+  assertTrue(
+    fresh.summary.agentWorktrees[0].reasons.some((r) => r.includes('active within the last hour')),
+    'the reason names the idle gate',
+  );
+  // Backdate the directory mtime far past the idle window: the reflog entry
+  // written moments ago must still keep the worktree young — this is what
+  // proves the reflog is read, not just statSync.
+  const old = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  utimesSync(wtPath, old, old);
+  const backdated = await audit(root, { nowFn: () => new Date() });
+  assertEq(backdated.summary.agentWorktrees[0].removable, false,
+    'a fresh reflog entry keeps a backdated directory young');
+  // The same worktree, judged two hours later, is removable.
+  const later = await audit(root, { nowFn: () => new Date(Date.now() + 2 * 60 * 60 * 1000) });
+  assertEq(later.summary.agentWorktrees[0].removable, true,
+    'the same worktree is removable once idle for over an hour');
+  cleanup(root);
+}
+
+// 20c. gh:205 — no leftovers, no noise: the summary block is an empty array
+//      and a plain git worktree outside .claude/worktrees/ (even on a
+//      worktree-agent-* branch) is not swept up by the branch filter alone.
+{
+  const root = makeWorkspace();
+  const result = await audit(root);
+  assertEq(result.summary.agentWorktrees, [], 'a workspace without agent worktrees reports an empty list');
+  assertEq(bySection(result, 'git').filter((f) => f.message.includes('agent worktree')).length, 0,
+    'no agent-worktree info findings without leftovers');
+
+  // A worktree on a worktree-agent-* branch but outside the agent slot —
+  // the path shape must exclude it.
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-elsewhere', join(root, 'elsewhere-wt')]);
+  const result2 = await audit(root);
+  assertEq(result2.summary.agentWorktrees, [], 'branch prefix alone does not list a worktree outside .claude/worktrees/');
+  cleanup(root);
+}
+
+// 20d. gh:205 — no base to measure against: a repo whose configured default
+//      branch resolves nowhere (neither local nor on origin) keeps its facts
+//      but is never removable.
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.repos['app'] = { remote: 'x', branch: 'trunk' };
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  const app = join(root, 'repos', 'app');
+  mkdirSync(app, { recursive: true });
+  git(app, ['init', '-b', 'main']);
+  git(app, ['config', 'user.email', 'fixture@example.com']);
+  git(app, ['config', 'user.name', 'Fixture']);
+  writeFileSync(join(app, 'README.md'), '# app\n');
+  git(app, ['add', '-A']);
+  git(app, ['commit', '-m', 'init']);
+  git(app, ['worktree', 'add', '-b', 'worktree-agent-orphan', join(app, '.claude', 'worktrees', 'agent-orphan')]);
+
+  const result = await audit(root, { nowFn: () => new Date(Date.now() + 2 * 60 * 60 * 1000) });
+  const w = result.summary.agentWorktrees[0];
+  assertEq(w.base, undefined, 'no base ref resolves');
+  assertEq(w.commitsBeyond, null, 'beyond-count is unknown without a base');
+  assertEq(w.patchIdsOnDefault, null, 'patch-id verdict is unknown without a base');
+  assertEq(w.removable, false, 'never removable without a base');
+  assertTrue(w.reasons.some((r) => r.includes('trunk')), 'the reason names the missing ref');
+  cleanup(root);
+}
+
+// 20e. gh:205 — a repos/{name}/ directory that is not a git toplevel of its
+//      own is skipped entirely: without that guard, every git query run
+//      inside it walks up to the launcher and lists the launcher's own
+//      agent worktrees under the repo's name.
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.repos['app'] = { remote: 'x', branch: 'main' };
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  // a plain directory in repos/, not a clone
+  mkdirSync(join(root, 'repos', 'app'), { recursive: true });
+  writeFileSync(join(root, 'repos', 'app', 'placeholder.txt'), 'not a repo\n');
+  // an agent worktree in the workspace repo itself
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-ws', join(root, '.claude', 'worktrees', 'agent-ws')]);
+
+  const result = await audit(root, { nowFn: () => new Date(Date.now() + 2 * 60 * 60 * 1000) });
+  assertEq(result.summary.agentWorktrees.map((w) => w.repo), ['.'],
+    'only the workspace repo is scanned — a non-git repos/app does not walk up to the launcher');
+  cleanup(root);
+}
+
+// 20f. gh:205 — claims fail closed: a chats record that cannot be parsed
+//      makes claims unknown, and no agent worktree is removable until the
+//      records read again — unknown is not none.
+{
+  const root = makeWorkspace();
+  const FUTURE = () => new Date(Date.now() + 2 * 60 * 60 * 1000);
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-quiet', join(root, '.claude', 'worktrees', 'agent-quiet')]);
+  mkdirSync(join(root, 'workspace-scratchpad', 'chats'), { recursive: true });
+  writeFileSync(join(root, 'workspace-scratchpad', 'chats', 'broken.json'), '{ not json\n');
+
+  const result = await audit(root, { nowFn: FUTURE });
+  const w = result.summary.agentWorktrees[0];
+  assertEq(w.removable, false, 'claims unknown means not removable');
+  assertEq(w.claimed, false, 'claimed is not asserted while records are unreadable');
+  assertTrue(w.reasons.includes('chat records unreadable — claims unknown'),
+    'the reason names the unreadable records');
+
+  // The same fixture with the record readable again — the gate lifts.
+  writeFileSync(join(root, 'workspace-scratchpad', 'chats', 'broken.json'), JSON.stringify({
+    chat: 'ok', sessionId: 'sid-1', scope: {}, concerns: [], tasks: [],
+  }, null, 2) + '\n');
+  const healed = await audit(root, { nowFn: FUTURE });
+  assertEq(healed.summary.agentWorktrees[0].removable, true, 'readable records restore the verdict');
+  cleanup(root);
+}
+
+// 20g. gh:205 — integrity: a worktree whose .git file was deleted no longer
+//      resolves (git marks the record prunable), and its git queries would
+//      silently run against the owning repo (which is clean here) — the
+//      integrity gate must catch it either way.
+{
+  const root = makeWorkspace();
+  const wtPath = join(root, '.claude', 'worktrees', 'agent-broken');
+  git(root, ['worktree', 'add', '-b', 'worktree-agent-broken', wtPath]);
+  rmSync(join(wtPath, '.git'));
+
+  const result = await audit(root, { nowFn: () => new Date(Date.now() + 2 * 60 * 60 * 1000) });
+  const w = result.summary.agentWorktrees[0];
+  assertEq(w.removable, false, 'a directory that no longer maps to its worktree record is not removable');
+  assertTrue(
+    w.reasons.some((r) => r.includes('prunable') || r.includes('integrity')),
+    'the reason names the integrity gate',
+  );
+  cleanup(root);
 }
 
 console.log('');
