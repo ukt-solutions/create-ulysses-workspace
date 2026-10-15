@@ -20,7 +20,7 @@ The workspace ships with eight hooks. The design philosophy is minimal intervent
 
 **Fires:** When a new Claude Code conversation begins.
 
-**Does:** Walks `work-sessions/` for any `session.md` trackers and surfaces active work sessions. If there are active or paused sessions, it injects a summary so Claude can offer to resume them. Also surfaces recent handoffs so the conversation starts with awareness of prior work.
+**Does:** Walks `work-sessions/` for any `session.md` trackers and surfaces active work sessions. If there are active or paused sessions, it injects a summary so Claude can offer to resume them. It also injects a one-line workspace config summary (`Workspace config (workspace.json):` — session model, tracker, forge, repo names), which is why CLAUDE.md no longer imports workspace.json itself. Also surfaces recent handoffs so the conversation starts with awareness of prior work.
 
 This is how `/start-work` knows about existing sessions — the hook has already told Claude what is available before you type anything.
 

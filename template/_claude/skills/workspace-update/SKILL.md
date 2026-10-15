@@ -9,7 +9,7 @@ Apply a staged template update to an initialized workspace. The CLI (`npx @ulyss
 
 ## Prerequisites
 
-- `workspace.json` must have `initialized: true`
+- Read `workspace.json` (the file at the workspace root — the SessionStart hook's `Workspace config (workspace.json):` line is only a summary) and check `workspace.initialized` is `true`
 - If not initialized, check whether initialization was committed but never merged — the workspace-init flow ends with its commits merged to the default branch, so an unmerged init branch explains a missing flag:
   ```bash
   git log --all --format=%H -S'"initialized": true' -- workspace.json
@@ -129,7 +129,7 @@ Also handle these non-component files from the payload:
   ```bash
   node {payload}/.claude/scripts/classify-update.mjs --root . --payload {payload} --merge-claude-md
   ```
-  The command prints JSON `{ claudeMd, missingIncludes }`. `claudeMd` is the merged CLAUDE.md: template-owned lines take the template's new versions (skill-list entries match by their `/name`), while lines the template doesn't have — the workspace's own skill entries, custom bullets, whole sections — are kept in place. `missingIncludes` lists the `@{file}` include lines the merged file carries whose targets don't exist here (machine-local `local-only-*` targets are exempt — expected absent, never reported). Two consequences to watch in the diff: an edit made directly to a template-owned skill line is replaced by the template's new wording, and a template prose line that was reworded locally survives alongside the new template line (it may appear twice). The merge keeps the current file's line endings. Show the user the diff against the current CLAUDE.md before writing the merged result, and act on each `missingIncludes` entry — ask "The merged CLAUDE.md includes `{file}`, which doesn't exist here. Create the stub, or leave the include out?" — never write a dangling include silently. (The two JSON configs are the `config` list's, not this block's.)
+  The command prints JSON `{ claudeMd, droppedIncludes, missingIncludes }`. `claudeMd` is the merged CLAUDE.md: template-owned lines take the template's new versions (skill-list entries match by their `/name`), while lines the template doesn't have — the workspace's own skill entries, custom bullets, whole sections — are kept in place. `droppedIncludes` names retired `@{file}` includes the workspace still carries but this payload no longer ships — today `@workspace.json`, whose config summary the SessionStart hook now injects instead (gh:196); the line is dropped from the merged result, so name the drop when you show the diff and let the operator's yes (or refusal) on the merged file decide it. `missingIncludes` lists the `@{file}` include lines the merged file carries whose targets don't exist here (machine-local `local-only-*` targets are exempt — expected absent, never reported). Two consequences to watch in the diff: an edit made directly to a template-owned skill line is replaced by the template's new wording, and a template prose line that was reworded locally survives alongside the new template line (it may appear twice). The merge keeps the current file's line endings. Show the user the diff against the current CLAUDE.md before writing the merged result, and act on each `missingIncludes` entry — ask "The merged CLAUDE.md includes `{file}`, which doesn't exist here. Create the stub, or leave the include out?" — never write a dangling include silently. (The two JSON configs are the `config` list's, not this block's.)
 - **.gitignore:** Merge new entries from the payload's `_gitignore` into the existing `.gitignore` — do not remove user-added lines. An ignore pattern does not untrack already-committed files: if the workspace still tracks the per-machine catalogs the template now ignores (`git ls-files -- 'workspace-context/team-member/*/index.md'`), untrack them (`git rm -r --cached 'workspace-context/team-member/*/index.md'`), or every machine's regenerations keep dirtying pulls.
 
 ### Step 4: Update version and write the baseline
@@ -236,7 +236,7 @@ Report: "Workspace updated to v{templateVersion}. Restart Claude Code if rules o
 
 ### Step 8: Session-model migration nudge
 
-After the update is applied, if the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) has entries and `workspace.sessionModel` is not `"task"`, append one line to the report: "This workspace still has {N} session(s) under the session model — `/migrate-sessions` can inventory and drain them and switch to the task model whenever you're ready." Suggest only; the operator decides whether and when.
+After the update is applied, read `workspace.json` (Step 4 just rewrote its `templateVersion`, so the file is in hand): if the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) has entries and `workspace.sessionModel` is not `"task"`, append one line to the report: "This workspace still has {N} session(s) under the session model — `/migrate-sessions` can inventory and drain them and switch to the task model whenever you're ready." Suggest only; the operator decides whether and when.
 
 ## Notes
 

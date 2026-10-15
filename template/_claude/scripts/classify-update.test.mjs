@@ -1169,10 +1169,11 @@ console.log('# classify-update');
 }
 
 // 11. CLI --merge-claude-md — substitutes {{project-name}}, merges with the
-//     workspace's CLAUDE.md, and prints JSON { claudeMd, missingIncludes }:
-//     the merged text plus every `@{path}` include it carries whose target
-//     is absent at the root, minus machine-local local-only-* targets
-//     (gh:190).
+//     workspace's CLAUDE.md, and prints JSON { claudeMd, droppedIncludes,
+//     missingIncludes }: the merged text, the retired @-includes it dropped
+//     from the workspace's copy because this payload no longer ships them
+//     (gh:196), and every `@{path}` include it carries whose target is absent
+//     at the root, minus machine-local local-only-* targets (gh:190).
 {
   const root = setupWorkspace();
   const payload = setupPayload(root);
@@ -1190,6 +1191,7 @@ console.log('# classify-update');
   assertTrue(parsed.claudeMd.includes('## Workspace: acme'), '{{project-name}} substituted from workspace.json');
   assertTrue(parsed.claudeMd.includes('- `/acme-deploy` — ours'), 'workspace skill entries survive the CLI merge');
   assertEq(parsed.missingIncludes, [], 'no include lines in the merge, nothing missing');
+  assertEq(parsed.droppedIncludes, [], 'nothing retired to drop when the workspace carries no retired include');
   assertTrue(readFileSync(join(root, 'CLAUDE.md'), 'utf8').includes('## Workspace: acme'),
     'the mode prints only — the workspace file is untouched until the skill writes it');
 
@@ -1215,6 +1217,62 @@ console.log('# classify-update');
   for (const line of ['@CODEBASE.md', '@workspace.json', '@local-only-draft.md']) {
     assertTrue(parsed3.claudeMd.includes(line), `the merged text carries ${line} — reporting never drops it`);
   }
+  assertEq(parsed3.droppedIncludes, [],
+    'an include this payload still ships is never dropped, only merged');
+
+  // retired include: the workspace carries @workspace.json, the payload's
+  // template no longer does — the merge drops the line and names it (gh:196)
+  const retired = setupWorkspace();
+  const retiredPayload = setupPayload(retired);
+  writeFileSync(
+    join(retiredPayload, 'CLAUDE.md.tmpl'),
+    '## Workspace: {{project-name}}\n\n## Workspace Config\n@local-only-template-freshness.md\n',
+  );
+  writeFileSync(join(retired, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
+  writeFileSync(
+    join(retired, 'CLAUDE.md'),
+    '## Workspace: acme\n\n## Workspace Config\n@workspace.json\n@local-only-template-freshness.md\n\n## Skills\n- `/acme-deploy` — ours\n',
+  );
+  const r4 = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', retired, '--payload', retiredPayload, '--merge-claude-md'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r4.status, 0, `--merge-claude-md with a retired include exits 0 (stderr: ${r4.stderr.trim().slice(0, 200)})`);
+  const parsed4 = JSON.parse(r4.stdout);
+  assertEq(parsed4.droppedIncludes, ['workspace.json'],
+    'the retired include the workspace still carries is named in droppedIncludes');
+  assertTrue(!parsed4.claudeMd.includes('@workspace.json'),
+    'the merged text no longer carries the retired include');
+  assertTrue(parsed4.claudeMd.includes('@local-only-template-freshness.md'),
+    'the include the template still ships survives the merge');
+  assertTrue(parsed4.claudeMd.includes('- `/acme-deploy` — ours'),
+    'workspace content around the dropped line survives');
+
+  // same drop under CRLF: stripping the line must not rewrite the file's EOLs
+  const crlf = setupWorkspace();
+  const crlfPayload = setupPayload(crlf);
+  writeFileSync(
+    join(crlfPayload, 'CLAUDE.md.tmpl'),
+    '## Workspace: {{project-name}}\n\n## Workspace Config\n@local-only-template-freshness.md\n',
+  );
+  writeFileSync(join(crlf, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
+  writeFileSync(
+    join(crlf, 'CLAUDE.md'),
+    '## Workspace: acme\r\n\r\n## Workspace Config\r\n@workspace.json\r\n@local-only-template-freshness.md\r\n',
+  );
+  const r5 = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', crlf, '--payload', crlfPayload, '--merge-claude-md'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r5.status, 0, `--merge-claude-md with a retired include under CRLF exits 0 (stderr: ${r5.stderr.trim().slice(0, 200)})`);
+  const parsed5 = JSON.parse(r5.stdout);
+  assertEq(parsed5.droppedIncludes, ['workspace.json'], 'CRLF retires the include too');
+  assertTrue(!/[^\r]\n/.test(parsed5.claudeMd), 'no bare LF sneaks into the CRLF result');
+  assertTrue(!parsed5.claudeMd.includes('@workspace.json'), 'the retired include is gone under CRLF as well');
+  rmSync(retired, { recursive: true, force: true });
+  rmSync(crlf, { recursive: true, force: true });
 
   // no template in the payload → named error
   const bare = setupWorkspace();
