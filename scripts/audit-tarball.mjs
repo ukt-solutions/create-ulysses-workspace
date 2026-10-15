@@ -57,12 +57,14 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // 250 kB (/workspace-update dogfood, gh:180) → 260 kB (gh:180 fix round) →
 // 265 kB (gh:183 fix round: 267,497 bytes) → 295 kB (v0.23: 300,774 bytes,
 // smallest passing multiple) → 310 kB (v0.23.1: 306,874 bytes, gh:190/gh:191
-// fix rounds).
+// fix rounds) → 360 kB (v0.24: epics, template-modifications registry,
+// leak audit, prChecks/merge approval — with lib/ tests excluded).
 //
-// Test files ship because template/ is included wholesale, matching the
-// trackers/ and forges/ precedent. That is now ~15% of the tarball, which is
-// worth revisiting as a whole rather than by carving out one directory.
-const SIZE_LIMIT_BYTES = 310 * 1024;
+// The CLI's own tests (lib/**/*.test.mjs) are excluded through a "files"
+// negation in package.json and checkForbiddenFiles asserts they stay out.
+// Template tests still ship: template/ installs into every workspace, where
+// those tests run against the installed scripts. Further trimming is gh:189.
+const SIZE_LIMIT_BYTES = 360 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
@@ -165,6 +167,7 @@ function checkForbiddenFiles(files) {
     { name: '.env file', re: /\.env(\..+)?$/ },
     { name: '.DS_Store', re: /\.DS_Store$/ },
     { name: 'node_modules', re: /node_modules\// },
+    { name: 'CLI test file', re: /^lib\/.*\.test\.mjs$/ },
     { name: 'settings.local.json', re: /template\/_claude\/settings\.local\.json$/ },
     // The template stores these under the inert names _claude/ and
     // _mcp.json; the protected live names must never creep back in, or
