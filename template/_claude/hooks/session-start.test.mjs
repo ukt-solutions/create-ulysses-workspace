@@ -7,7 +7,7 @@
 // `invalid`, an unset forge type surfaces as origin-picked, and only
 // sessionModel falls back ("session", matching how /start-work routes
 // absent config).
-import { configSummary } from './_utils.mjs';
+import { configSummary, setupHint } from './_utils.mjs';
 
 let failed = 0;
 let passed = 0;
@@ -120,6 +120,36 @@ assertEq(
   configSummary({ repos: { 'my-app': { primary: true }, 'my-api': {} } }),
   'sessionModel: session | tracker: off | forge: auto (from origin) | repos: my-app (primary), my-api',
   'repos entries print with primary marked',
+);
+
+console.log('# session-start setupHint (gh:130)');
+
+// 9. Fully set up machine: no hint
+assertEq(
+  setupHint({ initialized: true, missingRepos: [], hasUser: true, hasClaudeLocal: true }),
+  null,
+  'a complete setup prints no hint',
+);
+
+// 10. Teammate's fresh clone: initialized, nothing local — points at join
+assertEq(
+  setupHint({ initialized: true, missingRepos: ['my-app', 'my-api'], hasUser: false, hasClaudeLocal: false }),
+  'Setup incomplete (missing repos: my-app, my-api; no user set in .claude/settings.local.json). Run /workspace-init to join this workspace — it sets up only what this machine is missing.',
+  'a fresh clone of an initialized workspace is told to join',
+);
+
+// 11. User set but CLAUDE.local.md missing still counts as incomplete
+assertEq(
+  setupHint({ initialized: true, missingRepos: [], hasUser: true, hasClaudeLocal: false }),
+  'Setup incomplete (no CLAUDE.local.md). Run /workspace-init to join this workspace — it sets up only what this machine is missing.',
+  'a missing CLAUDE.local.md is reported when the user is set',
+);
+
+// 12. Never-initialized workspace keeps the initialize wording
+assertEq(
+  setupHint({ initialized: false, missingRepos: ['my-app'], hasUser: true, hasClaudeLocal: true }),
+  'Setup incomplete (missing repos: my-app). Run /workspace-init to initialize this workspace.',
+  'an uninitialized workspace is told to initialize, not join',
 );
 
 console.log('');

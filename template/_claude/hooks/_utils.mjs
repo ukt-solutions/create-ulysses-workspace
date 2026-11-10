@@ -94,6 +94,33 @@ export function configSummary(config) {
 }
 
 /**
+ * The one line session-start prints when this machine's per-user setup is
+ * incomplete (gh:130), or null when nothing is missing. A clone of a
+ * workspace a teammate already initialized is the common case: repos/ is
+ * empty and there is no user identity yet. /workspace-init handles that as
+ * a join — it no longer refuses an initialized workspace — so the hint says
+ * "join" there and keeps the plain "initialize" wording for a workspace
+ * that was never initialized.
+ *
+ * @param {object} s
+ * @param {boolean} s.initialized  workspace.json → workspace.initialized
+ * @param {string[]} s.missingRepos repos in workspace.json absent under repos/
+ * @param {boolean} s.hasUser       settings.local.json carries workspace.user
+ * @param {boolean} s.hasClaudeLocal CLAUDE.local.md exists
+ */
+export function setupHint({ initialized, missingRepos = [], hasUser, hasClaudeLocal }) {
+  const gaps = [];
+  if (missingRepos.length > 0) gaps.push(`missing repos: ${missingRepos.join(', ')}`);
+  if (!hasUser) gaps.push('no user set in .claude/settings.local.json');
+  else if (!hasClaudeLocal) gaps.push('no CLAUDE.local.md');
+  if (gaps.length === 0) return null;
+  const action = initialized
+    ? 'Run /workspace-init to join this workspace — it sets up only what this machine is missing'
+    : 'Run /workspace-init to initialize this workspace';
+  return `Setup incomplete (${gaps.join('; ')}). ${action}.`;
+}
+
+/**
  * Defensive normalization for a session tracker's `repos` field. A fresh
  * tracker written by create-work-session always holds an array, but an
  * older hand-edited tracker or a tracker migrated from the previous layout
