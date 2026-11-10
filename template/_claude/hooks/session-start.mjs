@@ -16,6 +16,7 @@ import {
   sessionFolderPath,
   timeAgo,
   configSummary,
+  setupHint,
 } from './_utils.mjs';
 import { reconcile, readSessionRegistry, resolveChatName } from '../scripts/chat-record.mjs';
 
@@ -125,7 +126,16 @@ for (const name of repoNames) {
     missing.push(name);
   }
 }
-if (missing.length > 0) lines.push(`Missing repos: ${missing.join(', ')}. Run /workspace-init to clone them.`);
+// A teammate's fresh clone of an initialized workspace has no repos/ and no
+// user identity; point it at /workspace-init's join flow (gh:130).
+const localSettings = readJSON(join(root, '.claude', 'settings.local.json'));
+const hint = setupHint({
+  initialized: config.workspace?.initialized === true,
+  missingRepos: missing,
+  hasUser: typeof localSettings?.workspace?.user === 'string' && localSettings.workspace.user !== '',
+  hasClaudeLocal: existsSync(join(root, 'CLAUDE.local.md')),
+});
+if (hint) lines.push(hint);
 if (existing.length > 0) lines.push(`Repos synced: ${existing.join(', ')}`);
 
 // Surface active work sessions

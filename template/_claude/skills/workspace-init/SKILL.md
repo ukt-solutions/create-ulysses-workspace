@@ -1,6 +1,6 @@
 ---
 name: workspace-init
-description: First-time workspace initialization. Clones repos, installs template components, extracts team knowledge from documentation sources and Claude chat history, activates rules, configures user identity. Run once after scaffolding with --init.
+description: First-time workspace initialization, or joining a workspace a teammate already initialized. Init clones repos, installs template components, extracts team knowledge from documentation sources and Claude chat history, activates rules, configures user identity — run once after scaffolding with --init. Join (an initialized workspace you just cloned) sets up only this machine's per-user pieces — repos, user identity, CLAUDE.local.md.
 
 # scope example (remove # to activate path-scoped loading):
 # scope: repos/my-api/
@@ -10,19 +10,61 @@ description: First-time workspace initialization. Clones repos, installs templat
 
 Guided initialization for a newly scaffolded workspace. Clones repos, installs template components from the `.workspace-update/` payload, extracts team knowledge from documentation sources and prior Claude chat history, populates shared context, formalizes existing worktrees as work sessions, and configures the workspace for use.
 
-This skill runs once. After completion, it sets `workspace.initialized: true` in workspace.json.
+Initialization runs once per workspace and ends by setting `workspace.initialized: true` in workspace.json. Every later person who clones that workspace runs this skill too — it detects the initialized workspace and runs the **join flow** instead, which sets up only the per-user, machine-local pieces.
 
-## Prerequisites
+## Choose the mode
 
-- `.workspace-update/` payload directory must exist (staged by `npx @ulysses-ai/create-workspace --init`)
-- If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx @ulysses-ai/create-workspace --init` to stage the template."
-- `workspace.json` must exist
+`workspace.json` must exist; if it does not, report "No workspace.json found — this is not a workspace. Scaffold one with `npx @ulysses-ai/create-workspace --init`." and stop.
 
-## Gate
+Then decide from `workspace.initialized` and the `.workspace-update/` payload. `/workspace-init join` forces the join flow on an initialized workspace and skips the question below.
 
-If `workspace.json` has `"initialized": true` AND `.workspace-update/` exists with `"action": "init"` in `.workspace-update/.manifest.json`, warn: "Workspace is already initialized. Did you mean to run `npx @ulysses-ai/create-workspace --upgrade` instead?" Do not proceed unless the user explicitly confirms they want to re-initialize.
+| `initialized` | `.workspace-update/` payload | Mode |
+|---|---|---|
+| not `true` | `"action": "init"` in `.manifest.json` | **Init** — the full flow below |
+| not `true` | absent | Report "No update payload found. Run `npx @ulysses-ai/create-workspace --init` to stage the template." and stop |
+| `true` | `"action": "init"` | Warn "Workspace is already initialized. Did you mean to run `npx @ulysses-ai/create-workspace --upgrade` instead?" Proceed with init only if the user explicitly confirms a re-initialization |
+| `true` | any other payload | Report "A template update is staged — run /workspace-update." and stop |
+| `true` | absent | **Join check** — see below |
 
-If `workspace.json` has `"initialized": true` and no `.workspace-update/` payload exists, report: "Workspace already initialized. Use /workspace-update for template updates, or /maintenance to check integrity."
+**Join check.** Inspect this machine's per-user pieces:
+
+- `repos/{name}` for each repo in `workspace.json`;
+- `.claude/settings.local.json` with a `workspace.user` value;
+- `CLAUDE.local.md` at the root;
+- `workspace-context/team-member/{user}/` for that user.
+
+If all are present, report "Workspace already initialized and this machine is set up. Use /workspace-update for template updates, or /maintenance to check integrity." and stop. If any is missing, run the **Join flow**.
+
+## Join flow
+
+A join sets up one person on one machine. It never touches tracked files, creates no branch and makes no commits — everything it writes is gitignored (`repos/`, `.claude/settings.local.json`, `CLAUDE.local.md`, the generated per-user index). It skips the template install, rule activation, knowledge extraction, tracker setup, root cleanup and remote setup: the teammate who initialized the workspace already did those, and their results arrived with the clone.
+
+1. **Report what is missing** — one line per piece from the join check, and say this run is a join, not an init.
+2. **User identity.** If `workspace.user` is unset, ask "What name should be used for your user-scoped context? [{system-username}]". List the existing `workspace-context/team-member/*/` folders so a returning person can pick theirs; a name with no folder is a new team member. The name must match `^[A-Za-z0-9_-]+$`. Write it to `.claude/settings.local.json`, merging into any existing content rather than replacing it:
+   ```json
+   { "workspace": { "user": "{name}" } }
+   ```
+3. **Clone missing repos.** For each repo in `workspace.json` without `repos/{name}`: ask "Clone {name} from {remote}? [Y/n]", then `git clone {remote} repos/{name}`. If the entry names a `branch`, check that the clone is on it. A clone that fails (no access, wrong URL) is reported and skipped, never retried in a loop.
+4. **Per-user folder.** If `workspace-context/team-member/{user}/` does not exist, create it. The generator in the next step builds an index only for folders that exist, so without it `CLAUDE.local.md` would import a missing file.
+5. **CLAUDE.local.md.** Run:
+   ```bash
+   node .claude/scripts/generate-claude-local.mjs --root .
+   ```
+   It writes `CLAUDE.local.md` from `workspace.user` and regenerates the workspace-context indexes, including the per-user one. If it refuses because a `CLAUDE.local.md` with different content exists, show the difference and ask before re-running with `--force`.
+6. **Report:**
+   ```
+   "Joined {workspace-name} as {user}.
+   - Repos cloned: {list} (already present: {list}; failed: {list})
+   - User identity: {set now | already set}
+   - CLAUDE.local.md: {written | unchanged}
+   - Work lifecycle: {workspace.sessionModel}
+
+   Restart Claude Code so CLAUDE.local.md and the hooks load, then run /start-work."
+   ```
+
+A join changes nothing the team shares, so there is nothing to push. The new team member's first tracked file lands through ordinary work — `/start-work`, a `/braindump`, or `/handoff`.
+
+The rest of this skill is the **Init** flow.
 
 ## Branching
 
