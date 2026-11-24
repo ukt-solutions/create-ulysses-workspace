@@ -442,7 +442,10 @@ export function planAliasMerge(ctx, alias, { spawnFn = nodeSpawnSync } = {}) {
 // `author:` in a markdown file's frontmatter, and only there: a body line
 // that happens to start with "author:" is content, not metadata.
 // A CRLF checkout (Windows, core.autocrlf) keeps the \r before the newline.
-const authorLine = (name) => new RegExp(`^(author:[ \\t]*["']?)${name}(["']?[ \\t]*\\r?)$`, 'm');
+// The name is matched literally: it reaches here from the command line, and
+// roster validation is not what keeps it from being read as a pattern.
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const authorLine = (name) => new RegExp(`^(author:[ \\t]*["']?)${escapeRegExp(name)}(["']?[ \\t]*\\r?)$`, 'm');
 
 function frontmatter(text) {
   return text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
