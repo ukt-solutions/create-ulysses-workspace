@@ -64,10 +64,12 @@ If the comment fails (tracker unreachable, auth expired), report the error but d
 
 ### Step 4: Flush task list to session.md
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 Before the commit picks it up, flush current `TodoWrite` state to `## Tasks` per the `task-list-mirroring` rule:
 
 ```bash
-cd work-sessions/{session-name}/workspace
+cd 'work-sessions/{session-name}/workspace'
 echo '<JSON-of-current-todos>' | node .claude/scripts/sync-tasks.mjs --write session.md
 ```
 
@@ -87,18 +89,18 @@ The helper enforces the bookend invariant — pass whatever current state you ha
 
 ```bash
 # From the workspace worktree
-cd work-sessions/{session-name}/workspace
+cd 'work-sessions/{session-name}/workspace'
 git add .
-git commit -m "handoff: pause {session-name}"
-git push -u origin {branch}
+git commit -m 'handoff: pause {session-name}'
+git push -u origin '{branch}'
 ```
 
 ### Step 6: Push project repos
 
 ```bash
 # For each repo in the tracker's repos:
-cd work-sessions/{session-name}/workspace/repos/{repo}
-git push -u origin {branch}
+cd 'work-sessions/{session-name}/workspace/repos/{repo}'
+git push -u origin '{branch}'
 ```
 
 ### Step 7: Create draft PRs

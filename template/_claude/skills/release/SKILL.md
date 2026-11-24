@@ -18,13 +18,15 @@ Release notes come from the forge. GitHub's generated notes (merged PR titles) a
 
 ## Flow
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 **Step 1: Determine version and repo**
 
 Ask which repo to release — read `repos` from `workspace.json` and default to the entry with `"primary": true`. If no version was given, ask the bump kind (patch/minor/major) after showing the merged PRs since the last tag, so the operator can judge the impact:
 
 ```bash
 git -C repos/{repo} describe --tags --abbrev=0        # v{previous}
-git -C repos/{repo} log -1 --format=%cI v{previous}   # the previous tag's commit time
+git -C repos/{repo} log -1 --format=%cI 'v{previous}'   # the previous tag's commit time
 ```
 
 Then call the forge adapter's `prList` with `state: 'merged'`, `base:` the repo's default branch, and a merged-after search bounded by that tag's commit time — the full `%cI` timestamp (e.g. `merged:>2026-05-01T10:00:00Z`), never a bare date, which would sweep in every PR merged later the same day. `base` matters because PRs merged into other branches are not this release. If the returned list carries `truncated: true`, older PRs may sit beyond the fetched page — say so and re-query with a higher `limit` before judging the bump. Pre-v1.0 breaking changes are a minor bump.
@@ -34,7 +36,7 @@ Then call the forge adapter's `prList` with `state: 'merged'`, `base:` the repo'
 Two checks before anything is pushed. First the tag: if `v{version}` already exists on origin, stop and ask — reuse it, investigate with `forge.releaseView`, or pick another version. Never force-push a tag.
 
 ```bash
-git -C repos/{repo} ls-remote --exit-code origin refs/tags/v{version}
+git -C repos/{repo} ls-remote --exit-code origin 'refs/tags/v{version}'
 ```
 
 Second the release path. Build the repo's forge with `forgeConfigForRepo(root, '{repo}', ws)` from `.claude/scripts/merge-mode.mjs` — it picks the adapter from the repo's own origin, so a GitLab repo gets the gitlab adapter whatever `workspace.forge` says — and decide now who creates the release (Step 6): the repo's CI, or this skill. If the flow needs something the forge cannot do, stop here — past this point the tag is pushed, and a publish that cannot run is much harder to unwind.
@@ -44,7 +46,7 @@ Second the release path. Build the repo's forge with `forgeConfigForRepo(root, '
 Create a task worktree for the release branch:
 
 ```bash
-node .claude/scripts/task-worktree.mjs --root . --create --repo "{repo}" --branch "release/v{version}"
+node .claude/scripts/task-worktree.mjs --root . --create --repo '{repo}' --branch 'release/v{version}'
 ```
 
 If the repo has a `package.json` with a `version`, set it to `{version}` (edit the JSON; keep formatting) and update `package-lock.json`'s top-level version fields if that file is present. Commit `chore: release v{version}`. If the repo has no version file, skip the commit — step 6 tags the current default-branch head instead.
@@ -59,7 +61,7 @@ Pull the merge, then audit what is about to be tagged:
 
 ```bash
 git -C repos/{repo} pull --ff-only
-node .claude/scripts/release-leak-audit.mjs --root . --repo "{repo}"
+node .claude/scripts/release-leak-audit.mjs --root . --repo '{repo}'
 ```
 
 Patterns live in `workspace.json` — `repos.{repo}.release.leakPatterns` for one repo, `workspace.release.leakPatterns` for every repo — as arrays of strings: `/…/flags` is that regex, anything else a case-insensitive literal. Mind the seam between the forms: a path-like literal whose tail parses as a flags run (`/keys/i`) reads as a regex — write such literals without the leading slash or escape them as a regex.
@@ -73,8 +75,8 @@ Exit 1 lists matches as `{ file, line, pattern, excerpt }` plus a `skipped` list
 Tag the merge and push the tag:
 
 ```bash
-git -C repos/{repo} tag v{version}
-git -C repos/{repo} push origin v{version}
+git -C repos/{repo} tag 'v{version}'
+git -C repos/{repo} push origin 'v{version}'
 ```
 
 Who creates the release depends on the repo, and the CI check is per-forge:
@@ -105,7 +107,7 @@ If a `publish.yml` (or a publish job) without release creation exists, still fin
 Remove the release worktree:
 
 ```bash
-node .claude/scripts/task-worktree.mjs --root . --remove --repo "{repo}" --branch "release/v{version}" --delete-branch
+node .claude/scripts/task-worktree.mjs --root . --remove --repo '{repo}' --branch 'release/v{version}' --delete-branch
 ```
 
 Report the PR, the tag, the release URL, and the publish status.

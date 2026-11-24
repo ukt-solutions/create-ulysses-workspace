@@ -33,6 +33,8 @@ For (5): exit — no changes.
 
 ### Step 3: GitHub Issues configuration
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 1. **Verify `gh` auth.** Run `gh auth status`. If not authenticated, walk the user through `gh auth login`. Do not proceed until authenticated.
 
 2. **Resolve the target repo.** Default to the workspace's own git remote:
@@ -43,9 +45,9 @@ For (5): exit — no changes.
 
 3. **Verify issues are enabled:**
    ```bash
-   gh repo view {slug} --json hasIssuesEnabled
+   gh repo view '{slug}' --json hasIssuesEnabled
    ```
-   If `hasIssuesEnabled` is `false`, offer: "Issues are disabled on `{slug}`. Enable? [Y/n]" → `gh api repos/{slug} -X PATCH -f has_issues=true`.
+   If `hasIssuesEnabled` is `false`, offer: "Issues are disabled on `{slug}`. Enable? [Y/n]" → `gh api 'repos/{slug}' -X PATCH -f has_issues=true`.
 
 4. **Write `workspace.json`:**
    ```json
@@ -61,7 +63,7 @@ For (5): exit — no changes.
    Preserve all other fields. Commit:
    ```bash
    git add workspace.json
-   git commit -m "chore: configure github-issues tracker on {slug}"
+   git commit -m 'chore: configure github-issues tracker on {slug}'
    ```
 
 5. **Initialize labels** by calling the adapter's `ensureLabels()` from a shell one-liner:
@@ -93,13 +95,13 @@ For (5): exit — no changes.
 
 7. **Verify:**
    ```bash
-   gh issue list --repo {slug} --limit 5
+   gh issue list --repo '{slug}' --limit 5
    ```
    Expected: empty list (no tickets yet) or the existing ones if the repo already had issues.
 
 ### Step 4: GitLab Issues configuration
 
-1. **Verify `glab` auth.** Run `glab auth status`. For a self-managed instance, walk through `glab auth login --hostname {host}`. Do not proceed until authenticated.
+1. **Verify `glab` auth.** Run `glab auth status`. For a self-managed instance, walk through `glab auth login --hostname '{host}'`. Do not proceed until authenticated.
 
 2. **Resolve the target project.** Default to the workspace's own git remote (`git -C {workspace-root} remote get-url origin`, parsed as above). Ask: "Use `{group/sub/project}` for issues, or a different project?" Accept any nested `group/sub/project` path.
 
@@ -120,14 +122,14 @@ For (5): exit — no changes.
    Include `"host"` only for a self-managed instance — omit it for gitlab.com. Preserve all other fields. Commit:
    ```bash
    git add workspace.json
-   git commit -m "chore: configure gitlab-issues tracker on {group/sub/project}"
+   git commit -m 'chore: configure gitlab-issues tracker on {group/sub/project}'
    ```
 
 4. **Initialize labels and (optionally) milestones** exactly as in Step 3 — the one-liners go through `createTracker`, so the same commands work against GitLab.
 
 5. **Verify:**
    ```bash
-   glab issue list --repo {group/sub/project} --per-page 5
+   glab issue list --repo '{group/sub/project}' --per-page 5
    ```
 
 ### Step 5: Configure epics (optional)
@@ -170,5 +172,5 @@ Next: run /start-work to pick or create an issue and begin.
 - The workspace repo is the default target — no separate `workspace-{project}` repo needed.
 - Issues track everything across all project repos in the workspace. Cross-repo work items live in one place.
 - One-way integration: the tracker is the source of truth. Skills read and write via the adapter; nothing else reflects tracker state locally.
-- If CLI auth later expires, skill flows will surface `gh`/`glab` errors — re-run `gh auth login` (or `glab auth login --hostname {host}`) and try again.
+- If CLI auth later expires, skill flows will surface `gh`/`glab` errors — re-run `gh auth login` (or `glab auth login --hostname '{host}'`) and try again.
 - Adding a new backend: write an adapter module at `.claude/scripts/trackers/{type}.mjs` implementing the interface in `interface.mjs`, then add a case in the `createTracker` switch statement.
