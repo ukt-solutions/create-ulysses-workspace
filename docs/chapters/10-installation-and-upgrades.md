@@ -136,12 +136,26 @@ npx @ulysses-ai/create-workspace@beta --upgrade
 
 The upgrade does not apply changes directly. Instead, it stages a payload:
 
-1. The CLI verifies the workspace is initialized and reads its current template version.
+1. The CLI verifies the workspace is initialized, reads its current template version, and refuses when the template it ships is older than that version — see [Refusing downgrades](#refusing-downgrades).
 2. It writes the full new template to `.workspace-update/` with a manifest recording `action`, `fromVersion`, and `templateVersion`.
 3. When the workspace has no usable template baseline (it predates v0.21, or the file is corrupt), the CLI reconstructs one for the installed version and stages it **inside the payload** as `.workspace-update/.template-baseline.reconstructed.json` — never in the launcher. It fetches that version's package tarball from the npm registry (registry fetch with a 15s abort timeout, `npm pack` fallback with a 30s timeout), hashes the template files that version shipped — handling both the old live-name layout (`.claude/`, `.mcp.json`) and the current inert one (`_claude/`, `_mcp.json`) — and marks the baseline `"reconstructed": true`. Staging it in the payload matters because a workspace with a remote applies updates inside a task worktree that can only see what travels with the payload, and an untracked launcher baseline would dirty the launcher against the incoming PR. The same fetched tarball also stages the installed version's template files at `.workspace-update/.template-base/` — the merge base `/workspace-update` merges locally edited files against (see [Applying Updates](#applying-updates)). If the tarball cannot be fetched (unknown version, no network) the CLI warns and continues without a baseline or merge base; the upgrade never fails because of this.
 4. It installs the payload's `workspace-update` skill into `.claude/skills/workspace-update/`, replacing whatever older copy the workspace carries — the skill that processes the payload is always the current one, never a stale installed flow improvising around a format it predates. A locally customised `SKILL.md` (matching neither the payload's copy nor the hash of what the installed version shipped) is backed up as `SKILL.md.local-backup` first, and the new tree is staged and swapped in only after the copy succeeded, so a failure leaves the old skill intact.
 
 The `.workspace-update/` directory is a staging area, gitignored since v0.19.0. No other files have been modified yet. The actual application happens interactively through the `/workspace-update` skill. If the CLI finds `.workspace-update/` already tracked by git — a leftover from upgrading an older workspace — it warns and tells you to untrack it (`git rm -r --cached .workspace-update`) before continuing.
+
+### Refusing downgrades
+
+`--upgrade` stages the template of the CLI version that runs it. When that template is older than the workspace's, staging it would hand `/workspace-update` a downgrade, so the CLI refuses instead: it names both versions and the command to run instead, exits non-zero, and writes nothing — no payload, so the workspace-update-check hook has nothing to pick up. This is the state a bare `npx @ulysses-ai/create-workspace` leaves you in while `latest` sits behind `beta`: the older CLI, run on a newer workspace.
+
+```bash
+npx @ulysses-ai/create-workspace@<version> --upgrade
+```
+
+`<version>` is the workspace's own template version or a newer one. Until the workspace is on a stable release, the dist-tag of its channel — `@beta`, or `@rc` for a release candidate — is the shortest way to name the newest one. A workspace whose `templateVersion` is missing or is not a version is never refused: there is nothing to compare. To stage an older template on purpose, pass `--allow-downgrade`:
+
+```bash
+npx @ulysses-ai/create-workspace@<version> --upgrade --allow-downgrade
+```
 
 ## Applying Updates
 
@@ -274,5 +288,5 @@ Custom rules, custom skills, and custom agents are not affected by upgrades. The
 - `npx @ulysses-ai/create-workspace@beta --init` scaffolds a workspace with bootstrap skills, hooks, and scripts. The full template is staged for interactive installation.
 - `/workspace-init` handles first-time configuration — cloning repos, installing template components, extracting team knowledge, activating rules, formalizing worktrees, setting user identity.
 - Template versioning tracks which version of the template the workspace has.
-- `--upgrade` stages changes; `/workspace-update` applies them interactively and verifies with a scripted post-update audit.
+- `--upgrade` stages changes, and refuses to stage an older template unless `--allow-downgrade` is passed; `/workspace-update` applies the staged changes interactively and verifies with a scripted post-update audit.
 - Custom files are not affected by upgrades — the template manages only its own files.

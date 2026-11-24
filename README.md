@@ -103,6 +103,7 @@ A scaffolded workspace with:
 | `npm create @ulysses-ai/workspace@beta` | Interactive scaffolder (recommended) |
 | `npx @ulysses-ai/create-workspace@beta --init [dir]` | Non-interactive fresh install (pass dir directly) |
 | `npx @ulysses-ai/create-workspace@beta --upgrade [dir]` | Apply template updates to an existing workspace |
+| `npx @ulysses-ai/create-workspace@beta --upgrade [dir] --allow-downgrade` | Stage an update from an older template; without the flag, `--upgrade` refuses a downgrade |
 
 > **Why two forms?** `npm create <pkg>` resolves to `npx create-<pkg>`, but it consumes the `--init` flag for itself (npm's own subcommand alias). Use the bare `npm create` form for interactive scaffolding; use `npx` directly when you want to pass `--init <dir>` non-interactively.
 

@@ -43,7 +43,7 @@ async function main() {
     const { upgradeWorkspace } = await import('../lib/upgrade.mjs');
     const args = process.argv.slice(process.argv.indexOf('--upgrade') + 1);
     const targetDir = resolve(args.find(a => !a.startsWith('--')) || '.');
-    await upgradeWorkspace(targetDir);
+    await upgradeWorkspace(targetDir, { allowDowngrade: process.argv.includes('--allow-downgrade') });
     return;
   }
 
