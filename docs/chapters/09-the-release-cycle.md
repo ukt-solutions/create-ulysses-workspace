@@ -32,13 +32,13 @@ A repo's `CHANGELOG.md`, if it has one, is historical — this skill does not wr
 
 ## Version Numbering
 
-Versions are assigned at release time, not pre-planned. The convention:
+Versions are assigned at release time from what shipped, not planned in advance. The number tracks the template — what lands in a workspace — so a release is judged by what `--upgrade` and `/workspace-update` put an existing workspace through:
 
-- **Patch** (0.x.**Y**): Bug fixes, design debt, small improvements.
-- **Minor** (0.**X**.0): New features or significant template changes.
-- **Major** (**X**.0.0): Breaking changes to conventions, schema, or skill interfaces.
+- **Patch** (0.x.**Y**): fixes that leave the documented contract as it is, plus documentation and wording corrections.
+- **Minor** (0.**X**.0): something new — a skill, rule, hook, optional `workspace.json` field or CLI flag — or a change that ships with a migration `/workspace-update` runs itself.
+- **Major** (**X**.0.0): an existing workspace needs a manual step, or something on the contract changes behaviour — a skill, rule, hook or field is removed or renamed, the layout moves, the minimum Node version goes up.
 
-The version number describes what shipped, not when it was planned. A feature you expected to be a minor might turn out to be a patch if the actual change was small.
+Before 1.0.0 a breaking change is a minor bump, because a `0.x` version does not claim stability yet. [VERSIONING.md](../../VERSIONING.md) defines the contract these refer to, when a migration counts as automatic, the dist-tags each release ships under, and what 1.0 does not promise.
 
 ---
 
