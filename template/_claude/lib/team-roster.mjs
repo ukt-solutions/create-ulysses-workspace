@@ -273,12 +273,27 @@ export function identityFindings(roster, { user = null, forgeLogin = null, gitEm
         `${SCRIPT} --add ${effective.key} --forge ${forgeLogin} --root .`,
     });
   }
-  if (effective && gitEmail && !emailOwner) {
+  // An email nobody claims means one of two things. If the member has
+  // recorded emails, the likelier story is a mistyped or wrong-machine
+  // config — commits would land under an address that isn't theirs — so it
+  // is a warning that leads with the fix. If they have recorded none, the
+  // roster simply hasn't been told yet, and recording it is the suggestion.
+  if (effective && gitEmail && !emailOwner && effective.gitEmails.length) {
+    findings.push({
+      severity: 'warning',
+      code: 'email-unknown',
+      message:
+        `git commits here as ${gitEmail}, which isn't one of ${effective.key}'s emails ` +
+        `(${effective.gitEmails.join(', ')}). If that's a mistake: ` +
+        `git config user.email ${effective.gitEmails[0]} — if it's a new address of yours: ` +
+        `${SCRIPT} --add ${effective.key} --email ${gitEmail} --root .`,
+    });
+  } else if (effective && gitEmail && !emailOwner) {
     findings.push({
       severity: 'info',
       code: 'email-unrecorded',
       message:
-        `git email ${gitEmail} is not in ${effective.key}'s roster entry — record it: ` +
+        `git email ${gitEmail} is not in ${effective.key}'s roster entry yet — record it: ` +
         `${SCRIPT} --add ${effective.key} --email ${gitEmail} --root .`,
     });
   }

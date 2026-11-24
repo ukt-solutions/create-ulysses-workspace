@@ -155,10 +155,26 @@ const roster = normalizeRoster(TEAM);
   assert(f.every((x) => x.severity === 'warning'), 'mismatches are warnings');
 }
 
+// An email nobody claims, from a member who has recorded emails: most likely
+// a wrong git config, so it is a warning that offers the fix first.
 {
   const f = identityFindings(roster, { user: 'sam', forgeLogin: 'new-login', gitEmail: 'laptop@example.com' });
-  assertEq(codes(f), ['forge-unrecorded', 'email-unrecorded'], 'unclaimed login and email suggested for recording');
-  assert(f.every((x) => x.severity === 'info'), 'unrecorded identities are info');
+  assertEq(codes(f), ['forge-unrecorded', 'email-unknown'], 'unclaimed login suggested; unknown email warned');
+  assertEq(f.map((x) => x.severity), ['info', 'warning'], 'an unknown email from a member with emails is a warning');
+  const msg = f[1].message;
+  assert(msg.includes('(sam@example.com, SAM@work.example.com)'), 'the warning lists the recorded emails');
+  assert(msg.indexOf('git config user.email sam@example.com') < msg.indexOf('--add sam --email laptop@example.com'),
+    'the config fix comes before the record-it option');
+}
+
+// The same email from a member with no recorded emails: the roster just
+// hasn't been told yet, so recording it is an info suggestion.
+{
+  const bare = normalizeRoster({ sam: { forge: 'sam-example' } });
+  const f = identityFindings(bare, { user: 'sam', gitEmail: 'laptop@example.com' });
+  assertEq(codes(f), ['email-unrecorded'], 'no recorded emails → suggest recording');
+  assertEq(f[0].severity, 'info', 'recording suggestion is info');
+  assert(f[0].message.includes('--add sam --email laptop@example.com'), 'suggestion names the command');
 }
 
 // ---------- sessionStartLines ----------
@@ -168,8 +184,11 @@ const roster = normalizeRoster(TEAM);
   assertEq(lines.length, 2, 'alias and email mismatch both printed');
   assert(lines.every((l) => l.startsWith('Team identity: ')), 'lines are labelled');
   assert(lines[0].endsWith('--set-user alex --root .'), 'a closing command is left copyable (no trailing period)');
-  assertEq(sessionStartLines(roster, { user: 'sam', gitEmail: 'laptop@example.com' }), [],
+  assertEq(sessionStartLines(normalizeRoster({ sam: {} }), { user: 'sam', gitEmail: 'laptop@example.com' }), [],
     'infos are not printed at session start');
+  const unknown = sessionStartLines(roster, { user: 'sam', gitEmail: 'laptop@example.com' });
+  assertEq(unknown.length, 1, 'an email outside the member’s recorded ones is printed at session start');
+  assert(unknown[0].includes('git config user.email sam@example.com'), 'the printed line carries the fix');
   assertEq(sessionStartLines(normalizeRoster(undefined), { user: 'alexw' }), [], 'no roster → silent');
 }
 

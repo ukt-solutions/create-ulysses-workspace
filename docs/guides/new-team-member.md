@@ -41,7 +41,7 @@ If there is a roster and you are not in it yet, add yourself in your first chang
 node .claude/scripts/team-roster.mjs --add <you> --name "Your Name" --detect --root .
 ```
 
-Until you do, the session-start hook reminds you at each launch. It also warns when your machine's name, git email or forge login belongs to someone else in the roster.
+Until you do, the session-start hook reminds you at each launch. It also warns when your machine's name, git email or forge login belongs to someone else in the roster, and when your git email isn't one of the emails your entry records — the usual sign of a machine set to the wrong address, which would put your commits under an identity that isn't yours.
 
 When it finishes, **restart Claude Code** so your `CLAUDE.local.md` and the hooks load.
 
