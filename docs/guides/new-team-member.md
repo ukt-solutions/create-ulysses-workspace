@@ -29,11 +29,19 @@ claude
 
 Claude Code's session-start hook will already have told you that setup is incomplete. `/workspace-init` sees that the workspace is initialized and runs as a **join**: it sets up only what your machine is missing.
 
-- **Your name** — used for your personal context folder, `workspace-context/team-member/{you}/`. It is saved to `.claude/settings.local.json`.
-- **Project repos** — each repo listed in `workspace.json` is cloned into `repos/`.
-- **`CLAUDE.local.md`** — your personal prompt file, which loads your own context into every session.
+- **Your name**: used for your personal context folder, `workspace-context/team-member/{you}/`, and saved to `.claude/settings.local.json`. If the workspace keeps a team roster (`workspace.team` in `workspace.json`), the suggested name is the entry whose forge login or git email matches your machine. That way a returning teammate gets their existing folder, not a new one named after their OS username.
+- **Project repos**: each repo listed in `workspace.json` is cloned into `repos/`.
+- **`CLAUDE.local.md`**: your personal prompt file, which loads your own context into every session.
 
 All three are gitignored. A join changes nothing your teammates see, so there is nothing to commit or push. To force the join flow, run `/workspace-init join`.
+
+If there is a roster and you are not in it yet, add yourself in your first change. The command records your name, forge login and git email, and you commit it like any other change:
+
+```bash
+node .claude/scripts/team-roster.mjs --add <you> --name "Your Name" --detect --root .
+```
+
+Until you do, the session-start hook reminds you at each launch. It also warns when your machine's name, git email or forge login belongs to someone else in the roster, and when your git email isn't one of the emails your entry records — the usual sign of a machine set to the wrong address, which would put your commits under an identity that isn't yours.
 
 When it finishes, **restart Claude Code** so your `CLAUDE.local.md` and the hooks load.
 

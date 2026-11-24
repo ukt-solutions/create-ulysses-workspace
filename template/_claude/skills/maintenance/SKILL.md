@@ -22,14 +22,14 @@ The mechanical checks are scripted (gh:180) — run the audit and present its re
 node .claude/scripts/maintenance-audit.mjs --root .
 ```
 
-The report prints one block per section — ✓ ok lines, ✗ issues, ⚠ warnings, ℹ infos — then a result summary. Severity drives the exit code: any issue-severity finding → exit `1`, otherwise `0` (a non-zero exit is the report above it, not a crash). `--offline` skips section 7, the only network user; `--json` emits `{issues, summary}` instead of the human report when another step needs the machine-readable numbers.
+The report prints one block per section — ✓ ok lines, ✗ issues, ⚠ warnings, ℹ infos — then a result summary. Severity drives the exit code: any issue-severity finding → exit `1`, otherwise `0` (a non-zero exit is the report above it, not a crash). `--offline` skips the two network reads, section 7's registry check and section 8's forge login lookup; `--json` emits `{issues, summary}` instead of the human report when another step needs the machine-readable numbers.
 
-Sections 1–7 below explain what the script checks, so its findings can be interpreted. Each also names what it does not carry — those residual checks Claude performs alongside the script run.
+Sections 1–8 below explain what the script checks, so its findings can be interpreted. Each also names what it does not carry — those residual checks Claude performs alongside the script run.
 
 ### 1. Cross-reference consistency
 The script checks the CLAUDE.md skill list against `.claude/skills/` in both directions, and walks CLAUDE.md's `@`-import graph for dangling imports. A missing `local-only-*` file or the optional `CODEBASE.md` stub is info, not an issue — expected states on machines that never generated them.
 
-Semantic drift between context files — one saying "2 mandatory rules" when there are now 4, or two files contradicting each other — is not mechanically decidable; cleanup step 10's reconciliation covers it.
+Semantic drift between context files — one saying "2 mandatory rules" when there are now 4, or two files contradicting each other — is not mechanically decidable; cleanup step 11's reconciliation covers it.
 
 ### 2. Frontmatter integrity
 For each non-gitignored workspace-context `.md` and each `work-sessions/*/workspace/session.md`, the script checks:
@@ -49,7 +49,7 @@ It also checks the template-modification registry (`.claude/template-modificatio
 ### 4. Git state
 The script covers the launcher itself: on its default branch, tracked tree clean. Untracked paths are info — gitignored content is not counted.
 
-It also lists leftover Claude Code agent worktrees (gh:205). A subagent with worktree isolation gets `.claude/worktrees/agent-{id}/` on a `worktree-agent-{id}` branch — in the workspace repo and in each `repos/*/`. Claude Code removes a clean one when the subagent finishes and sweeps the rest past `cleanupPeriodDays`, but the sweep keeps any worktree holding work, and a subagent that commits without pushing is exactly that, indefinitely. Per its docs, Claude Code locks a worktree while its agent runs. Each leftover is one info finding plus a `summary.agentWorktrees` entry (`--json`) carrying the facts and a scripted verdict that fails closed: `removable` is true only when the directory still matches git's record of the worktree (not prunable, toplevel intact), the worktree is clean (untracked files count as dirty), it holds no work of its own (`commitsBeyond: 0`, or only non-merge commits whose patch-ids all landed on `base` per `git cherry` — which sees rebase and cherry-pick landings `--merged` misses; a squash merge leaves patch-ids unmatched, so a squash-merged branch is deliberately not removable), it is not locked, it has been idle for over an hour (newest of the HEAD reflog entry and the directory mtime), and no chat-record task claims the branch — records that cannot be read count as unknown, not none. `reasons` lists every failed gate. Cleanup step 9 offers removal only for `removable: true` entries — the safety call is scripted, not re-derived from prose.
+It also lists leftover Claude Code agent worktrees (gh:205). A subagent with worktree isolation gets `.claude/worktrees/agent-{id}/` on a `worktree-agent-{id}` branch — in the workspace repo and in each `repos/*/`. Claude Code removes a clean one when the subagent finishes and sweeps the rest past `cleanupPeriodDays`, but the sweep keeps any worktree holding work, and a subagent that commits without pushing is exactly that, indefinitely. Per its docs, Claude Code locks a worktree while its agent runs. Each leftover is one info finding plus a `summary.agentWorktrees` entry (`--json`) carrying the facts and a scripted verdict that fails closed: `removable` is true only when the directory still matches git's record of the worktree (not prunable, toplevel intact), the worktree is clean (untracked files count as dirty), it holds no work of its own (`commitsBeyond: 0`, or only non-merge commits whose patch-ids all landed on `base` per `git cherry` — which sees rebase and cherry-pick landings `--merged` misses; a squash merge leaves patch-ids unmatched, so a squash-merged branch is deliberately not removable), it is not locked, it has been idle for over an hour (newest of the HEAD reflog entry and the directory mtime), and no chat-record task claims the branch — records that cannot be read count as unknown, not none. `reasons` lists every failed gate. Cleanup step 10 offers removal only for `removable: true` entries — the safety call is scripted, not re-derived from prose.
 
 The remaining worktree-level checks are not carried by the script; perform them alongside it:
 - Worktrees with no recent commits? (orphaned)
@@ -68,7 +68,7 @@ The script regenerates `workspace-context/index.md`, `canonical.md`, and each `w
 - Canonical body over budget after trim and stub → warning, deferred to cleanup triage
 - Trimmed or stubbed but within budget → info
 
-The canonical budget is opt-in: `workspace.canonicalBudgetBytes` off (absent or `null`) means canonical ships every locked file in full and over-budget cannot occur. When set, selection walks `ok` → `trimmed` → `stubbed` → `over-budget` as the generator gives up progressively more reference content to fit: `trimmedFiles` are reference files whose `<!-- canonical:trim --> ... <!-- canonical:end-trim -->` spans were dropped, `stubbedFiles` are reference files reduced to a one-line breadcrumb. `over-budget` means the budget is still exceeded after stubbing — regeneration cannot fix it; the locked content itself needs triage via `/maintenance cleanup` (step 11). Stale wins over over-budget: a stale canonical is reported as stale, hiding any over-budget condition until it is regenerated.
+The canonical budget is opt-in: `workspace.canonicalBudgetBytes` off (absent or `null`) means canonical ships every locked file in full and over-budget cannot occur. When set, selection walks `ok` → `trimmed` → `stubbed` → `over-budget` as the generator gives up progressively more reference content to fit: `trimmedFiles` are reference files whose `<!-- canonical:trim --> ... <!-- canonical:end-trim -->` spans were dropped, `stubbedFiles` are reference files reduced to a one-line breadcrumb. `over-budget` means the budget is still exceeded after stubbing — regeneration cannot fix it; the locked content itself needs triage via `/maintenance cleanup` (step 12). Stale wins over over-budget: a stale canonical is reported as stale, hiding any over-budget condition until it is regenerated.
 
 Residual, not in the script: while reading the indexes, flag filename-slug-only descriptions (e.g., "project status" with no period) — usually the source file is missing a `description:` or has no usable opening sentence. Suggest adding `description:`; the index picks it up on the next regeneration.
 
@@ -86,11 +86,19 @@ The script invokes `refreshIfStale` with a 24h TTL regardless of `workspace.vers
 
 An `outdated` result also rewrites the `local-only-template-freshness.md` banner and the version cache, as this check always has.
 
+### 8. Team identity
+The team roster (`workspace.json` → `workspace.team`, gh:133) records who the team members are, keyed by their `team-member/` folder name, and links each name to the person's forge login, git emails and any aliases. It is opt-in. With no roster, or an empty one, nothing is checked and the section prints one ✓ line saying so. With a roster, the script reports:
+- A roster that contradicts itself: an issue on `workspace.json`. Examples are an invalid key, a forge login or git email given to two members, or an alias that is also a member's name or belongs to two members. Names are compared ignoring case, since macOS and Windows treat `Alex/` and `alex/` as one folder. The merge in cleanup step 14 refuses to run until the roster is consistent. Unknown fields in an entry, such as a mistyped `gitEmail`, are warnings.
+- A `team-member/` folder whose name is a member's alias: a warning. One person's context is split across two folders, and cleanup step 14 merges them. A folder no member claims is also a warning. Either add it to the roster, or list it in its owner's `aliases` so it can be merged. Folders without files are ignored, and a member with no folder yet is fine.
+- This machine's identity, read at the launcher even when the audit runs from a worktree: warnings when `workspace.user` is an alias (switch with `team-roster.mjs --set-user {owner}`) or is missing from the roster, and when the git email or the forge login belongs to a different member. A git email nobody claims, from a member who has emails recorded, is also a warning — most likely a wrong `git config user.email` — and it offers the config fix before the option to record the address. An email from a member with none recorded, or a forge login the roster doesn't have yet, is an info suggesting `team-roster.mjs --add {user} --email …` / `--forge …`.
+
+The forge login comes from `gh api user` (`glab api user` for `workspace.forge.type: "gitlab"`). It is the one network read here, and `--offline` skips it. The session-start hook prints the same machine warnings at every launch, apart from the forge login.
+
 ## Cleanup
 
 Active recommendations. Flags problems and suggests fixes, but asks before acting.
 
-### 8. Component age check
+### 9. Component age check
 
 Scan the following file sets for a YAML frontmatter `updated:` field:
 - `.claude/rules/*.md` (active rules only — `.md.skip` files are included too, since the rule content can still drift)
@@ -104,7 +112,7 @@ Files without an `updated:` field are skipped — the check is opt-in and activa
 
 When stale candidates are found, surface them as warnings in the output format and link to `config-review.md.skip` (in `.claude/rules/`) as the opt-in rule that documents the review cadence and rationale.
 
-### 9. Stale context
+### 10. Stale context
 - Ephemeral files not updated in 7+ days — suggest resolve, update, or archive
 - `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
 - Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
@@ -115,13 +123,13 @@ When stale candidates are found, surface them as warnings in the output format a
 - Braindumps that overlap significantly — suggest merging (e.g., "workspace-branching.md and persistent-work-sessions.md cover the same topic")
 - Handoffs referencing deleted branches — suggest resolve or remove
 
-### 10. Context reconciliation
+### 11. Context reconciliation
 - Read recent workspace-context writes (last session or last N files by updated date)
 - For each, scan other workspace-context files for references that are now stale
 - Surface: "{file} says X but {newer-file} now says Y. Update {file}?"
 - This is the capture-time cross-check, run retroactively instead of inline
 
-### 11. Canonical budget triage
+### 12. Canonical budget triage
 
 This step runs only when a canonical budget is set (`workspace.canonicalBudgetBytes` holds a number) and the post-regen `--check` from the cleanup regen pass (Flow step 4) still reports `selectionStatus: 'over-budget'`. With the budget off — absent or `null` in workspace.json — `--check` can never report over-budget, so this step is unreachable. Skip it too if the regular regen pass cleared the budget, or if `--check` was already `ok`, `trimmed`, or `stubbed` after that pass.
 
@@ -168,7 +176,7 @@ For each chosen action:
 
 Trim markers and demotions only matter for `priority: reference` files — `<!-- canonical:trim -->` spans on a `priority: critical` file are inert until the file is demoted. The triage flow never auto-decides which file to demote or which section to wrap; it surfaces the data, presents options, and waits.
 
-### 12. Forge configuration
+### 13. Forge configuration
 
 Read `workspace.json`. If `workspace.tracker?.type === 'github-issues'` and `workspace.forge` is unset, emit a notice (not an error):
 
@@ -180,7 +188,16 @@ Read `workspace.json`. If `workspace.tracker?.type === 'github-issues'` and `wor
 
 This is migration guidance for workspaces created before the `forge` field landed — the field is back-compat with a sensible default, so the unset case is not a bug, just an opportunity to make the implicit explicit. If `workspace.forge.type` is set to a value with no adapter at `.claude/scripts/forges/{type}.mjs`, that IS an error and goes in the Issues section.
 
-### 13. Health metrics
+### 14. Team roster
+
+Act on section 8's findings, one at a time, asking first.
+
+- **Alias folder.** Run `node .claude/scripts/team-roster.mjs --merge-alias '{alias}' --root .` (a dry run) and show the plan. It lists the files to move into the owner's folder, the generated `index.md` to drop, and any `references` to the old folder elsewhere in the tree. A `conflicts` entry blocks the merge, and `--apply` refuses while any remain. Usually the same path exists in both folders, or two names differ only in case (one file on macOS and Windows): ask which copy to keep. An entry with no `to` is a tracked file deleted from disk: restore it or `git rm` it. Once none remain, and on yes, re-run with `--apply`. Tracked files move with `git mv` so their history follows them, local-only drafts are renamed, symlinks move as links, and `author: {alias}` frontmatter becomes the owner. If it stops part-way, it says how many files moved; fix the cause and run `--apply` again, which picks up where it stopped. Update the listed `references` by hand, then commit the move on a `chore/` branch and open a PR, like any other change. The owner's teammates get the move when they pull. A teammate whose machine is still set to the alias sees a session-start warning with the `--set-user` command that repoints it.
+- **Orphan folder.** Ask whose it is. Either add it as a member (`team-roster.mjs --add {folder} --root .`), or add it to the owner's `aliases` and treat it as an alias folder.
+- **This machine.** For a `workspace.user` that is an alias, offer `team-roster.mjs --set-user {owner} --root .`. It writes `.claude/settings.local.json`, repoints `CLAUDE.local.md` and regenerates the indexes; restart Claude Code afterwards so the new context loads. For an unknown git email, ask which it is: a mistake (offer `git config user.email {recorded}` in the repos it affects, and check the unpushed commits for the wrong author) or a new address (offer the `--add` command). For an email or login to record, offer the `--add` command from the finding. That edits `workspace.json`, so it goes in a commit.
+- **No roster yet.** On a workspace with more than one `team-member/` folder, suggest starting one: `team-roster.mjs --add {name} --name "{display name}" --detect --root .` for yourself, and an entry per teammate (`--forge` and `--email` where known, `--alias` for any folder that is really theirs). Never guess who owns a folder from git history. Whoever created a folder's files is not necessarily its owner: a teammate may have extracted someone else's context. Ask.
+
+### 15. Health metrics
 - Canonical budget — read from the audit script's section 5 outcome (the same regenerate-and-compare it already ran). When a budget is set, reported as `current / budget` bytes with the selection status (e.g., `full`, `2 reference files trimmed`); over-budget cases are deferred to the cleanup triage flow rather than re-reported here. When off, report the step 5 one-liner: `• Canonical budget: off (alwaysLoadedBudgetBytes covers the total)`.
 - Always-loaded context — read from the audit script's section 6 outcome, reported the same way (`current / budget` bytes); over-budget is already surfaced as a warning there.
 - Number of ephemeral files — flag if accumulating without resolution
@@ -222,10 +239,10 @@ OK (6):
 
 ## Flow
 
-1. Run `node .claude/scripts/maintenance-audit.mjs --root .` and present its report — it carries audit sections 1–7. Add `--offline` when there is no network (section 7 is the only network user), or `--json` when step 13's health metrics or cleanup step 9's agent-worktree pass want the machine-readable `summary.canonical` / `summary.alwaysLoaded` / `summary.agentWorktrees` numbers.
+1. Run `node .claude/scripts/maintenance-audit.mjs --root .` and present its report — it carries audit sections 1–8. Add `--offline` when there is no network (it skips section 7 and section 8's forge login lookup), or `--json` when step 15's health metrics or cleanup step 10's agent-worktree pass want the machine-readable `summary.canonical` / `summary.alwaysLoaded` / `summary.agentWorktrees` numbers.
 2. Perform the residual checks the script does not carry — the worktree-level git checks from audit section 4 (orphaned worktrees, unpushed branches, merged worktrees, prunable worktree records, the task-model checks against `chat-record.mjs --list`).
-3. Read session-log.jsonl if it exists (feeds step 13's session log stats)
-4. If cleanup mode: run `node .claude/scripts/build-workspace-context.mjs --check --root .` — exit `0` = clean (and within budget when one is set), `1` = artifact missing or stale → regenerate with `--write`, `2` = artifacts current but canonical body over budget (only possible with a budget set). The `canonical` block in the JSON drives the triage decision; `"budget": null` means the canonical budget is off. Then compare context files pairwise for overlap and scan for stale cross-references; if the post-regen `--check` reports `over-budget`, enter the canonical-budget triage flow described in cleanup step 11.
+3. Read session-log.jsonl if it exists (feeds step 15's session log stats)
+4. If cleanup mode: run `node .claude/scripts/build-workspace-context.mjs --check --root .` — exit `0` = clean (and within budget when one is set), `1` = artifact missing or stale → regenerate with `--write`, `2` = artifacts current but canonical body over budget (only possible with a budget set). The `canonical` block in the JSON drives the triage decision; `"budget": null` means the canonical budget is off. Then compare context files pairwise for overlap and scan for stale cross-references; if the post-regen `--check` reports `over-budget`, enter the canonical-budget triage flow described in cleanup step 12.
 5. Compile and present findings grouped by severity (Output Format above): the script's findings plus the residual checks, with cleanup suggestions from steps 3–4 folded in.
 
 ## Notes

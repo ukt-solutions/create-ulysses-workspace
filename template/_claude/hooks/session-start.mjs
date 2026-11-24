@@ -19,6 +19,7 @@ import {
   setupHint,
 } from './_utils.mjs';
 import { reconcile, readSessionRegistry, resolveChatName } from '../scripts/chat-record.mjs';
+import { normalizeRoster, sessionStartLines, readGitEmail } from '../lib/team-roster.mjs';
 
 const root = getWorkspaceRoot(import.meta.url);
 const input = await readStdin();
@@ -129,13 +130,25 @@ for (const name of repoNames) {
 // A teammate's fresh clone of an initialized workspace has no repos/ and no
 // user identity; point it at /workspace-init's join flow (gh:130).
 const localSettings = readJSON(join(root, '.claude', 'settings.local.json'));
+const localUser = typeof localSettings?.workspace?.user === 'string' && localSettings.workspace.user !== ''
+  ? localSettings.workspace.user
+  : null;
 const hint = setupHint({
   initialized: config.workspace?.initialized === true,
   missingRepos: missing,
-  hasUser: typeof localSettings?.workspace?.user === 'string' && localSettings.workspace.user !== '',
+  hasUser: localUser !== null,
   hasClaudeLocal: existsSync(join(root, 'CLAUDE.local.md')),
 });
 if (hint) lines.push(hint);
+// The team roster (gh:133). When workspace.json declares one, say so as
+// soon as this machine's identity disagrees with it: workspace.user is an
+// alias or missing from the roster, or git commits as someone else. Only
+// local facts are checked here; the forge login needs the network, so
+// /maintenance checks that one.
+const roster = normalizeRoster(config.workspace?.team);
+if (roster.present && localUser) {
+  lines.push(...sessionStartLines(roster, { user: localUser, gitEmail: readGitEmail(root) }));
+}
 if (existing.length > 0) lines.push(`Repos synced: ${existing.join(', ')}`);
 
 // Surface active work sessions
