@@ -2,7 +2,7 @@
 // Unit tests for team-roster.mjs
 // Run: node template/_claude/lib/team-roster.test.mjs
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -183,6 +183,18 @@ const roster = normalizeRoster(TEAM);
   assert(f[0].message.includes('--merge-alias alexw'), 'alias-folder finding names the merge');
 }
 
+// Names that differ only in case are one folder on macOS and Windows.
+{
+  const issues = (team) => normalizeRoster(team).problems.filter((p) => p.severity === 'issue').map((p) => p.message);
+  assert(issues({ alex: { aliases: ['Alex'] } }).some((m) => m.includes('only in case')), 'case-only self-alias is an issue');
+  assert(issues({ alex: {}, Alex: {} }).some((m) => m.startsWith('member name "alex"')), 'two keys differing in case');
+  assert(issues({ alex: { aliases: ['SAM'] }, sam: {} }).some((m) => m.includes('is also a member')),
+    'an alias equal to another member ignoring case');
+  assert(issues({ a: { aliases: ['X'] }, b: { aliases: ['x'] } }).some((m) => m.startsWith('alias "x"')),
+    'one alias claimed twice ignoring case');
+  assertEq(issues(TEAM), [], 'the fixture roster stays clean');
+}
+
 // ---------- readers ----------
 
 {
@@ -194,6 +206,13 @@ const roster = normalizeRoster(TEAM);
   writeFileSync(join(tm, 'README.md'), 'not a folder');
   assertEq(listTeamFolders(root), ['alice'], 'folders with files only; files and empty dirs skipped');
   assertEq(listTeamFolders(join(root, 'nope')), [], 'missing team-member dir');
+  if (process.platform !== 'win32') {
+    // A link loop must not hang the walk; a symlinked folder is not a folder.
+    mkdirSync(join(tm, 'looped'));
+    symlinkSync(join(tm, 'looped'), join(tm, 'looped', 'self'));
+    symlinkSync(join(tm, 'alice'), join(tm, 'linked'));
+    assertEq(listTeamFolders(root), ['alice', 'looped'], 'symlinks are content, never descended into');
+  }
   rmSync(root, { recursive: true, force: true });
 }
 

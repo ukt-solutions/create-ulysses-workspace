@@ -26,7 +26,7 @@
 // (team-member folders, git email, forge login), which take injectable
 // spawn functions so tests never shell out.
 
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
 
@@ -109,6 +109,7 @@ export function normalizeRoster(team) {
     for (const alias of aliases.list) {
       if (!NAME_PATTERN.test(alias)) issue(`team.${key} alias "${alias}" is not a valid folder name`);
       else if (alias === key) warn(`team.${key} lists itself as an alias — ignored`);
+      else if (fold(alias) === fold(key)) issue(`team.${key} alias "${alias}" differs from it only in case — one folder on macOS and Windows`);
       else validAliases.push(alias);
     }
     result.members.push({
@@ -121,7 +122,9 @@ export function normalizeRoster(team) {
   }
 
   // Cross-member contradictions: one name, login or email meaning two people.
-  const memberKeys = new Set(result.members.map((m) => m.key));
+  // Names compare case-insensitively: on macOS and Windows, team-member/Alex
+  // and team-member/alex are the same folder.
+  const memberKeys = new Set(result.members.map((m) => fold(m.key)));
   const claimed = (label, valueOf, normalize = (v) => v) => {
     const owners = new Map();
     for (const m of result.members) {
@@ -137,10 +140,11 @@ export function normalizeRoster(team) {
   };
   for (const m of result.members) {
     for (const alias of m.aliases) {
-      if (memberKeys.has(alias)) issue(`team.${m.key} alias "${alias}" is also a member's name`);
+      if (fold(alias) !== fold(m.key) && memberKeys.has(fold(alias))) issue(`team.${m.key} alias "${alias}" is also a member's name`);
     }
   }
-  claimed('alias', (m) => m.aliases);
+  claimed('member name', (m) => [m.key], fold);
+  claimed('alias', (m) => m.aliases, fold);
   claimed('forge login', (m) => m.forge, fold);
   claimed('git email', (m) => m.gitEmails, fold);
   return result;
@@ -336,7 +340,8 @@ export function folderFindings(roster, folders = []) {
 /**
  * Folders under {wcDir}/team-member/ that hold at least one file. Git does
  * not track empty directories, so an empty one is local leftovers, not a
- * teammate's context.
+ * teammate's context. lstat throughout: a symlink is content, never a
+ * directory to descend into, so a link loop cannot hang the audit.
  */
 export function listTeamFolders(root, wcDir = 'workspace-context') {
   const dir = join(root, wcDir, 'team-member');
@@ -344,9 +349,8 @@ export function listTeamFolders(root, wcDir = 'workspace-context') {
   const hasFile = (d) => {
     for (const entry of readdirSync(d)) {
       const p = join(d, entry);
-      const st = statSync(p);
-      if (st.isFile()) return true;
-      if (st.isDirectory() && hasFile(p)) return true;
+      const st = lstatSync(p);
+      if (!st.isDirectory() || hasFile(p)) return true;
     }
     return false;
   };
@@ -354,7 +358,7 @@ export function listTeamFolders(root, wcDir = 'workspace-context') {
     .filter((name) => {
       const p = join(dir, name);
       try {
-        return statSync(p).isDirectory() && hasFile(p);
+        return lstatSync(p).isDirectory() && hasFile(p);
       } catch {
         return false;
       }

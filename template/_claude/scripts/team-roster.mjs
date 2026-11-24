@@ -35,8 +35,10 @@
 //       untracked ones (local-only drafts) are renamed, `author: <alias>`
 //       frontmatter becomes the owner (in the files moved and in those
 //       already in the owner's folder), and the generated index.md is dropped.
-//       Any path that already exists in the owner's folder stops the whole
-//       merge before anything moves. Nothing is committed.
+//       A path that already exists in the owner's folder (or differs from one
+//       only in case), or a tracked file missing from disk, stops the whole
+//       merge before anything moves. Symlinks move as links, never followed.
+//       Nothing is committed; a merge stopped part-way resumes on re-run.
 //
 // Exit codes: 0 — done; 1 — refused, or --check found an issue; 2 — bad
 // arguments or an unreadable workspace.
@@ -47,7 +49,7 @@ import {
   writeFileSync,
   mkdirSync,
   readdirSync,
-  statSync,
+  lstatSync,
   renameSync,
   rmdirSync,
   unlinkSync,
@@ -325,16 +327,23 @@ export function setUser(ctx, name, { allowNew = false } = {}) {
 
 // ---------- --merge-alias ----------
 
+// Files and symlinks under dir. lstat, so a symlink is an entry to move as
+// a link: following one could walk out of the folder (or loop) and move or
+// rewrite files that are not this person's context.
 function walkFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
     const p = join(dir, entry);
-    const st = statSync(p);
+    const st = lstatSync(p);
     if (st.isDirectory()) out.push(...walkFiles(p));
-    else if (st.isFile()) out.push(p);
+    else if (st.isFile() || st.isSymbolicLink()) out.push(p);
   }
   return out;
 }
+
+const isRealDir = (p) => {
+  try { return lstatSync(p).isDirectory(); } catch { return false; }
+};
 
 function gitLines(root, args, spawnFn) {
   const r = spawnFn('git', ['-C', root, ...args], { encoding: 'utf8' });
@@ -355,6 +364,11 @@ export function planAliasMerge(ctx, alias, { spawnFn = nodeSpawnSync } = {}) {
   if (hit.via !== 'alias') {
     throw new Refusal(`"${alias}" is a member, not an alias — declare it in its owner's aliases first`);
   }
+  // A roster that contradicts itself (the alias given to two members, or a
+  // name that is one folder on a case-insensitive filesystem) cannot say
+  // whose folder this is.
+  const issues = ctx.roster.problems.filter((p) => p.severity === 'issue').map((p) => p.message);
+  if (issues.length) throw new Refusal('the team roster contradicts itself — fix it first (--check)', { problems: issues });
   const owner = hit.member.key;
   const tm = `${ctx.wcDir}/team-member`;
   const from = `${tm}/${alias}`;
@@ -362,35 +376,64 @@ export function planAliasMerge(ctx, alias, { spawnFn = nodeSpawnSync } = {}) {
   const fromAbs = join(ctx.absRoot, from);
   const toAbs = join(ctx.absRoot, to);
   const plan = { alias, owner, from, to, moves: [], drop: [], retag: [], conflicts: [], references: [] };
+  for (const [rel, abs] of [[from, fromAbs], [to, toAbs]]) {
+    if (existsSync(abs) && !isRealDir(abs)) throw new Refusal(`${rel} is not a plain directory (a file or a symlink) — sort it out by hand`);
+  }
 
+  // Every path the owner's folder already holds, on disk or in the index,
+  // lower-cased: macOS and Windows treat Notes.md and notes.md as one file,
+  // so a case-only difference is a conflict too. Directories are recorded
+  // so a file can't land where a directory is, or under a file.
+  const taken = new Set();
+  const takenDirs = new Set();
+  const take = (rel) => {
+    const f = rel.toLowerCase();
+    taken.add(f);
+    for (let i = f.lastIndexOf('/'); i > 0; i = f.lastIndexOf('/', i - 1)) takenDirs.add(f.slice(0, i));
+  };
   // Files already in the owner's folder can carry the alias as their
   // author too (written from the alias's machine into the right folder).
   // They are part of the same split, so the merge fixes them as well.
   if (existsSync(toAbs)) {
     for (const abs of walkFiles(toAbs)) {
-      if (authorIs(abs, alias)) plan.retag.push(toPosix(relative(ctx.absRoot, abs)));
+      const rel = toPosix(relative(ctx.absRoot, abs));
+      take(rel);
+      if (authorIs(abs, alias)) plan.retag.push(rel);
     }
   }
+  for (const rel of gitLines(ctx.absRoot, ['ls-files', '-z', '--', to], spawnFn) || []) take(rel);
+  const blocked = (target) => {
+    const f = target.toLowerCase();
+    if (taken.has(f) || takenDirs.has(f)) return true;
+    for (let i = f.indexOf('/', to.length + 1); i > 0; i = f.indexOf('/', i + 1)) if (taken.has(f.slice(0, i))) return true;
+    return false;
+  };
   if (!existsSync(fromAbs)) return plan;
 
   const tracked = new Set(gitLines(ctx.absRoot, ['ls-files', '-z', '--', from], spawnFn) || []);
+  const onDisk = new Set();
   for (const abs of walkFiles(fromAbs)) {
     const rel = toPosix(relative(ctx.absRoot, abs));
     const inner = toPosix(relative(fromAbs, abs));
+    onDisk.add(rel);
     // The per-user index is generated; the owner's is rebuilt after the move.
     if (inner === 'index.md') {
       plan.drop.push({ path: rel, tracked: tracked.has(rel) });
       continue;
     }
     const target = `${to}/${inner}`;
-    if (existsSync(join(ctx.absRoot, target))) plan.conflicts.push({ from: rel, to: target });
+    if (blocked(target)) plan.conflicts.push({ from: rel, to: target });
     else plan.moves.push({ from: rel, to: target, tracked: tracked.has(rel) });
+  }
+  // A tracked file deleted from disk would stay behind in git at the old path.
+  for (const rel of tracked) {
+    if (!onDisk.has(rel)) plan.conflicts.push({ from: rel, to: null, reason: 'tracked but missing from disk — restore it or git rm it' });
   }
 
   // Hand-written references to the old folder elsewhere in the tree. The
   // generated catalogs are rebuilt, so they are not listed.
   const generated = new Set([`${ctx.wcDir}/index.md`, `${ctx.wcDir}/canonical.md`]);
-  const refs = gitLines(ctx.absRoot, ['grep', '-z', '-l', '-F', `team-member/${alias}/`], spawnFn) || [];
+  const refs = gitLines(ctx.absRoot, ['grep', '-z', '-l', '-F', '-e', `team-member/${alias}/`, '--'], spawnFn) || [];
   plan.references = refs
     .filter((p) => !p.startsWith(`${from}/`) && !generated.has(p) && !/\/team-member\/[^/]+\/index\.md$/.test(p));
   return plan;
@@ -398,14 +441,15 @@ export function planAliasMerge(ctx, alias, { spawnFn = nodeSpawnSync } = {}) {
 
 // `author:` in a markdown file's frontmatter, and only there: a body line
 // that happens to start with "author:" is content, not metadata.
-const authorLine = (name) => new RegExp(`^(author:[ \\t]*["']?)${name}(["']?[ \\t]*)$`, 'm');
+// A CRLF checkout (Windows, core.autocrlf) keeps the \r before the newline.
+const authorLine = (name) => new RegExp(`^(author:[ \\t]*["']?)${name}(["']?[ \\t]*\\r?)$`, 'm');
 
 function frontmatter(text) {
   return text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
 }
 
 function authorIs(absPath, name) {
-  if (!absPath.endsWith('.md')) return false;
+  if (!absPath.endsWith('.md') || lstatSync(absPath).isSymbolicLink()) return false;
   const m = frontmatter(readFileSync(absPath, 'utf8'));
   return Boolean(m && authorLine(name).test(m[1]));
 }
@@ -415,23 +459,22 @@ function rewriteAuthor(absPath, alias, owner) {
   const text = readFileSync(absPath, 'utf8');
   const m = frontmatter(text);
   const fm = m[1].replace(authorLine(alias), `$1${owner}$2`);
-  writeFileSync(absPath, text.slice(0, m.index) + m[0].replace(m[1], fm) + text.slice(m.index + m[0].length));
+  // A function replacer, so a `$&` or `$'` in the frontmatter stays literal.
+  writeFileSync(absPath, text.slice(0, m.index) + m[0].replace(m[1], () => fm) + text.slice(m.index + m[0].length));
   return true;
 }
 
 function removeEmptyDirs(dir) {
-  if (!existsSync(dir)) return;
-  for (const entry of readdirSync(dir)) {
-    const p = join(dir, entry);
-    if (statSync(p).isDirectory()) removeEmptyDirs(p);
-  }
+  if (!isRealDir(dir)) return;
+  for (const entry of readdirSync(dir)) removeEmptyDirs(join(dir, entry));
   if (readdirSync(dir).length === 0) rmdirSync(dir);
 }
 
 export function applyAliasMerge(ctx, plan, { spawnFn = nodeSpawnSync } = {}) {
   if (plan.conflicts.length) {
     throw new Refusal(
-      `${plan.conflicts.length} path(s) already exist in ${plan.to}/ — rename or remove one copy, then re-run`,
+      `${plan.conflicts.length} path(s) block the merge: they already exist in ${plan.to}/ (or differ from one only ` +
+      'in case), or are tracked but missing — resolve each one, then re-run',
       { conflicts: plan.conflicts },
     );
   }
@@ -440,19 +483,33 @@ export function applyAliasMerge(ctx, plan, { spawnFn = nodeSpawnSync } = {}) {
     if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${String(r.stderr || '').trim()}`);
   };
   let authors = 0;
-  for (const move of plan.moves) {
-    const dst = join(ctx.absRoot, move.to);
-    mkdirSync(dirname(dst), { recursive: true });
-    if (move.tracked) git(['mv', '--', move.from, move.to]);
-    else renameSync(join(ctx.absRoot, move.from), dst);
-    if (rewriteAuthor(dst, plan.alias, plan.owner)) authors++;
-  }
-  for (const rel of plan.retag) {
-    if (rewriteAuthor(join(ctx.absRoot, rel), plan.alias, plan.owner)) authors++;
-  }
-  for (const d of plan.drop) {
-    if (d.tracked) git(['rm', '-q', '--', d.path]);
-    else if (existsSync(join(ctx.absRoot, d.path))) unlinkSync(join(ctx.absRoot, d.path));
+  const done = [];
+  try {
+    for (const move of plan.moves) {
+      const dst = join(ctx.absRoot, move.to);
+      mkdirSync(dirname(dst), { recursive: true });
+      if (move.tracked) git(['mv', '--', move.from, move.to]);
+      else renameSync(join(ctx.absRoot, move.from), dst);
+      done.push(move.to);
+      if (rewriteAuthor(dst, plan.alias, plan.owner)) authors++;
+    }
+    for (const rel of plan.retag) {
+      if (rewriteAuthor(join(ctx.absRoot, rel), plan.alias, plan.owner)) authors++;
+    }
+    for (const d of plan.drop) {
+      // -f: the index is generated, so local edits to it are not work to keep.
+      if (d.tracked) git(['rm', '-q', '-f', '--', d.path]);
+      else if (existsSync(join(ctx.absRoot, d.path))) unlinkSync(join(ctx.absRoot, d.path));
+    }
+  } catch (err) {
+    // Every step so far is a plain move or edit, nothing is committed, and a
+    // re-run plans from what is left (moved files show up as retags), so
+    // the way on is to fix the cause and run --apply again.
+    throw new Refusal(
+      `the merge stopped part-way (${done.length} of ${plan.moves.length} moved): ${err.message} — ` +
+      `fix the cause and re-run --merge-alias ${plan.alias} --apply to finish`,
+      { moved: done },
+    );
   }
   removeEmptyDirs(join(ctx.absRoot, plan.from));
   const index = ensurePerUserIndex(ctx.absRoot);

@@ -6,7 +6,7 @@
 // real (the merge relies on git mv); gh and glab are faked so nothing
 // touches the network.
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, symlinkSync, unlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -288,6 +288,92 @@ function splitWorkspace() {
     'a member is not mergeable');
   assertThrows(() => run(['--merge-alias', 'zed', '--root', root], { spawnFn: fakeSpawn() }), /not in the team roster/,
     'an undeclared folder is not mergeable');
+  cleanup(root);
+}
+
+// What stops --apply before anything moves, beyond an exact clash.
+{
+  const blockedBy = (mutate) => {
+    const root = splitWorkspace();
+    mutate(root);
+    const { out, code } = run(['--merge-alias', 'alexw', '--root', root], { spawnFn: fakeSpawn() });
+    const refused = (() => {
+      try { run(['--merge-alias', 'alexw', '--apply', '--root', root], { spawnFn: fakeSpawn() }); return null; }
+      catch (err) { return err.message; }
+    })();
+    const untouched = existsSync(join(root, TM, 'alexw', 'sub', 'handoff_z.md'));
+    cleanup(root);
+    return { code, conflicts: out.conflicts, refused, untouched };
+  };
+  const caseOnly = blockedBy((root) => put(root, `${TM}/alex/BRAINDUMP_Y.md`, 'other\n'));
+  assertEq([caseOnly.code, caseOnly.conflicts.map((c) => c.from)], [1, [`${TM}/alexw/braindump_y.md`]],
+    'a name differing only in case is a conflict (one file on macOS and Windows)');
+  assert(/block the merge/.test(caseOnly.refused) && caseOnly.untouched, 'case-only clash refused before any move');
+  const underFile = blockedBy((root) => put(root, `${TM}/alex/sub`, 'a file where a folder must go\n'));
+  assertEq(underFile.conflicts.map((c) => c.to), [`${TM}/alex/sub/handoff_z.md`], 'a file in the way of a folder is a conflict');
+  assert(underFile.refused && underFile.untouched, 'and refused before any move');
+  const missing = blockedBy((root) => unlinkSync(join(root, TM, 'alexw', 'braindump_y.md')));
+  assertEq(missing.conflicts.map((c) => [c.from, c.to]), [[`${TM}/alexw/braindump_y.md`, null]],
+    'a tracked file deleted from disk blocks the merge');
+  assert(missing.refused && missing.untouched, 'and refused before any move');
+}
+
+{
+  const root = splitWorkspace();
+  const cfg = JSON.parse(readFileSync(join(root, 'workspace.json'), 'utf8'));
+  cfg.workspace.team.sam.aliases = ['alexw'];
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify(cfg));
+  assertThrows(() => run(['--merge-alias', 'alexw', '--root', root], { spawnFn: fakeSpawn() }), /contradicts itself/,
+    'an alias given to two members is not merged into either');
+  cleanup(root);
+}
+
+// Symlinks move as links: nothing outside the alias folder is moved or edited.
+if (process.platform !== 'win32') {
+  const root = splitWorkspace();
+  const outside = mkdtempSync(join(tmpdir(), 'team-roster-outside-'));
+  writeFileSync(join(outside, 'theirs.md'), '---\nauthor: alexw\n---\n');
+  symlinkSync(outside, join(root, TM, 'alexw', 'linked-dir'));
+  symlinkSync(join(outside, 'theirs.md'), join(root, TM, 'alexw', 'linked-file.md'));
+  const plan = run(['--merge-alias', 'alexw', '--root', root], { spawnFn: fakeSpawn() }).out;
+  assert(plan.moves.some((m) => m.from.endsWith('/linked-dir')) && !plan.moves.some((m) => m.from.includes('linked-dir/')),
+    'a symlinked directory is one entry, not walked');
+  run(['--merge-alias', 'alexw', '--apply', '--root', root], { spawnFn: fakeSpawn() });
+  assert(lstatSync(join(root, TM, 'alex', 'linked-dir')).isSymbolicLink()
+    && lstatSync(join(root, TM, 'alex', 'linked-file.md')).isSymbolicLink(), 'links moved as links');
+  assertEq(readFileSync(join(outside, 'theirs.md'), 'utf8'), '---\nauthor: alexw\n---\n', 'a link target is never rewritten');
+  assert(!existsSync(join(root, TM, 'alexw')), 'alias folder removed');
+  cleanup(root);
+  cleanup(outside);
+}
+
+// Author lines: CRLF checkouts, and frontmatter holding replacement patterns.
+{
+  const root = splitWorkspace();
+  put(root, `${TM}/alexw/crlf.md`, '---\r\nauthor: alexw\r\n---\r\nbody\r\n');
+  put(root, `${TM}/alexw/dollar.md`, "---\nauthor: alexw\nnote: costs $5, see $& and $'\n---\n");
+  run(['--merge-alias', 'alexw', '--apply', '--root', root], { spawnFn: fakeSpawn() });
+  assertEq(readFileSync(join(root, TM, 'alex', 'crlf.md'), 'utf8'), '---\r\nauthor: alex\r\n---\r\nbody\r\n', 'CRLF author rewritten');
+  assertEq(readFileSync(join(root, TM, 'alex', 'dollar.md'), 'utf8'), "---\nauthor: alex\nnote: costs $5, see $& and $'\n---\n",
+    '$ patterns in frontmatter stay literal');
+  cleanup(root);
+}
+
+// A merge stopped part-way says how far it got, and a re-run finishes it.
+{
+  const root = splitWorkspace();
+  let mvs = 0;
+  const flaky = (cmd, args, opts) => {
+    if (cmd === 'git' && args.includes('mv') && ++mvs === 2) return { status: 1, stdout: '', stderr: 'disk full' };
+    return fakeSpawn()(cmd, args, opts);
+  };
+  assertThrows(() => run(['--merge-alias', 'alexw', '--apply', '--root', root], { spawnFn: flaky }),
+    /stopped part-way \(2 of 3 moved\): git mv .* disk full .*re-run --merge-alias alexw --apply/, 'partial failure reported with the way on');
+  const finish = run(['--merge-alias', 'alexw', '--apply', '--root', root], { spawnFn: fakeSpawn() }).out;
+  assertEq([finish.conflicts.length, finish.result.folderRemoved], [0, true], 're-run finishes the merge');
+  for (const rel of ['braindump_y.md', 'sub/handoff_z.md']) {
+    assert(/^author: "?alex"?$/m.test(readFileSync(join(root, TM, 'alex', rel), 'utf8')), `${rel} moved and retagged`);
+  }
   cleanup(root);
 }
 
