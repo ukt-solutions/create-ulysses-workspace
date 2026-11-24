@@ -62,6 +62,8 @@ console.log('# refreshIfStale');
   const banner = readFileSync(join(root, 'local-only-template-freshness.md'), 'utf-8');
   assertEq(banner.includes('v0.13.0'), true, 'banner mentions current');
   assertEq(banner.includes('v0.14.0'), true, 'banner mentions latest');
+  assertEq(banner.includes('npx @ulysses-ai/create-workspace@0.14.0 --upgrade'), true, 'banner command is pinned to the version it named');
+  assertEq(banner.includes('create-workspace --upgrade'), false, 'banner command is not the bare npx that installs latest');
   const cacheFile = JSON.parse(readFileSync(join(root, 'workspace-scratchpad', '.version-check.json'), 'utf-8'));
   assertEq(cacheFile, { tags: { latest: '0.14.0' }, checkedAt: '2026-04-24T21:00:00.000Z' }, 'cache stores raw dist-tags');
   rmSync(root, { recursive: true, force: true });
@@ -80,6 +82,8 @@ console.log('# refreshIfStale');
   assertEq(result.latest, '0.19.0-beta.4', 'beta tag chosen over stalled latest');
   const banner = readFileSync(join(root, 'local-only-template-freshness.md'), 'utf-8');
   assertEq(banner.includes('v0.19.0-beta.4'), true, 'banner mentions newer beta');
+  assertEq(banner.includes('npx @ulysses-ai/create-workspace@0.19.0-beta.4 --upgrade'), true,
+    'banner command is pinned to the beta tag, not to the older latest the bare npx installs');
   rmSync(root, { recursive: true, force: true });
 }
 
@@ -159,6 +163,8 @@ console.log('# refreshIfStale');
   });
   assertEq(fetchCalled, false, 'fresh cache skips fetch');
   assertEq(existsSync(join(root, 'local-only-template-freshness.md')), true, 'banner still written from cache');
+  assertEq(readFileSync(join(root, 'local-only-template-freshness.md'), 'utf-8').includes('npx @ulysses-ai/create-workspace@0.14.0 --upgrade'), true,
+    'banner written from the cache carries the pinned command too');
   rmSync(root, { recursive: true, force: true });
 }
 

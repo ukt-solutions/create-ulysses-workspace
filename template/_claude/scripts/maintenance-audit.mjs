@@ -949,7 +949,7 @@ export async function runAudit({
     const r = await refreshIfStale({ workspaceRoot: absRoot, ttlMs: 24 * 60 * 60 * 1000, fetchFn });
     if (r.status === 'outdated') {
       add('freshness', 'warning', 'workspace.json',
-        `template v${r.current} → v${r.latest} available — run npx @ulysses-ai/create-workspace --upgrade`);
+        `template v${r.current} → v${r.latest} available — run npx @ulysses-ai/create-workspace@${r.latest} --upgrade`);
     } else if (r.status === 'unknown') {
       add('freshness', 'warning', 'workspace.json', 'could not reach the npm registry — template freshness unknown');
     } else if (r.skipped === 'uninitialized') {

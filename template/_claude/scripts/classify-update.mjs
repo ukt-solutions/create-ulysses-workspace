@@ -497,7 +497,7 @@ export function classifyUpdate({ root, payload, baseline: baselineArg = null }) 
   const absRoot = resolve(root);
   const absPayload = resolve(payload ?? join(absRoot, '.workspace-update'));
   if (!existsSync(absPayload)) {
-    throw new Error(`No payload found at ${absPayload} — run npx @ulysses-ai/create-workspace --upgrade first`);
+    throw new Error(`No payload found at ${absPayload} — run npx @ulysses-ai/create-workspace@beta --upgrade first`);
   }
 
   const payloadFiles = [...walkFiles(absPayload)].filter(isClassified);

@@ -5,7 +5,7 @@ description: Apply a staged template update to an initialized workspace. The CLI
 
 # Workspace Update
 
-Apply a staged template update to an initialized workspace. The CLI (`npx @ulysses-ai/create-workspace --upgrade`) stages the payload in `.workspace-update/`. This skill reads and applies it, then verifies the result with the scripted maintenance audit — one audit, at the end, when there is something to verify (gh:180).
+Apply a staged template update to an initialized workspace. The CLI (`npx @ulysses-ai/create-workspace@beta --upgrade`) stages the payload in `.workspace-update/`. This skill reads and applies it, then verifies the result with the scripted maintenance audit — one audit, at the end, when there is something to verify (gh:180).
 
 ## Prerequisites
 
@@ -17,8 +17,8 @@ Apply a staged template update to an initialized workspace. The CLI (`npx @ulyss
   git log --all --format=%H -S'"initialized": true' -- workspace.json
   ```
   If there are hits, name the branch holding the newest commit (`git branch --all --contains {sha}`) and report: "This workspace was initialized on branch `{branch}`, but that branch was never merged. Merge it first (`git merge '{branch}'`), then re-run /workspace-update." Only if there are no hits, report: "Workspace not initialized. Run /workspace-init first."
-- `.workspace-update/` payload directory must exist (staged by `npx @ulysses-ai/create-workspace --upgrade`)
-- If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx @ulysses-ai/create-workspace --upgrade` to stage the template."
+- `.workspace-update/` payload directory must exist (staged by `npx @ulysses-ai/create-workspace@beta --upgrade`)
+- If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx @ulysses-ai/create-workspace@beta --upgrade` to stage the template."
 - Read `.workspace-update/.manifest.json` for `fromVersion`, `templateVersion` (the target version), and `action`
 - If `action` is `"init"`, report: "This payload is for initial setup. Run /workspace-init instead."
 
@@ -242,13 +242,13 @@ After the update is applied, read `workspace.json` (Step 4 just rewrote its `tem
 
 ## Notes
 
-- The CLI (`npx @ulysses-ai/create-workspace --upgrade`) stages the payload, installs the current copy of this skill into `.claude/skills/workspace-update/` (so an outdated installed flow never processes a new payload; a locally customised SKILL.md is backed up as `SKILL.md.local-backup` first), stages a reconstructed baseline inside the payload as `.template-baseline.reconstructed.json` when the workspace has none, and stages the installed version's template files as `.template-base/` (the merge base `differs` files are merged against) whenever that tarball could be fetched — the launcher itself gets no new untracked files, and Step 7 restores the launcher's skill copy before the post-merge pull, rebuilds the per-user catalogs the pull may delete, and removes the update worktree with its branch
+- The CLI (`npx @ulysses-ai/create-workspace@beta --upgrade`) stages the payload, installs the current copy of this skill into `.claude/skills/workspace-update/` (so an outdated installed flow never processes a new payload; a locally customised SKILL.md is backed up as `SKILL.md.local-backup` first), stages a reconstructed baseline inside the payload as `.template-baseline.reconstructed.json` when the workspace has none, and stages the installed version's template files as `.template-base/` (the merge base `differs` files are merged against) whenever that tarball could be fetched — the launcher itself gets no new untracked files, and Step 7 restores the launcher's skill copy before the post-merge pull, rebuilds the per-user catalogs the pull may delete, and removes the update worktree with its branch
 - Never overwrites without asking — `new` and `updated` files are batched behind one confirmation; `differs` files are three-way merged against the staged base when there is one (clean merges batch behind one confirmation, conflicts are resolved one file at a time with the operator's yes, files without a base fall back to the per-file ask); `config` files (`.mcp.json`, `.claude/settings.json`) are merged key by key (array-valued keys union-merged) and never copied wholesale; `localOnly` files are never asked about (local edits to files the template didn't touch)
 - Preserves local modifications, custom content, the workspace's own MCP servers and settings, existing `workspace.json` keys (the legacy `localFiles`/`templateModifications` keys excepted — they migrate to the registry with the operator's yes), and deliberately activated rules
 - `.claude/template-modifications.json` is the workspace's own registry of deliberate divergences — `localFiles` it owns outright (never offered), `modifications` it keeps with a reason (still updated, reason shown at each decision). The template never ships or overwrites the file; this skill reads it, offers to record a reason when the operator keeps an edit, migrates the legacy `workspace.json` keys into it, offers to drop entries that no longer describe the file, and stops on a registry that doesn't parse until the operator fixes the JSON
 - The template baseline (`.claude/.template-baseline.json`) is what separates `updated`, `differs`, and `localOnly`: entries hold the payload hash of the last-shipped content (unapplied updates keep the older entry), so a deliberately kept local edit stays visible across updates while an untouched file never prompts
 - The launcher's default branch takes a template-update commit only when the workspace repo has no remote; with ANY remote, the update lands through a task worktree, a branch, and a PR/MR — the default branch is never pushed directly
 - Can be run multiple times safely (idempotent) — if `.workspace-update/` doesn't exist, it reports no payload and exits
-- Initial setup is handled by `npx @ulysses-ai/create-workspace --init` + `/workspace-init` — this skill is for subsequent updates only
+- Initial setup is handled by `npx @ulysses-ai/create-workspace@beta --init` + `/workspace-init` — this skill is for subsequent updates only
 - The `.sh` to `.mjs` hook migration is a one-time transition for workspaces created before hooks moved to JavaScript
 - The post-update audit is read-only and non-blocking — it surfaces issues, labels the ones this update caused, and never prevents the update itself

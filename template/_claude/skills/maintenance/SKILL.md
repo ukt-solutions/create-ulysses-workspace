@@ -79,7 +79,7 @@ Within budget → an OK line (`✓ Always-loaded context: 43 KB / 64 KB`). Over 
 
 ### 7. Template freshness
 The script invokes `refreshIfStale` with a 24h TTL regardless of `workspace.versionCheck.ambient` — the user explicitly ran `/maintenance` — and reports:
-- `outdated` → warning: `Template v{current} → v{latest} available. Run npx @ulysses-ai/create-workspace --upgrade.`
+- `outdated` → warning: `Template v{current} → v{latest} available. Run npx @ulysses-ai/create-workspace@{latest} --upgrade.`
 - `current` → ✓ Template is up to date (v{latest})
 - `unknown` → warning: could not reach the npm registry
 - `skipped: 'uninitialized'` → info: workspace not initialized, freshness check unavailable

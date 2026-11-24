@@ -9,10 +9,10 @@ A workspace starts with a scaffold command and evolves with template upgrades. T
 To create a new workspace:
 
 ```bash
-npx @ulysses-ai/create-workspace --init my-workspace
+npx @ulysses-ai/create-workspace@beta --init my-workspace
 ```
 
-The CLI installs the bootstrap essentials: CLAUDE.md (generated from template), workspace.json, the workspace-init and workspace-update skills, all hooks, all scripts, the shared library helpers, shared-context directory structure, and gitignore. The remaining skills, rules, and agents are installed interactively by `/workspace-init`. The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created when they first need to hold something.
+The CLI installs the bootstrap essentials: CLAUDE.md (generated from template), workspace.json, the workspace-init and workspace-update skills, all hooks, all scripts, the shared library helpers, shared-context directory structure, and gitignore. The remaining skills, rules, and agents are installed interactively by `/workspace-init`. The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created when they first need to hold something. Until 1.0.0, install with `@beta`: `latest` is not maintained, and a bare `npx @ulysses-ai/create-workspace` may run an older beta.
 
 One detail of the template's layout is invisible in the installed workspace: the package stores `_gitignore`, `_claude/`, and `_mcp.json` under these inert names because Claude Code treats `.claude/` directories and `.mcp.json` files as protected paths that headless workers cannot edit — the live names inside `template/` would block automated maintenance of the template itself. Both `--init` and `--upgrade` write the live names out: the scaffold installs `.gitignore`, `.claude/`, and `.mcp.json` directly, and the staged `.workspace-update/` payload also carries `.claude/` and `.mcp.json` under their live names, keeping the layout that older workspaces' already-installed skills expect.
 
@@ -20,7 +20,7 @@ If you omit the directory name, the current directory is used — this supports 
 
 ```bash
 cd my-existing-project
-npx @ulysses-ai/create-workspace --init
+npx @ulysses-ai/create-workspace@beta --init
 ```
 
 If a CLAUDE.md already exists, it is backed up to `CLAUDE.md.bak` and replaced with the workspace version. The old content is preserved for `/workspace-init` to extract useful preferences and conventions from.
@@ -129,8 +129,10 @@ Template versions follow semantic versioning. Patches are backward-compatible fi
 When a new template version is available, upgrade with the CLI:
 
 ```bash
-npx @ulysses-ai/create-workspace --upgrade
+npx @ulysses-ai/create-workspace@beta --upgrade
 ```
+
+`@beta` matters: until 1.0.0 `latest` is not maintained and may point to an older beta, which is what a bare `npx @ulysses-ai/create-workspace` installs. When the session-start banner or a `/maintenance` audit finding names a version, install that one exactly — `npx @ulysses-ai/create-workspace@<version> --upgrade`.
 
 The upgrade does not apply changes directly. Instead, it stages a payload:
 
@@ -269,7 +271,7 @@ Custom rules, custom skills, and custom agents are not affected by upgrades. The
 
 ## Key Takeaways
 
-- `npx @ulysses-ai/create-workspace --init` scaffolds a workspace with bootstrap skills, hooks, and scripts. The full template is staged for interactive installation.
+- `npx @ulysses-ai/create-workspace@beta --init` scaffolds a workspace with bootstrap skills, hooks, and scripts. The full template is staged for interactive installation.
 - `/workspace-init` handles first-time configuration — cloning repos, installing template components, extracting team knowledge, activating rules, formalizing worktrees, setting user identity.
 - Template versioning tracks which version of the template the workspace has.
 - `--upgrade` stages changes; `/workspace-update` applies them interactively and verifies with a scripted post-update audit.
