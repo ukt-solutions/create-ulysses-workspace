@@ -4,7 +4,7 @@
 // write a disk-durable reflection record if the session.md ## Progress
 // section contains heuristic correction-pattern sentences.
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { execFileSync } from 'child_process';
 import {
   getWorkspaceRoot,
@@ -36,9 +36,25 @@ try {
   branch = execFileSync('git', ['branch', '--show-current'], { cwd: root, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 } catch {}
 
+// The pointer's session name becomes a path under work-sessions/ and a
+// commit message: one segment, no separators or absolute paths, no leading
+// dot (the same rule as migrate-sessions.mjs). The pointer file is local
+// state a chat can write, so a name that fails is skipped, never followed.
+function isSessionSegment(name) {
+  if (typeof name !== 'string' || name === '' || isAbsolute(name)) return false;
+  const segs = name.split(/[\\/]/);
+  if (segs.length !== 1) return false;
+  return !segs[0].startsWith('.');
+}
+
 // Update session tracker: mark this chat as ended, append safety note
 const pointer = getActiveSessionPointer(root);
-if (pointer && sessionId) {
+const pointerUsable = Boolean(pointer) && isSessionSegment(pointer.name);
+if (pointer && !pointerUsable) {
+  // A hook must never crash the session it is ending: say why and move on.
+  process.stderr.write(`session-end: skipping the session capture — the active-session pointer holds an invalid session name ${JSON.stringify(pointer.name)}\n`);
+}
+if (pointerUsable && sessionId) {
   const tracker = readSessionTracker(mainRoot, pointer.name);
   if (tracker) {
     const chats = tracker.chatSessions || [];
