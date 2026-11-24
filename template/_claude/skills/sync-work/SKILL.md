@@ -9,20 +9,22 @@ Push current branches to remote for all project repos and the workspace repo. Li
 
 ## Flow
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 **Step 1: Detect active branches**
 ```bash
 # Workspace worktree
-cd work-sessions/{session-name}/workspace
+cd 'work-sessions/{session-name}/workspace'
 git branch --show-current
 
 # Project worktree(s) — for each repo in the session tracker's repos:
-git -C work-sessions/{session-name}/workspace/repos/{repo} branch --show-current
+git -C 'work-sessions/{session-name}/workspace/repos/{repo}' branch --show-current
 ```
 
 **Step 2: Check for uncommitted changes**
 For each repo in the session tracker's `repos:` list plus the workspace:
 ```bash
-cd work-sessions/{session-name}/workspace/repos/{repo}
+cd 'work-sessions/{session-name}/workspace/repos/{repo}'
 git status --short
 ```
 If uncommitted changes exist: "You have uncommitted changes in {repo}. Commit before syncing? [Y/n]"
@@ -32,7 +34,7 @@ If no: skip that repo (can't push uncommitted work).
 **Step 3: Check for remotes**
 For each repo in the session tracker's `repos:`:
 ```bash
-cd work-sessions/{session-name}/workspace/repos/{repo}
+cd 'work-sessions/{session-name}/workspace/repos/{repo}'
 git remote -v
 ```
 If no remote: "No remote configured for {repo}. Want me to create one on GitHub, or provide a URL?"
@@ -41,14 +43,14 @@ Create via `gh repo create` or add the provided URL. Never silently skip.
 **Step 4: Push**
 For each repo with committed changes and a remote:
 ```bash
-cd work-sessions/{session-name}/workspace/repos/{repo}
-git push -u origin {branch-name}
+cd 'work-sessions/{session-name}/workspace/repos/{repo}'
+git push -u origin '{branch-name}'
 ```
 
 Then push the workspace repo from the workspace worktree:
 ```bash
-cd work-sessions/{session-name}/workspace
-git push -u origin {branch-name}
+cd 'work-sessions/{session-name}/workspace'
+git push -u origin '{branch-name}'
 ```
 
 The session-branch top-level files (`session.md`, `design-*.md`, `plan-*.md`) ride along with the workspace push — they live on the session branch, not on main, so pushing the branch is how durable session thinking reaches another machine.

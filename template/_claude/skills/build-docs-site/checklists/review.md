@@ -4,13 +4,15 @@ The four review sweeps for `/build-docs-site` Phase 6. Run each pass fully befor
 
 ---
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 ## Pass 1 — Leak grep (implementation-detail detection)
 
 **What it does:** Scans the project's dependency manifests to derive a list of installed packages, then greps documentation content for any mention of those names. Project-accurate detection, no hardcoded master list.
 
 **Run:**
 ```bash
-node .claude/skills/build-docs-site/scripts/leak-grep.mjs {project-root} {docs-path}
+node .claude/skills/build-docs-site/scripts/leak-grep.mjs '{project-root}' '{docs-path}'
 ```
 
 Optional flags:
@@ -39,7 +41,7 @@ Optional flags:
 
 **Run:**
 ```bash
-node .claude/skills/build-docs-site/scripts/forbidden-word-grep.mjs {docs-path} {wordlist.json} [--word-boundary] [--case-sensitive]
+node .claude/skills/build-docs-site/scripts/forbidden-word-grep.mjs '{docs-path}' '{wordlist.json}' [--word-boundary] [--case-sensitive]
 ```
 
 The `wordlist.json` was created during Phase 1 from the user's answers. Default options are case-insensitive, no word-boundary requirement.
@@ -88,7 +90,7 @@ The `wordlist.json` was created during Phase 1 from the user's answers. Default 
 
 **Run:**
 ```bash
-cd {docs-path}
+cd '{docs-path}'
 npm run build  # must complete with no errors
 npm start      # dev server
 ```

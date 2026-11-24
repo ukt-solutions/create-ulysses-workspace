@@ -28,6 +28,81 @@ assertEq(toActiveForm('Complete work'),                 'Completing work',      
 assertEq(toActiveForm('Reproduce on iOS Safari'),       'Reproducing on iOS Safari',      'e-drop multi-word');
 assertEq(toActiveForm('Fix bug'),                       'Fixing bug',                     'simple');
 
+// [content, expected activeForm]. A first token that is not a plain word, or is
+// already a gerund, comes back verbatim: the label is cosmetic, so leaving it
+// alone beats mangling it.
+const ACTIVE_FORM_CASES = [
+  // Non-word first token → verbatim (the colon rows are the reported bug)
+  ['Phase: extract-and-audit',    'Phase: extract-and-audit'],
+  ['Fix: handle CRLF',            'Fix: handle CRLF'],
+  ['v0.24 release prep',          'v0.24 release prep'],
+  ['gh:115 fix activeForm',       'gh:115 fix activeForm'],
+  ['README.md cleanup',           'README.md cleanup'],
+  ['#12 follow-up',               '#12 follow-up'],
+  // Already a gerund → verbatim; "ing" words that are not gerunds still convert
+  ['Running the suite',           'Running the suite'],
+  ['Testing',                     'Testing'],
+  ['Doing thing',                 'Doing thing'],
+  ['Bring docs',                  'Bringing docs'],
+  ['Ping the server',             'Pinging the server'],
+  // Doubling happens for one-syllable CVC verbs only
+  ['Open the PR',                 'Opening the PR'],
+  ['Visit docs',                  'Visiting docs'],
+  ['Edit config',                 'Editing config'],
+  ['Lint the repo',               'Linting the repo'],
+  ['Stop',                        'Stopping'],
+  ['Ship it',                     'Shipping it'],
+  ['Plan',                        'Planning'],
+  ['Run the tests',               'Running the tests'],
+  ['Show diff',                   'Showing diff'],
+  ['Fix bug',                     'Fixing bug'],
+  ['Play back the log',           'Playing back the log'],
+  // Stressed final syllable doubles, via IRREGULARS
+  ['Commit changes',              'Committing changes'],
+  ['Debug flake',                 'Debugging flake'],
+  ['Begin',                       'Beginning'],
+  ['Refer to the spec',           'Referring to the spec'],
+  ['Format files',                'Formatting files'],
+  ['Reset state',                 'Resetting state'],
+  ['Rerun CI',                    'Rerunning CI'],
+  ['Quit the app',                'Quitting the app'],
+  // e handling
+  ['Write fix and test',          'Writing fix and test'],
+  ['Complete work',               'Completing work'],
+  ['Reproduce on iOS Safari',     'Reproducing on iOS Safari'],
+  ['Identify race condition',     'Identifying race condition'],
+  ['Rebase onto main',            'Rebasing onto main'],
+  ['Merge PR',                    'Merging PR'],
+  ['Phase 2: write tests',        'Phasing 2: write tests'],
+  ['See logs',                    'Seeing logs'],
+  ['See',                         'Seeing'],
+  ['Agree on scope',              'Agreeing on scope'],
+  ['Free disk',                   'Freeing disk'],
+  // Irregulars
+  ['Be careful',                  'Being careful'],
+  ['Die',                         'Dying'],
+  ['Tie off loose ends',          'Tying off loose ends'],
+  ['Panic',                       'Panicking'],
+  // Case of the first letter survives
+  ['commit changes',              'committing changes'],
+  ['be careful',                  'being careful'],
+  // Nothing to derive from
+  ['',                            ''],
+  ['   ',                         ''],
+];
+
+for (const [input, expected] of ACTIVE_FORM_CASES) {
+  assertEq(toActiveForm(input), expected, `toActiveForm(${JSON.stringify(input)})`);
+}
+
+// Punctuation plus "ing" is never produced, unless the content already had it.
+for (const [input] of ACTIVE_FORM_CASES) {
+  const actual = toActiveForm(input);
+  const bad = actual.match(/[^A-Za-z]ing\b/);
+  assert(!bad || input.includes(bad[0]), `no punctuation+ing in toActiveForm(${JSON.stringify(input)}) → ${JSON.stringify(actual)}`);
+}
+assert(!toActiveForm('Phase: extract-and-audit').includes('::'), 'colon is not doubled');
+
 import { parseTasksSection } from './sync-tasks.mjs';
 
 const SAMPLE_WITH_TASKS = `---
@@ -301,6 +376,44 @@ withTempSession(FRESH_SESSION, (file) => {
   assertEq(middle.status, 'in_progress', 'in_progress round-trips losslessly');
 });
 
+console.log('\n# activeForm round-trip');
+
+// The ## Tasks format persists only checkbox + content, so activeForm is
+// re-derived on every read. Content with punctuation or an existing gerund
+// must come back intact.
+withTempSession(FRESH_SESSION, (file) => {
+  const input = {
+    linked: null,
+    todos: [
+      { content: 'Phase: extract-and-audit', activeForm: 'Extracting and auditing', status: 'pending' },
+      { content: 'Running the suite', activeForm: 'Running the suite', status: 'in_progress' },
+      { content: 'Open the PR', activeForm: 'Opening the PR', status: 'completed' },
+    ],
+  };
+  writeTasksToSession(file, input);
+  const round = parseTasksSection(readFileSync(file, 'utf-8'));
+  for (const sent of input.todos) {
+    const back = round.todos.find(t => t.content === sent.content);
+    assert(back !== undefined, `round-trip keeps content ${JSON.stringify(sent.content)}`);
+    assertEq(back?.status, sent.status, `round-trip status for ${JSON.stringify(sent.content)}`);
+  }
+  assertEq(
+    round.todos.find(t => t.content === 'Phase: extract-and-audit')?.activeForm,
+    'Phase: extract-and-audit',
+    'colon content keeps its activeForm verbatim after write → read'
+  );
+  assertEq(
+    round.todos.find(t => t.content === 'Running the suite')?.activeForm,
+    'Running the suite',
+    'gerund content keeps its activeForm after write → read'
+  );
+  assertEq(
+    round.todos.find(t => t.content === 'Open the PR')?.activeForm,
+    'Opening the PR',
+    'verb content gets a clean activeForm after write → read'
+  );
+});
+
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -330,6 +443,21 @@ withTempSession(FRESH_SESSION, (file) => {
   const parsed = JSON.parse(out);
   assertEq(parsed.todos.length, 3, 'CLI --read returns 3 todos');
   assertEq(parsed.todos[1].content, 'Test thing', 'CLI --read content');
+});
+
+withTempSession(FRESH_SESSION, (file) => {
+  const input = JSON.stringify({
+    todos: [
+      { content: 'Start work', activeForm: 'Starting work', status: 'completed' },
+      { content: 'Phase: extract-and-audit', activeForm: 'Running phase: extract-and-audit', status: 'in_progress' },
+      { content: 'Complete work', activeForm: 'Completing work', status: 'pending' },
+    ],
+  });
+  execFileSync('node', [SCRIPT_PATH, '--write', file], { input, encoding: 'utf-8' });
+  const out = execFileSync('node', [SCRIPT_PATH, '--read', file], { encoding: 'utf-8' });
+  const parsed = JSON.parse(out);
+  assertEq(parsed.todos[1].content, 'Phase: extract-and-audit', 'CLI round-trip keeps colon content');
+  assertEq(parsed.todos[1].activeForm, 'Phase: extract-and-audit', 'CLI round-trip activeForm has no mangled suffix');
 });
 
 withTempSession('not a session file\n', (file) => {

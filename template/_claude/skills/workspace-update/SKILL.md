@@ -9,12 +9,14 @@ Apply a staged template update to an initialized workspace. The CLI (`npx @ulyss
 
 ## Prerequisites
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 - Read `workspace.json` (the file at the workspace root — the SessionStart hook's `Workspace config (workspace.json):` line is only a summary) and check `workspace.initialized` is `true`
 - If not initialized, check whether initialization was committed but never merged — the workspace-init flow ends with its commits merged to the default branch, so an unmerged init branch explains a missing flag:
   ```bash
   git log --all --format=%H -S'"initialized": true' -- workspace.json
   ```
-  If there are hits, name the branch holding the newest commit (`git branch --all --contains {sha}`) and report: "This workspace was initialized on branch `{branch}`, but that branch was never merged. Merge it first (`git merge {branch}`), then re-run /workspace-update." Only if there are no hits, report: "Workspace not initialized. Run /workspace-init first."
+  If there are hits, name the branch holding the newest commit (`git branch --all --contains {sha}`) and report: "This workspace was initialized on branch `{branch}`, but that branch was never merged. Merge it first (`git merge '{branch}'`), then re-run /workspace-update." Only if there are no hits, report: "Workspace not initialized. Run /workspace-init first."
 - `.workspace-update/` payload directory must exist (staged by `npx @ulysses-ai/create-workspace --upgrade`)
 - If no `.workspace-update/` payload exists, report: "No update payload found. Run `npx @ulysses-ai/create-workspace --upgrade` to stage the template."
 - Read `.workspace-update/.manifest.json` for `fromVersion`, `templateVersion` (the target version), and `action`
@@ -34,7 +36,7 @@ ANY remote — even one you cannot push to — routes the update through a workt
 
 - **A remote exists (the normal case)** — create a task worktree up front and treat it as the workspace root for Steps 2–6:
   ```bash
-  node {scripts}/task-worktree.mjs --root . --create --repo . --branch chore/template-update-{version}
+  node {scripts}/task-worktree.mjs --root . --create --repo . --branch 'chore/template-update-{version}'
   ```
   `{scripts}` is `.claude/scripts` when the workspace has the script, `{payload}/.claude/scripts` when it doesn't — pre-0.18 workspaces predate the task scripts entirely, and the payload always carries them (the same rule Step 2 already uses for the classifier). The payload is untracked, so it does not appear inside the worktree — keep referencing it at the launcher's absolute path (`{launcher}/.workspace-update`). Everything the update needs travels with the payload, including any `.template-baseline.reconstructed.json` the CLI staged for a pre-baseline workspace. Step 7 commits, pushes, and opens the PR/MR from the worktree.
 - **No remote** — apply in place. The Step 7 commit lands on the launcher's default branch: the one sanctioned launcher commit, because a repo with no remote has nowhere else for a template update to go. The payload path is `.workspace-update/`.
@@ -211,9 +213,9 @@ Where the commit lands was decided in Step 1 — the launcher's default branch i
 - **No remote:** commit in place on the launcher's default branch — the one sanctioned launcher commit:
   ```bash
   git add -A
-  git commit -m "chore: update workspace from template v{fromVersion} to v{templateVersion}"
+  git commit -m 'chore: update workspace from template v{fromVersion} to v{templateVersion}'
   ```
-- **Remote exists:** from the task worktree created in Step 1, commit the applied update, push the branch, and open the PR/MR through `node {scripts}/task-pr.mjs` (`{scripts}` resolves as in Step 1 — the payload's copy whenever the workspace's own is missing). The workspace repo is addressed as `.`, so pass its PR body as `--body-file ".={path}"` (a repo with commits to merge but no body file is an error). If task-pr reports the forge unsupported, open the MR with the forge's own CLI (for GitLab, `glab mr create`) from the worktree and say so in the report. After the PR/MR merges, at the launcher and in this order:
+- **Remote exists:** from the task worktree created in Step 1, commit the applied update, push the branch, and open the PR/MR through `node {scripts}/task-pr.mjs` (`{scripts}` resolves as in Step 1 — the payload's copy whenever the workspace's own is missing). The workspace repo is addressed as `.`, so pass its PR body as `--body-file '.={path}'` (a repo with commits to merge but no body file is an error). If task-pr reports the forge unsupported, open the MR with the forge's own CLI (for GitLab, `glab mr create`) from the worktree and say so in the report. After the PR/MR merges, at the launcher and in this order:
   1. Restore the bootstrapped skill — `--upgrade` replaced `.claude/skills/workspace-update/` in the launcher (a tracked modification) and the merged PR delivers the same content, so a dirty launcher blocks the pull. If `SKILL.md.local-backup` sits there (a customised skill the CLI backed up), move it somewhere safe first (e.g. `workspace-scratchpad/`), then:
      ```bash
      git -C {launcher} checkout -- .claude/skills/workspace-update
@@ -226,7 +228,7 @@ Where the commit lands was decided in Step 1 — the launcher's default branch i
      ```
   4. Remove the update worktree and its local branch:
      ```bash
-     node {launcher}/.claude/scripts/task-worktree.mjs --root {launcher} --remove --repo . --branch chore/template-update-{version} --delete-branch
+     node {launcher}/.claude/scripts/task-worktree.mjs --root {launcher} --remove --repo . --branch 'chore/template-update-{version}' --delete-branch
      ```
   5. Delete the payload (Step 6).
 

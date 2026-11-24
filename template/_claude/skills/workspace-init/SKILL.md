@@ -48,8 +48,8 @@ A join sets up one person on one machine. It never touches tracked files, create
    ```json
    { "workspace": { "user": "{name}" } }
    ```
-   If the workspace has a roster (`roster: true`) and the name is not one of its members, this is a new team member. A join writes no tracked file, so it doesn't add them itself. Tell them to add themselves in their first change, with `node .claude/scripts/team-roster.mjs --add {name} --detect --root .` (pass `--name "{display name}"` too). The session-start hook reminds them until they do.
-3. **Clone missing repos.** For each repo in `workspace.json` without `repos/{name}`: ask "Clone {name} from {remote}? [Y/n]", then `git clone {remote} repos/{name}`. If the entry names a `branch`, check that the clone is on it. A clone that fails (no access, wrong URL) is reported and skipped, never retried in a loop.
+   If the workspace has a roster (`roster: true`) and the name is not one of its members, this is a new team member. A join writes no tracked file, so it doesn't add them itself. Tell them to add themselves in their first change, with `node .claude/scripts/team-roster.mjs --add '{name}' --detect --root .` (pass `--name '{display name}'` too). The session-start hook reminds them until they do.
+3. **Clone missing repos.** For each repo in `workspace.json` without `repos/{name}`: ask "Clone {name} from {remote}? [Y/n]", then `git clone -- '{remote}' 'repos/{name}'` (values go in single quotes, and a `'` inside a value is written `'\''`; the `--` keeps a remote that starts with `-` from being read as an option). If the entry names a `branch`, check that the clone is on it. A clone that fails (no access, wrong URL) is reported and skipped, never retried in a loop.
 4. **Per-user folder.** If `workspace-context/team-member/{user}/` does not exist, create it. The generator in the next step builds an index only for folders that exist, so without it `CLAUDE.local.md` would import a missing file.
 5. **CLAUDE.local.md.** Run:
    ```bash
@@ -101,7 +101,7 @@ Read `workspace.json` and list the configured repos.
 For each repo in `workspace.json`:
 - Check if `repos/{name}` already exists
 - If missing: ask "Clone {name} from {remote}? [Y/n]"
-- If confirmed: `git clone {remote} repos/{name}`
+- If confirmed: `git clone -- '{remote}' 'repos/{name}'`
 - If exists: report "repos/{name} already present"
 
 While workspace.json is open, confirm the work lifecycle. `workspace.sessionModel` selects where `/start-work` routes new work: `"task"` (one tracker issue + one branch + one worktree per touched repo; recommended for new workspaces) or `"session"` (self-contained `work-sessions/{name}/` folders; the template default — keep it for teams already mid-flight on sessions). Ask: "Which lifecycle should new work use — task (recommended for a new workspace) or session (default)?" and write the answer to `workspace.sessionModel` only if it differs from the current value. Never flip an existing non-default value silently.
@@ -293,7 +293,7 @@ ls work-sessions/ 2>/dev/null
 For each active worktree or session folder found:
 1. Determine the session name from the branch name or directory name
 2. Ask: "Found worktree for branch `{branch}` at `{path}`. Formalize as work session '{suggested-name}'? [Y/n]"
-3. If confirmed, invoke `node .claude/scripts/create-work-session.mjs --session-name {name} --branch {branch} --repo {repo} --user {user}` to set up the standard layout. For existing worktrees that are already on the right branch, the script will refuse — in that case, move the worktree manually under `work-sessions/{name}/workspace/repos/{repo}/` using `git -C repos/{repo} worktree move`, then write the `work-sessions/{name}/workspace/session.md` tracker by hand with the helper (from inside the worktree so the initial commit lands on the session branch).
+3. If confirmed, invoke `node .claude/scripts/create-work-session.mjs --session-name '{name}' --branch '{branch}' --repo {repo} --user {user}` to set up the standard layout. For existing worktrees that are already on the right branch, the script will refuse — in that case, move the worktree manually under `work-sessions/{name}/workspace/repos/{repo}/` using `git -C repos/{repo} worktree move`, then write the `work-sessions/{name}/workspace/session.md` tracker by hand with the helper (from inside the worktree so the initial commit lands on the session branch).
 4. **Search Claude chat history for sessions that touched this branch** — scan conversation logs for commits or file edits on this branch, and synthesize what was being worked on into the session.md body
 5. Ask the user to describe the current state and next steps, add to the tracker body
 
@@ -354,7 +354,7 @@ Save to `.claude/settings.local.json`:
 
 Then make the person initializing the first entry in the team roster (`workspace.json` → `workspace.team`). The roster is how later sessions tell that a teammate's name, forge login and git email belong to the same person, and notice when they drift apart. Ask "Start the team roster with you as its first member? [Y/n]". On yes:
 ```bash
-node .claude/scripts/team-roster.mjs --add {name} --name "{git config user.name}" --detect --root .
+node .claude/scripts/team-roster.mjs --add '{name}' --name '{git config user.name}' --detect --root .
 ```
 `--detect` records this machine's forge login and git email. Leave out `--name` when git has no `user.name`. Each teammate adds their own entry in their first change after joining. On no, skip the roster: every roster check stays off until a team adds one.
 
@@ -419,7 +419,7 @@ git remote -v
 - Ask: "Does a workspace repo already exist that you want to connect to? Provide the URL, or say 'create new'."
 - If URL provided:
   ```bash
-  git remote add origin {url}
+  git remote add origin '{url}'
   git fetch origin
   ```
   Then rebase the init branch onto the remote's main:
@@ -434,7 +434,7 @@ git remote -v
 **If no remote and creating new:**
 - Detect the org from project repo remotes in workspace.json
 - Ask: "Create workspace repo as `{org}/workspace-{project}`? Or provide a different name/URL."
-- Create via `gh repo create {org}/{name} --private` and add as remote
+- Create via `gh repo create '{org}/{name}' --private` and add as remote
 - Do NOT push yet — Step 18 merges the init branch and pushes the default branch after the merge
 
 ### Step 18: Mark initialized, merge to the default branch, report
@@ -447,11 +447,11 @@ Update workspace.json:
 
 **Merge to the default branch.** Init is not finished while its commits live only on `chore/workspace-init` — an unmerged init branch leaves the default branch without `initialized: true`, which blocks later `/workspace-update` runs. Ask: "Merge chore/workspace-init into {default-branch} now? [Y/n]" and on yes:
 ```bash
-git checkout {default-branch}
+git checkout '{default-branch}'
 git merge --squash chore/workspace-init
 git commit -m "chore: workspace initialization"
 ```
-If a remote is configured, push the default branch (`git push origin {default-branch}`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 17 rebase). Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
+If a remote is configured, push the default branch (`git push origin '{default-branch}'`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 17 rebase). Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
 
 **Final report:**
 

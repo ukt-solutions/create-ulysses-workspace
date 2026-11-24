@@ -2,9 +2,9 @@
 // Create a work session: workspace worktree + nested project worktrees +
 // session.md tracker. Produces a self-contained work-sessions/{name}/ folder.
 import '../lib/require-node.mjs';
-import { execSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, copyFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { isAbsolute, join, resolve } from 'path';
 import {
   getWorkspaceRoot,
   readJSON,
@@ -36,6 +36,66 @@ const root = getWorkspaceRoot(import.meta.url);
 const config = readJSON(join(root, 'workspace.json'));
 const reposDir = join(root, 'repos');
 
+// SECURITY (gh:129): the session name, branch and repo names come from chat,
+// and each repo's branch comes from the committed workspace.json. Every git
+// call below is an argv array through execFileSync — never shell text — and
+// these checks run before anything is created, so a crafted value is
+// rejected with no branch, worktree or folder left behind.
+
+// A new session's name becomes a path segment under work-sessions/ and
+// appears in commands Claude types while running the session skills. It is
+// limited to letters, digits, '.', '_' and '-', starting with a letter or
+// digit, at most 64 characters: nothing in it can be read as a path
+// separator, an option or shell syntax, even when a command is quoted
+// wrongly. This applies only at creation. The scripts that act on an existing
+// session (add-repo-to-session, session-end) accept any single path segment,
+// so a session created before this rule can still be finished.
+const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+function isSessionName(name) {
+  return typeof name === 'string' && SESSION_NAME_RE.test(name);
+}
+
+// A project repo name: one path segment under repos/, not dots.
+function isRepoSegment(name) {
+  if (typeof name !== 'string' || name === '' || isAbsolute(name)) return false;
+  const segs = name.split(/[\\/]/);
+  return segs.length === 1 && !/^\.+$/.test(segs[0]);
+}
+
+// git's own format check is the authority on branch names. `--branch`
+// expands @{-N} to an earlier branch's name, so the name must come back
+// unchanged; a leading dash would read as an option.
+function validBranch(cwd, name) {
+  if (typeof name !== 'string' || name === '' || name.startsWith('-')) return false;
+  const r = spawnSync('git', ['check-ref-format', '--branch', name], { cwd, encoding: 'utf8' });
+  return r.status === 0 && r.stdout.trim() === name;
+}
+
+function validationError() {
+  if (!isSessionName(sessionName)) {
+    return `Invalid session name "${sessionName}": use 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit`;
+  }
+  if (!validBranch(root, branch)) {
+    return `Invalid branch "${branch}": git check-ref-format rejected it`;
+  }
+  for (const repo of repos) {
+    if (!isRepoSegment(repo)) {
+      return `Invalid repo "${repo}": it must be a single path segment`;
+    }
+    const repoBranch = config?.repos?.[repo]?.branch || 'main';
+    if (!validBranch(root, repoBranch)) {
+      return `Invalid branch "${repoBranch}" for repo "${repo}" in workspace.json: git check-ref-format rejected it`;
+    }
+  }
+  return null;
+}
+
+const invalid = validationError();
+if (invalid) {
+  console.log(JSON.stringify({ success: false, error: invalid }));
+  process.exit(1);
+}
+
 const sessionFolder = sessionFolderPath(root, sessionName);
 const wsWorktree = join(sessionFolder, 'workspace');
 
@@ -44,8 +104,8 @@ try {
   mkdirSync(sessionFolder, { recursive: true });
 
   // Create the workspace branch and worktree
-  execSync(`git branch "${branch}" main`, { cwd: root, stdio: 'pipe' });
-  execSync(`git worktree add "${wsWorktree}" "${branch}"`, { cwd: root, stdio: 'pipe' });
+  execFileSync('git', ['branch', '--', branch, 'main'], { cwd: root, stdio: 'pipe' });
+  execFileSync('git', ['worktree', 'add', '--', wsWorktree, branch], { cwd: root, stdio: 'pipe' });
 
   // Real repos/ directory inside the workspace worktree (no symlink).
   // The workspace .gitignore pattern `repos` (no slash) covers both the
@@ -60,9 +120,9 @@ try {
     const repoDir = join(reposDir, repo);
     const projWorktree = join(nestedReposDir, repo);
 
-    execSync(`git fetch origin`, { cwd: repoDir, stdio: 'pipe', timeout: 30000 });
-    execSync(`git branch "${branch}" "origin/${repoBranch}"`, { cwd: repoDir, stdio: 'pipe' });
-    execSync(`git worktree add "${projWorktree}" "${branch}"`, { cwd: repoDir, stdio: 'pipe' });
+    execFileSync('git', ['fetch', 'origin'], { cwd: repoDir, stdio: 'pipe', timeout: 30000 });
+    execFileSync('git', ['branch', '--', branch, `origin/${repoBranch}`], { cwd: repoDir, stdio: 'pipe' });
+    execFileSync('git', ['worktree', 'add', '--', projWorktree, branch], { cwd: repoDir, stdio: 'pipe' });
 
     projWorktrees.push(projWorktree);
   }
@@ -103,8 +163,8 @@ try {
     },
     `\n# Work Session: ${sessionName}\n\n${description}\n\n## Progress\n\n(Updated as the session progresses)\n`
   );
-  execSync('git add session.md', { cwd: wsWorktree, stdio: 'pipe' });
-  execSync(`git commit -m "chore: initialize session tracker for ${sessionName}"`, {
+  execFileSync('git', ['add', '--', 'session.md'], { cwd: wsWorktree, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', `chore: initialize session tracker for ${sessionName}`], {
     cwd: wsWorktree,
     stdio: 'pipe',
   });

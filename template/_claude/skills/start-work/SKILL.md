@@ -21,14 +21,16 @@ New work as a task: one tracker issue, one branch, one worktree per repo the wor
 
 If `workspace.tracker` is absent (the hook's `Workspace config` line reads `tracker: off`), say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. What that costs: without a tracker there is no `workItem` and no issue to close at completion — the task is still recorded on the chat record (with no work item, keyed by repo + branch), so `/complete-work` finds it from the launcher like any other task.
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 1. **Identify or create the tracker issue and claim it.** If the invocation's arguments already name an issue — `gh:N`, `#N`, or an issue URL — normalize it to the adapter's id (`#42` and a `.../issues/42` URL both mean `gh:42`) and fetch it with `tracker.getIssue(id)`. Then check whether the issue already has a task before claiming anything — another chat may have started it (gh:188):
 
    ```bash
-   node .claude/scripts/chat-record.mjs --root . --owner "{workItem}"
+   node .claude/scripts/chat-record.mjs --root . --owner '{workItem}'
    ```
 
    Exit 1 means no chat owns a task for the issue: claim it when it is not yet assigned to you (with the same `ALREADY_ASSIGNED` handling as the fallback pick below) and skip the candidate list entirely. Exit 0 prints `{ chat, branches }` — a task exists, one `{ branch, repos }` per branch the issue is open on (gh:206: one issue may carry several branches, each its own worktree and PR). First make sure the worktrees are there: run step 4's `--create` once per branch, for each repo in that branch's `repos`; over an existing branch or worktree `--create` REUSES what it finds (`created: false`) — it never fails or duplicates. Then ask the operator which way to take it:
-   - **Adopt into this chat** — record each adopted branch with step 5's `--add-task`, and remove it from the old chat's record (`--remove-task --chat "{owner.chat}" --work-item "{workItem}" --branch "{branch}" --repo "{repo}"`) only when the operator says that chat is done with it. While both chats still work a branch, both records legitimately list it — the branch and worktrees are shared, not duplicated — and a sibling branch the owner keeps is not this adoption's to take.
+   - **Adopt into this chat** — record each adopted branch with step 5's `--add-task`, and remove it from the old chat's record (`--remove-task --chat '{owner.chat}' --work-item '{workItem}' --branch '{branch}' --repo '{repo}'`) only when the operator says that chat is done with it. While both chats still work a branch, both records legitimately list it — the branch and worktrees are shared, not duplicated — and a sibling branch the owner keeps is not this adoption's to take.
    - **Leave it with the owner** — message the owning chat via SendMessage using the name `--owner` printed (the record name doubles as the session-registry name SendMessage reaches a chat by) and stop here.
    - When `--owner` names this chat, it is a resume of your own task: reuse the worktrees as above and continue.
 
@@ -67,13 +69,13 @@ If `workspace.tracker` is absent (the hook's `Workspace config` line reads `trac
 
 4. **Create one worktree per repo the work touches:**
    ```bash
-   node .claude/scripts/task-worktree.mjs --root . --create --repo "{repo}" --branch "{branch}"
+   node .claude/scripts/task-worktree.mjs --root . --create --repo '{repo}' --branch '{branch}'
    ```
    The script fetches origin best-effort (offline is fine) before choosing the base. A project repo's worktree lands at `repos/{repo}/.claude/worktrees/{slug}/` — Claude Code's native worktree location — based on `origin/{defaultBranch}` when that ref exists and the local `{defaultBranch}` otherwise — a local-mode repo (`merge: "local"`) bases on the local `{defaultBranch}` itself, since its merges land there and its origin ref never advances — and never tracking it. For `.` the worktree lands at `.claude/worktrees/{slug}/` — the same native location, one level up — based on the workspace origin's HEAD (falling back to `main`); the workspace's own `.gitignore` already covers the path. A repo without a forge remote — no origin at all, or `merge: "local"` in `workspace.json` — runs the task in local mode: nothing is pushed for it, and `/complete-work` merges it into its source clone instead.
 
 5. **Record the task on this chat's record:**
    ```bash
-   node .claude/scripts/chat-record.mjs --root . --add-task --chat "{chat}" --work-item "{workItem}" --branch "{branch}" --repo "{repo}"
+   node .claude/scripts/chat-record.mjs --root . --add-task --chat '{chat}' --work-item '{workItem}' --branch '{branch}' --repo '{repo}'
    ```
    Omit `--work-item` when the task has none — the entry is recorded with a null work item, keyed by repo + branch. `{chat}` is the name from the `Chat record:` line the SessionStart hook injected into this conversation. If there is no such line, run `node .claude/scripts/chat-record.mjs --whoami --root .` first — compaction can drop the hook line, and this recovers the name by matching the chat's session id. When that too prints nothing, say so and skip recording rather than guessing a name.
 
@@ -106,7 +108,7 @@ If `workspace.tracker` is absent (the hook's `Workspace config` line reads `trac
    - Workspace: `work-sessions/{name}/workspace/`
    - For each repo in `repos:` frontmatter: `work-sessions/{name}/workspace/repos/{repo}/`
    - If any are missing, recreate from the branch
-3. The session-start hook automatically registers each chat in the session tracker's `chatSessions` frontmatter when Claude opens in a worktree. A lane chat resuming from the launcher is never opened there, so the hook cannot register it. Verify the current chat is registered — from either starting point — and when it is not, append an entry using the invocation shown under "Create work session" below (the helper is an importable library, not a CLI). Take the chat's UUID from this chat's record: `node .claude/scripts/chat-record.mjs --root . --read "{chat}"` prints it as `sessionId` (the `Chat record:` hook line names `{chat}`). The id matters — it is what `/complete-work` later matches this session by from the launcher.
+3. The session-start hook automatically registers each chat in the session tracker's `chatSessions` frontmatter when Claude opens in a worktree. A lane chat resuming from the launcher is never opened there, so the hook cannot register it. Verify the current chat is registered — from either starting point — and when it is not, append an entry using the invocation shown under "Create work session" below (the helper is an importable library, not a CLI). Take the chat's UUID from this chat's record: `node .claude/scripts/chat-record.mjs --root . --read '{chat}'` prints it as `sessionId` (the `Chat record:` hook line names `{chat}`). The id matters — it is what `/complete-work` later matches this session by from the launcher.
 
    Each `chatSessions` entry has this shape:
    ```yaml
@@ -121,7 +123,7 @@ If `workspace.tracker` is absent (the hook's `Workspace config` line reads `trac
 4. Update the tracker `status:` to `active` if it was `paused`
 5. Restore the task list from `## Tasks` per the `task-list-mirroring` rule:
    ```bash
-   cd "work-sessions/{name}/workspace"
+   cd 'work-sessions/{name}/workspace'
    node .claude/scripts/sync-tasks.mjs --read session.md
    ```
    Pass the parsed `todos` array to `TodoWrite` so the live UI matches the durable state. If the section is missing (legacy session predating this feature), seed it first via `--write` with an empty `todos` array — the helper will insert the bookends.
@@ -189,7 +191,7 @@ If no gap is found, skip silently.
      }
      ```
    - If it came from the assigned-to-me list, skip the claim call (already mine).
-   - Generate the session name from the issue title (kebab-case slug, max ~40 chars).
+   - Generate the session name from the issue title: a kebab-case slug of about 40 characters, using only letters, digits, `.`, `_` and `-` and starting with a letter or digit. `create-work-session.mjs` rejects anything else.
    - Remember `workItem: {issue.id}` for the session tracker.
 
 6. **User picked "Something new" (or fell through from step 2 with no tracker).**
@@ -232,11 +234,11 @@ If no gap is found, skip silently.
 Run the helper script:
 ```bash
 node .claude/scripts/create-work-session.mjs \
-  --session-name "{session-name}" \
-  --branch "{branch}" \
-  --repo "{repo1},{repo2}" \
-  --user "{user}" \
-  --description "{description}"
+  --session-name '{session-name}' \
+  --branch '{branch}' \
+  --repo '{repo1},{repo2}' \
+  --user '{user}' \
+  --description '{description}'
 ```
 
 The script creates:
@@ -255,7 +257,7 @@ a session created without it looks fine until one of them silently cannot find t
 does nothing and exits 2. Import it:
 
 ```bash
-cd "work-sessions/{session-name}/workspace"
+cd 'work-sessions/{session-name}/workspace'
 node --input-type=module -e '
 import { updateSessionFile, readSessionFields } from "./.claude/lib/session-frontmatter.mjs";
 updateSessionFile("session.md", { workItem: "{workItem}" });
@@ -290,7 +292,7 @@ After session creation, seed the `## Tasks` section in the new tracker so `TodoW
 
 ```bash
 # Build the seed from inside the worktree so the helper resolves workspace.json correctly.
-cd "work-sessions/{session-name}/workspace"
+cd 'work-sessions/{session-name}/workspace'
 echo '{"todos": []}' | node .claude/scripts/sync-tasks.mjs --write session.md
 ```
 
@@ -321,9 +323,9 @@ If yes:
 2. Write the summary into `work-sessions/{session-name}/workspace/session.md`'s body, in a `## Pre-session context` or `## Progress` section
 3. Auto-commit from inside the worktree so the capture lands on the session branch:
    ```bash
-   cd "work-sessions/{session-name}/workspace"
+   cd 'work-sessions/{session-name}/workspace'
    git add session.md
-   git commit -m "chore: capture pre-session discussion for {session-name}"
+   git commit -m 'chore: capture pre-session discussion for {session-name}'
    ```
 
 If no prior discussion: skip silently.
@@ -338,8 +340,8 @@ If there's an active session and the user wants to add a repo (explicitly or pro
 2. Run the helper script:
    ```bash
    node .claude/scripts/add-repo-to-session.mjs \
-     --session-name "{session-name}" \
-     --repo "{repo}"
+     --session-name '{session-name}' \
+     --repo '{repo}'
    ```
 3. Tell user: "Added {repo}. Worktree at `work-sessions/{session-name}/workspace/repos/{repo}/`."
 

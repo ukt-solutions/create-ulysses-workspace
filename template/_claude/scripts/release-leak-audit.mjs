@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Release leak audit (gh:203): scan exactly what a release would publish
-// against the leak patterns the workspace configured, before the tag is
-// pushed and the publish becomes permanent.
+// Release leak audit (gh:203, #74): scan exactly what a release would
+// publish against the leak patterns the workspace configured, before the
+// tag is pushed and the publish becomes permanent — and list the prose a
+// consumer of the package reads, for /release's advisory review.
 //
 // /release keeps the process honest — the bump rides a PR, the tag marks
 // the merge — but no step of it looks at content. A credential pasted into
@@ -9,11 +10,20 @@
 // pushed, and deleting a tag does not unpublish a tarball or a clone
 // somebody already fetched. This script is the optional content gate.
 //
-// Patterns (workspace.json, arrays of strings):
-//   repos.{repo}.release.leakPatterns   this repo alone
-//   workspace.release.leakPatterns      every repo — and, as with
-//                                       repos.{repo}.merge, the workspace
-//                                       repo "." itself reads this block
+// Configuration (workspace.json):
+//   Leak patterns, arrays of strings:
+//     repos.{repo}.release.leakPatterns   this repo alone
+//     workspace.release.leakPatterns      every repo
+//   Consumer-facing paths, arrays of repo-relative strings (an entry ending
+//   in "/" is a directory prefix, any other entry an exact path; a leading
+//   "./" is dropped, and what remains must name something inside the
+//   repository — not empty, not ".", no leading "/", no ".." segment):
+//     repos.{repo}.release.consumerFacing   this repo alone
+//     workspace.release.consumerFacing      every repo
+// Both settings split the same way as repos.{repo}.merge: the workspace
+// repo "." has no repos.{repo} entry, so it reads the workspace block for
+// both roles.
+//
 // A pattern written "/body/flags" (flags from d g i m s u v y) is that
 // regex; any other string is a case-insensitive literal. Mind the seam
 // between the forms: a path-like literal whose tail parses as a flags run
@@ -22,20 +32,36 @@
 // sticky patterns are safe to configure: the scanner resets lastIndex
 // before every line, so no match state leaks across lines.
 //
-// The surface is what this release publishes, unioned rather than either:
-//   - the `npm pack --dry-run --ignore-scripts --json` file list, when the
-//     repo's package.json is not "private": true — run with
+// The surface is what this release publishes, unioned rather than any one:
+//   - the `npm pack --dry-run --ignore-scripts --json` file list of every
+//     package the release publishes: the repo's root package when its
+//     package.json is not "private": true, and each non-private package
+//     named by the root's "workspaces" field (an array, or yarn's
+//     { packages: [...] } form; exact directories and one trailing "/*"
+//     segment). Workspace packages are enumerated from disk because
+//     `npm query` finds none without an installed node_modules, which a
+//     release worktree lacks; their pack paths carry the package directory
+//     as a prefix, so every surface path is repo-relative. What cannot be
+//     enumerated is reported in `skipped` — never silently missed: a
+//     workspaces entry the enumeration does not understand (**, braces,
+//     negation), a workspace directory without a readable package.json (a
+//     plain directory under a "/*" entry is not a package and is ignored,
+//     as npm does), and a package whose pack fails. Packs run with
 //     --ignore-scripts because an audit must not execute a prepack or
-//     prepare hook as a side effect. The list covers the root package
-//     only (a monorepo's workspace packages are not enumerated) and is
-//     built from the worktree, so build artifacts a publish workflow
-//     generates only in CI are not on it — which is why the union below
-//     matters;
+//     prepare hook as a side effect, and are built from the worktree, so
+//     build artifacts a publish workflow generates only in CI are not on
+//     them — which is why the union matters;
 //   - the files changed in the tag range (`git diff --name-only -z
 //     --no-renames`, so paths with non-ASCII bytes, quotes, or leading
 //     spaces arrive raw rather than quoted-and-trimmed); with no previous
 //     tag, every file at the end ref (`git ls-tree -r -z --name-only`)
-//     is the same surface.
+//     is the same surface;
+//   - the files tracked at the end ref under release.consumerFacing
+//     (`git ls-tree -r -z --name-only <ref> -- <entry>`): documents that
+//     ship whether or not they changed — an OpenAPI spec, an error
+//     catalog — and so belong on the surface even when no pack list or
+//     diff names them. An entry that matches no tracked file is reported
+//     in `skipped`, so a mistyped path does not read as a clean audit.
 // File contents are read from the worktree — except with an explicit
 // --tag-range whose end is not HEAD, where they are read from that commit
 // (git show), so the audit scans the state the range actually names.
@@ -48,6 +74,7 @@
 // Usage:
 //   node release-leak-audit.mjs --root <launcher> --repo <repo>
 //                               [--tag-range <from>..<to>] [--allow-dirty]
+//                               [--list-consumer-facing]
 //
 // The range defaults to <last tag>..HEAD; a repo with no tag yet takes
 // every file at the end ref and logs its whole history, so the root
@@ -64,13 +91,16 @@
 //   matches: [{ file, line, pattern, excerpt }] — the excerpt carries
 //   ~40 chars of context with the matched span masked as
 //   "[match:N chars]", so the report never echoes the secret it found.
-//   skipped: [{ file, reason }] — every file that could not be read,
-//   except ones deleted in the range (a deletion publishes nothing) and
-//   binary ones (a NUL byte anywhere — git's own heuristic), which are
-//   counted in skippedBinary instead. scanned counts the text files and
-//   commit messages actually searched. Exit codes: 0 — clean, or nothing
-//   configured; 1 — matches found; 2 — configuration or environment
-//   error, including a dirty worktree.
+//   skipped: [{ file, reason }] — every file that could not be read, every
+//   workspaces entry or package that could not be enumerated, and every
+//   release.consumerFacing entry that matched no file; nothing else:
+//   files deleted in the range (a deletion publishes nothing) are dropped,
+//   and binary ones (a NUL byte anywhere — git's own heuristic) are counted
+//   in skippedBinary instead. skipped is informational — it never changes
+//   the exit code. scanned counts the text files and commit messages
+//   actually searched. Exit codes: 0 — clean, or nothing configured; 1 —
+//   matches found; 2 — configuration or environment error, including a
+//   dirty worktree.
 //
 // With no patterns configured it exits 0 having scanned nothing — the
 // step runs and reports that there was nothing to look for, so a
@@ -78,9 +108,29 @@
 // never edits anything; whether a match is a true leak, an over-broad
 // pattern, or a release to redo is the operator's decision, made before
 // the tag exists.
+//
+// --list-consumer-facing swaps the scan for a listing and needs no
+// patterns. From the same surface it keeps the prose a consumer reads:
+// files whose basename is README, CHANGELOG, CONTRIBUTING, SECURITY,
+// UPGRADING or MIGRATION (any extension), every package.json, and every
+// release.consumerFacing path. Deleted and binary files are dropped.
+// Output: { mode: 'consumer-facing', range, files, skipped } with
+//   range: { from, to } (from is null on a first release), or null when
+//   the directory is not a git repository;
+//   files: [{ path, changed }] sorted by path — changed is true when the
+//   range touched the file, and for every file when there is no previous
+//   tag or no range at all. A package.json counts as touched only when it
+//   differs from the previous tag's copy in more than its "version":
+//   /release bumps the version before the audit runs, so every release
+//   changes the manifest, and a bump alone is no prose to review. A
+//   manifest that is new since the previous tag, or does not parse, counts
+//   as changed;
+//   skipped: as above, so an unenumerated package is visible in the list.
+// The same clean-worktree rule applies, and the exit code is 0 on any
+// successful listing — it reports, it does not judge.
 
 import '../lib/require-node.mjs';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -101,7 +151,7 @@ const CONTEXT_CHARS = 40;
 // joined command line stays honest — the same shape lib/payload.mjs uses.
 function defaultNpmFn(cmd, args, opts = {}) {
   if (process.platform !== 'win32') return spawnSync(cmd, args, { encoding: 'utf8', ...opts });
-  return spawnSync('npm.cmd', args.map((a) => `"${a}"`), { shell: true, encoding: 'utf8', ...opts });
+  return spawnSync('npm.cmd', args.map((a) => `"${a}"`), { shell: true, encoding: 'utf8', ...opts }); // audit:allow-shell — npm.cmd needs a shell on Windows; args are validated/fixed
 }
 
 function gitRun(gitFn, repoDir, args, opts = {}) {
@@ -172,6 +222,45 @@ function leakPatternsFor(ws, repo) {
   return [...new Set([...repoLevel, ...allRepos])];
 }
 
+// The configured consumer-facing paths for one repo, combined and
+// de-duplicated the same way leakPatternsFor combines patterns. An entry is
+// a repo-relative path: a trailing "/" makes it a directory prefix, and a
+// leading "./" is dropped. Validation runs on the normalized path, so "./"
+// is no more acceptable than "". Anything that is not strictly inside the
+// repository — empty, ".", absolute, drive-lettered, or holding a ".."
+// segment — is a configuration error, not something to hand to git.
+function consumerFacingFor(ws, repo) {
+  const normalize = (entry) => entry.replace(/^(\.\/+)+/, '');
+  const valid = (entry) => {
+    if (typeof entry !== 'string') return false;
+    const path = normalize(entry);
+    return path !== '' && path !== '.'
+      && !/^([\\/]|[A-Za-z]:)/.test(path)
+      && !path.split(/[\\/]/).includes('..');
+  };
+  const read = (value, setting) => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) throw new Error(`${setting} must be an array of repo-relative paths`);
+    const bad = value.find((entry) => !valid(entry));
+    if (bad !== undefined) {
+      throw new Error(`${setting} entries must be repo-relative paths inside the repository — not empty, not ".", no leading "/", no ".." segment — got: ${JSON.stringify(bad)}`);
+    }
+    return value.map(normalize);
+  };
+  const repoLevel = repo === WORKSPACE_REPO
+    ? read(ws?.workspace?.release?.consumerFacing, 'workspace.release.consumerFacing')
+    : read(ws?.repos?.[repo]?.release?.consumerFacing, `repos.${repo}.release.consumerFacing`);
+  const allRepos = read(ws?.workspace?.release?.consumerFacing, 'workspace.release.consumerFacing');
+  return [...new Set([...repoLevel, ...allRepos])];
+}
+
+// package.json text as an editor on some platforms writes it: JSON.parse
+// rejects a leading UTF-8 BOM, which would make a perfectly good manifest
+// look unreadable.
+function parseJson(text) {
+  return JSON.parse(text.replace(/^﻿/, ''));
+}
+
 // A package.json without "private": true describes a package npm would
 // publish — its pack list is part of the release surface. Anything else
 // (no package.json, private, or a file that does not parse) publishes
@@ -180,10 +269,111 @@ function isPublishedPackage(repoDir) {
   const pkgPath = join(repoDir, 'package.json');
   if (!existsSync(pkgPath)) return false;
   try {
-    return JSON.parse(readFileSync(pkgPath, 'utf8'))?.private !== true;
+    return parseJson(readFileSync(pkgPath, 'utf8'))?.private !== true;
   } catch {
     return false;
   }
+}
+
+// Workspace packages declared in the root package.json "workspaces" field
+// (an array, or yarn's object form { packages: [...] }), enumerated from
+// disk: `npm query .workspace` finds none without an installed
+// node_modules, which a release worktree does not have. Supports exact
+// directory entries and one trailing "/*" segment ("packages/*", which
+// follows symlinked directories and skips dot-directories and
+// node_modules, as npm's glob does). Returns { packages: [{ dir, private }],
+// skipped: [{ file, reason }] } with dir repo-relative and forward-slashed.
+// Whatever cannot be enumerated is reported in `skipped` so the caller shows
+// it instead of silently missing packages:
+//   - an entry the enumeration does not understand — **, braces, negation, a
+//     path that leaves the repository, a non-string;
+//   - an exact entry whose directory has no readable, parseable package.json;
+//   - a directory under a "/*" entry whose package.json exists but is
+//     unreadable or does not parse;
+//   - a "/*" base directory that is missing or unreadable.
+// A directory under a "/*" entry with no package.json at all is not a
+// package (npm ignores it too), and stays quiet. A root with no workspaces
+// yields empty lists.
+const WORKSPACE_GLOB_CHARS = /[*?[\]{}()!]/;
+const UNSUPPORTED_WORKSPACES = 'unsupported workspaces pattern — packages under it were not enumerated';
+const isMissing = (err) => err.code === 'ENOENT' || err.code === 'ENOTDIR';
+
+function workspacePackages(repoDir) {
+  const none = { packages: [], skipped: [] };
+  let root;
+  try {
+    root = parseJson(readFileSync(join(repoDir, 'package.json'), 'utf8'));
+  } catch {
+    return none;
+  }
+  const entries = Array.isArray(root?.workspaces) ? root.workspaces
+    : Array.isArray(root?.workspaces?.packages) ? root.workspaces.packages
+      : [];
+
+  // One package directory: { pkg } when its package.json parses, else a
+  // precise { reason }, with `missing` set when the file is simply absent.
+  const readPackage = (dir) => {
+    let text;
+    try {
+      text = readFileSync(join(repoDir, dir, 'package.json'), 'utf8');
+    } catch (err) {
+      return isMissing(err)
+        ? { missing: true, reason: 'no package.json found' }
+        : { reason: `package.json is unreadable: ${err.code || err.message}` };
+    }
+    let pkg;
+    try {
+      pkg = parseJson(text);
+    } catch {
+      return { reason: 'package.json is not valid JSON' };
+    }
+    if (pkg === null || typeof pkg !== 'object') return { reason: 'package.json is not a JSON object' };
+    return { pkg: { dir, private: pkg.private === true } };
+  };
+
+  const isDirectory = (path) => {
+    try { return statSync(path).isDirectory(); } catch { return false; }
+  };
+
+  const packages = [];
+  const skipped = [];
+  const seen = new Set();
+  const add = (dir, { quietIfMissing = false } = {}) => {
+    if (seen.has(dir)) return;
+    const res = readPackage(dir);
+    if (res.missing && quietIfMissing) return;
+    seen.add(dir);
+    if (res.pkg) packages.push(res.pkg);
+    else skipped.push({ file: `${dir}/`, reason: res.reason });
+  };
+  for (const raw of entries) {
+    const entry = typeof raw === 'string' ? raw.replace(/^(\.\/)+/, '').replace(/\/+$/, '') : '';
+    const wildcard = entry.endsWith('/*');
+    const base = wildcard ? entry.slice(0, -2) : entry;
+    const segments = base.split('/');
+    if (entry === '' || segments.some((seg) => seg === '' || seg === '.' || seg === '..' || WORKSPACE_GLOB_CHARS.test(seg))) {
+      skipped.push({ file: String(raw), reason: UNSUPPORTED_WORKSPACES });
+      continue;
+    }
+    if (!wildcard) {
+      add(base);
+      continue;
+    }
+    let names;
+    try {
+      names = readdirSync(join(repoDir, base))
+        .filter((name) => !name.startsWith('.') && name !== 'node_modules' && isDirectory(join(repoDir, base, name)))
+        .sort();
+    } catch (err) {
+      skipped.push({
+        file: `${base}/`,
+        reason: isMissing(err) ? 'workspaces directory not found' : `workspaces directory is unreadable: ${err.code || err.message}`,
+      });
+      continue;
+    }
+    for (const name of names) add(`${base}/${name}`, { quietIfMissing: true });
+  }
+  return { packages, skipped };
 }
 
 // npm prints notices before the JSON; take the trailing JSON array and
@@ -203,19 +393,27 @@ function parsePackJson(stdout) {
   throw new Error('npm pack printed unparseable JSON output');
 }
 
-function packFileList(npmFn, repoDir) {
+// The pack list of one package: the repo root by default, or the workspace
+// package at `prefix` (repo-relative). Paths come back repo-relative either
+// way — npm reports them relative to the package, so a prefix is put back
+// on. A failed pack throws an Error whose `detail` is npm's own words, for
+// a caller that reports the failure instead of stopping.
+function packFileList(npmFn, repoDir, prefix = '') {
+  const cwd = prefix === '' ? repoDir : join(repoDir, prefix);
   const res = npmFn('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], {
-    cwd: repoDir, encoding: 'utf8', timeout: NPM_TIMEOUT_MS,
+    cwd, encoding: 'utf8', timeout: NPM_TIMEOUT_MS,
   });
   if (res.error || res.status !== 0) {
-    throw new Error(`npm pack --dry-run failed in ${repoDir}: ${String(res.stderr || res.error?.message || '').trim()}`);
+    const detail = String(res.stderr || res.error?.message || '').trim();
+    throw Object.assign(new Error(`npm pack --dry-run failed in ${cwd}: ${detail}`), { detail });
   }
   const parsed = parsePackJson(res.stdout);
   const files = Array.isArray(parsed) ? parsed[0]?.files : parsed?.files;
   if (!Array.isArray(files)) {
-    throw new Error(`npm pack --dry-run --json in ${repoDir} returned no file list`);
+    throw new Error(`npm pack --dry-run --json in ${cwd} returned no file list`);
   }
-  return files.map((f) => f?.path).filter((p) => typeof p === 'string' && p !== '');
+  return files.map((f) => f?.path).filter((p) => typeof p === 'string' && p !== '')
+    .map((p) => (prefix === '' ? p : `${prefix}/${p}`));
 }
 
 // The release range: explicit --tag-range, else <last tag>..HEAD, else (a
@@ -235,6 +433,10 @@ function resolveRange(gitFn, repoDir, tagRange) {
       throw new Error(`--tag-range must look like <from>..<to>, got: ${tagRange}`);
     }
     const [from, to] = parts;
+    // A leading "-" would reach git diff/log as an option, not a revision.
+    if (from.startsWith('-') || to.startsWith('-')) {
+      throw new Error(`--tag-range ends must name commits, not options: ${tagRange}`);
+    }
     const end = gitRun(gitFn, repoDir, ['rev-parse', '--verify', `${to}^{commit}`]);
     if (end.status !== 0) {
       throw new Error(`--tag-range end "${to}" is not a commit: ${String(end.stderr || '').trim()}`);
@@ -266,6 +468,26 @@ function changedFiles(gitFn, repoDir, range) {
     throw new Error(`${what} failed in ${repoDir}: ${String(res.stderr || '').trim()}`);
   }
   return String(res.stdout || '').split('\0').filter((p) => p !== '');
+}
+
+// The tracked files at `ref` under each configured consumer-facing entry.
+// ls-tree reads the committed tree — read-only, no pathspec globbing.
+// Returns { paths, unmatched }: an entry that lists nothing is handed back
+// in `unmatched` for the caller to report, because a mistyped path would
+// otherwise read as a clean audit of a file nobody scanned.
+function expandConsumerFacing(gitFn, repoDir, entries, ref) {
+  const paths = [];
+  const unmatched = [];
+  for (const entry of entries) {
+    const res = gitRun(gitFn, repoDir, ['ls-tree', '-r', '-z', '--name-only', ref, '--', entry]);
+    if (res.status !== 0) {
+      throw new Error(`git ls-tree ${ref} -- ${entry} failed in ${repoDir}: ${String(res.stderr || '').trim()}`);
+    }
+    const found = String(res.stdout || '').split('\0').filter((path) => path !== '');
+    if (found.length === 0) unmatched.push(entry);
+    paths.push(...found);
+  }
+  return { paths: [...new Set(paths)], unmatched };
 }
 
 // Full bodies (%B), oldest first: squash merges fold PR bodies into public
@@ -362,10 +584,10 @@ function classifyShowRead(gitFn, repoDir, ref, path, source) {
 }
 
 const VALUE_FLAGS = new Set(['--root', '--repo', '--tag-range']);
-const BOOL_FLAGS = new Set(['--allow-dirty']);
+const BOOL_FLAGS = new Set(['--allow-dirty', '--list-consumer-facing']);
 
 function parseArgs(argv) {
-  const args = { root: '.', repo: null, tagRange: null, allowDirty: false };
+  const args = { root: '.', repo: null, tagRange: null, allowDirty: false, listConsumerFacing: false };
   const rest = argv.slice(2);
   const value = (i, flag) => {
     const v = rest[i + 1];
@@ -389,12 +611,129 @@ function parseArgs(argv) {
   return args;
 }
 
+// The prose a consumer of the package reads, picked out of the surface by
+// basename: the usual top-level documents under any extension, and
+// package.json, whose description and keywords the registry displays.
+const CONSUMER_PROSE_BASENAME = /^(README|CHANGELOG|CONTRIBUTING|SECURITY|UPGRADING|MIGRATION)(\.[^/]*)?$/i;
+
+// Everything one release publishes, as { files, skipped, range, changed,
+// configured }: the pack lists, the changed files, and the configured
+// consumer-facing paths, de-duplicated with the pack list first (npm knows
+// what ships but not what CI generates; the range knows what changed but
+// not what the tarball would exclude). `skipped` holds what could not be
+// enumerated; `changed` is the set of files the range touched (null with no
+// range); `configured` is the set of paths release.consumerFacing named.
+// Shared by the scan and the listing, so both see one surface.
+function collectSurface(d, args, repoDir, consumerFacing) {
+  // Messages need a range even on the npm path, so git is probed first; a
+  // directory that is not a git repo at all has no messages to leak.
+  const isGit = gitRun(d.gitFn, repoDir, ['rev-parse', '--git-dir']).status === 0;
+  if (isGit) ensureCleanTree(d.gitFn, repoDir, args.repo, args.allowDirty);
+  const range = isGit ? resolveRange(d.gitFn, repoDir, args.tagRange) : null;
+
+  const surface = [];
+  const skipped = [];
+  if (isPublishedPackage(repoDir)) {
+    for (const path of packFileList(d.npmFn, repoDir)) surface.push({ path, source: 'pack' });
+  }
+  const workspaces = workspacePackages(repoDir);
+  skipped.push(...workspaces.skipped);
+  for (const { dir, private: isPrivate } of workspaces.packages) {
+    if (isPrivate) continue;
+    try {
+      for (const path of packFileList(d.npmFn, repoDir, dir)) surface.push({ path, source: 'pack' });
+    } catch (err) {
+      skipped.push({ file: `${dir}/`, reason: `npm pack failed: ${err.detail ?? err.message}` });
+    }
+  }
+  let changed = null;
+  if (range) {
+    const paths = changedFiles(d.gitFn, repoDir, range);
+    changed = new Set(paths);
+    for (const path of paths) surface.push({ path, source: 'diff' });
+  }
+  const configured = new Set();
+  if (range) {
+    const { paths, unmatched } = expandConsumerFacing(d.gitFn, repoDir, consumerFacing, range.to);
+    for (const path of paths) {
+      configured.add(path);
+      surface.push({ path, source: 'config' });
+    }
+    for (const entry of unmatched) {
+      skipped.push({ file: entry, reason: `release.consumerFacing entry matched no tracked file at ${range.to}` });
+    }
+  } else if (consumerFacing.length > 0) {
+    skipped.push({ file: consumerFacing.join(', '), reason: 'release.consumerFacing needs a git repository with a commit to enumerate' });
+  }
+  const seen = new Set();
+  const files = surface.filter((f) => (seen.has(f.path) ? false : seen.add(f.path)));
+  return { files, skipped, range, changed, configured };
+}
+
+// Reading one surface file the way the scan does, from the worktree or from
+// the range's end commit.
+function readSurfaceFile(d, repoDir, range, { path, source }) {
+  return range?.readRef
+    ? classifyShowRead(d.gitFn, repoDir, range.readRef, path, source)
+    : classifyDiskRead(join(repoDir, path));
+}
+
+// Whether a changed package.json differs from the previous tag's copy in
+// anything but its "version". /release bumps the version before the audit
+// runs, so every release touches the manifest; only the rest of it — the
+// description, keywords, and so on — is prose a consumer reads. A manifest
+// that did not exist at the previous tag, or that does not parse on either
+// side, counts as changed.
+function manifestChangedBeyondVersion(d, repoDir, range, path, currentText) {
+  const previous = gitRun(d.gitFn, repoDir, ['show', `${range.from}:${path}`]);
+  if (previous.status !== 0) return true;
+  const withoutVersion = (text) => {
+    const manifest = parseJson(text);
+    delete manifest.version;
+    return JSON.stringify(manifest);
+  };
+  try {
+    return withoutVersion(String(previous.stdout || '')) !== withoutVersion(currentText);
+  } catch {
+    return true;
+  }
+}
+
+// --list-consumer-facing: the consumer-read prose on the surface, each file
+// with whether the range changed it. Deleted and binary files are dropped
+// (nothing to read); an unreadable one is reported in `skipped`.
+function listConsumerFacing(d, args, repoDir, consumerFacing) {
+  const { files, skipped, range, changed, configured } = collectSurface(d, args, repoDir, consumerFacing);
+  const listed = [];
+  for (const file of files) {
+    const base = file.path.slice(file.path.lastIndexOf('/') + 1);
+    if (!(CONSUMER_PROSE_BASENAME.test(base) || base === 'package.json' || configured.has(file.path))) continue;
+    const cls = readSurfaceFile(d, repoDir, range, file);
+    if (cls.kind === 'deleted' || cls.kind === 'binary') continue;
+    if (cls.kind === 'unreadable') { skipped.push({ file: file.path, reason: cls.reason }); continue; }
+    const touched = range === null || range.rootMode || changed.has(file.path);
+    const isManifest = base === 'package.json' && range !== null && !range.rootMode && touched;
+    listed.push({
+      path: file.path,
+      changed: isManifest ? manifestChangedBeyondVersion(d, repoDir, range, file.path, cls.text) : touched,
+    });
+  }
+  listed.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return {
+    mode: 'consumer-facing',
+    range: range ? { from: range.from ?? null, to: range.to } : null,
+    files: listed,
+    skipped,
+  };
+}
+
 /**
  * Run one audit. `argv` is a process.argv-shaped array; `deps` is
  * injectable so tests can fake git and npm:
  *   { gitFn(cmd, args, opts), npmFn(cmd, args, opts) }
  * Resolves with { scanned, matches, skipped, skippedBinary, note? } —
- * note rides along only when nothing was configured. Throws on any
+ * note rides along only when nothing was configured — or, for
+ * --list-consumer-facing, { mode, range, files, skipped }. Throws on any
  * configuration or environment failure; the CLI maps a non-empty matches
  * to exit 1.
  */
@@ -415,43 +754,27 @@ function run(argv, deps = {}) {
     throw new Error(`no repo directory at ${repoDir} — is "${args.repo}" cloned?`);
   }
 
+  // Validated before any early return: a typo in the configured paths
+  // should not wait for the first audit that happens to need them.
+  const consumerFacing = consumerFacingFor(ws, args.repo);
+  if (args.listConsumerFacing) return listConsumerFacing(d, args, repoDir, consumerFacing);
+
   const patterns = leakPatternsFor(ws, args.repo).map(compilePattern);
   if (patterns.length === 0) {
     return { scanned: 0, matches: [], skipped: [], skippedBinary: 0, note: 'no leak patterns configured' };
   }
 
-  // Messages need a range even on the npm path, so git is probed first; a
-  // directory that is not a git repo at all has no messages to leak.
-  const isGit = gitRun(d.gitFn, repoDir, ['rev-parse', '--git-dir']).status === 0;
-  if (isGit) ensureCleanTree(d.gitFn, repoDir, args.repo, args.allowDirty);
-  const range = isGit ? resolveRange(d.gitFn, repoDir, args.tagRange) : null;
-
-  // The surface is the union, de-duplicated, pack list first: npm knows
-  // what ships but not what CI generates; the range knows what changed
-  // but not what the tarball would exclude.
-  const surface = [];
-  if (isPublishedPackage(repoDir)) {
-    for (const path of packFileList(d.npmFn, repoDir)) surface.push({ path, source: 'pack' });
-  }
-  if (range) {
-    for (const path of changedFiles(d.gitFn, repoDir, range)) surface.push({ path, source: 'diff' });
-  }
-  const seen = new Set();
-  const files = surface.filter((f) => (seen.has(f.path) ? false : seen.add(f.path)));
-
+  const { files, skipped, range } = collectSurface(d, args, repoDir, consumerFacing);
   const matches = [];
-  const skipped = [];
   let scanned = 0;
   let skippedBinary = 0;
-  for (const { path, source } of files) {
-    const cls = range?.readRef
-      ? classifyShowRead(d.gitFn, repoDir, range.readRef, path, source)
-      : classifyDiskRead(join(repoDir, path));
+  for (const file of files) {
+    const cls = readSurfaceFile(d, repoDir, range, file);
     if (cls.kind === 'deleted') continue;
     if (cls.kind === 'binary') { skippedBinary += 1; continue; }
-    if (cls.kind === 'unreadable') { skipped.push({ file: path, reason: cls.reason }); continue; }
+    if (cls.kind === 'unreadable') { skipped.push({ file: file.path, reason: cls.reason }); continue; }
     scanned += 1;
-    scanText(path, cls.text, patterns, matches);
+    scanText(file.path, cls.text, patterns, matches);
   }
   if (range) {
     for (const { sha, body } of commitMessages(d.gitFn, repoDir, range)) {
@@ -465,7 +788,7 @@ function run(argv, deps = {}) {
 function main() {
   const out = run(process.argv);
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
-  process.exitCode = out.matches.length > 0 ? 1 : 0;
+  process.exitCode = out.mode === 'consumer-facing' || out.matches.length === 0 ? 0 : 1;
 }
 
 if (isMainModule(import.meta.url)) {

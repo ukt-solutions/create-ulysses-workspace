@@ -46,13 +46,15 @@ The user responds using codes:
 
 **Step 3: Execute decisions**
 
+Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 For each **promote** action:
 - Ask: "Team-visible (`workspace-context/shared/`), user-scoped (default, `workspace-context/team-member/{user}/`), or locked (`workspace-context/shared/locked/`)?"
 - Use `capture-context.mjs --update` to write to the destination with the right frontmatter:
   ```bash
-  cat {source-file} | node .claude/scripts/capture-context.mjs \
+  cat '{source-file}' | node .claude/scripts/capture-context.mjs \
     --type {braindump|handoff|research} \
-    --topic {kebab-name} \
+    --topic '{kebab-name}' \
     --scope {team-member|shared} \
     [--user {workspace.user}] \
     --update
@@ -60,7 +62,7 @@ For each **promote** action:
   When promoting *to locked*, write directly to `workspace-context/shared/locked/{bare-name}.md` instead — locked files use bare names (location signals the type) and don't take a prefix. Strip the `braindump_/handoff_/research_` prefix when locking.
 - Set `type: promoted` in the destination frontmatter (the helper writes the standard fields; edit `type` afterward, or have the body's frontmatter override).
 - Remove the `local-only-` original.
-- Commit individually: `git commit -m "promote: {name}"`
+- Commit individually: `git commit -m 'promote: {name}'`
 
 For each **drop** action:
 - Delete the file (auto-memory from `~/.claude/projects/*/memory/`, local-only from workspace)
