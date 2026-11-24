@@ -14,6 +14,7 @@ import { execSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, extname, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scanShellExecFiles } from './shell-exec-scan.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -61,10 +62,11 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // fix rounds) → 360 kB (v0.24: epics, template-modifications registry,
 // leak audit, prChecks/merge approval — with lib/ tests excluded).
 //
-// The CLI's own tests (lib/**/*.test.mjs) are excluded through a "files"
-// negation in package.json and checkForbiddenFiles asserts they stay out.
-// Template tests still ship: template/ installs into every workspace, where
-// those tests run against the installed scripts. Further trimming is gh:189.
+// No test file ships. The CLI's own tests (lib/**/*.test.mjs) are excluded
+// through a "files" negation in package.json, and checkForbiddenFiles asserts
+// they stay out. The template's tests (template/**/*.test.mjs) are excluded by
+// template/.npmignore, so installed workspaces never receive them. Further
+// trimming is gh:189.
 const SIZE_LIMIT_BYTES = 360 * 1024;
 
 function runDryRun() {
@@ -193,53 +195,11 @@ function checkForbiddenFiles(files) {
   return violations;
 }
 
-// Shipped code never builds a command line for a shell (gh:129). execSync
-// and exec run their string through a shell, so any interpolated value — a
-// branch name, session name, path, remote — becomes shell text. Shipped
-// scripts call execFileSync/spawnSync with an argument array instead. The
-// one reviewed exception is npm on Windows, where spawnSync cannot run
-// npm.cmd without a shell: its `shell: true` line carries an
-// `audit:allow-shell` comment naming why the arguments are safe. Scans the
-// non-test .mjs files under template/, lib/ and bin/ that the tarball ships.
+// Shipped code never builds a command line for a shell (gh:129). The rules,
+// and the one reviewed exception (`audit:allow-shell`), live in
+// shell-exec-scan.mjs, which has its own tests.
 function checkShellExec(files) {
-  const violations = [];
-  for (const file of files) {
-    if (!/^(template|lib|bin)\//.test(file.path)) continue;
-    if (!file.path.endsWith('.mjs') || file.path.endsWith('.test.mjs')) continue;
-    let content;
-    try {
-      content = readFileSync(join(REPO_ROOT, file.path), 'utf8');
-    } catch {
-      continue; // Symlink, missing, or unreadable — skip rather than crash.
-    }
-    const flag = (index, message) =>
-      violations.push({ kind: 'shell-exec', details: `${file.path}:${lineNumberAt(content, index)}: ${message}` });
-    const useArgv = 'use execFileSync/spawnSync with an argument array';
-
-    const calls = /\bexecSync\s*\(/g;
-    let match;
-    while ((match = calls.exec(content)) !== null) {
-      flag(match.index, `execSync builds a shell command — ${useArgv}`);
-    }
-
-    const imports = /import\s*\{([^}]*)\}\s*from\s*['"](?:node:)?child_process['"]/g;
-    while ((match = imports.exec(content)) !== null) {
-      const names = match[1].split(',').map((n) => n.trim().split(/\s+as\s+/)[0]);
-      for (const name of ['execSync', 'exec']) {
-        if (names.includes(name)) flag(match.index, `imports ${name}, which runs a shell command — ${useArgv}`);
-      }
-    }
-
-    const shellOn = /shell\s*:\s*true/g;
-    while ((match = shellOn.exec(content)) !== null) {
-      const lineStart = content.lastIndexOf('\n', match.index) + 1;
-      let lineEnd = content.indexOf('\n', match.index);
-      if (lineEnd === -1) lineEnd = content.length;
-      if (content.slice(lineStart, lineEnd).includes('audit:allow-shell')) continue;
-      flag(match.index, `shell: true runs the command through a shell — ${useArgv}, or mark a reviewed exception with // audit:allow-shell`);
-    }
-  }
-  return violations;
+  return scanShellExecFiles(files, REPO_ROOT);
 }
 
 function checkRequiredFiles(files) {
