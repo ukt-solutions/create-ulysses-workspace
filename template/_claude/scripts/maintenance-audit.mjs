@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Scripted workspace audit: the mechanical, read-only checks of /maintenance
-// Audit sections 1–7 in one shot (gh:180), from a workspace root or from the
+// Audit sections 1–8 in one shot (gh:180), from a workspace root or from the
 // upgrade payload.
 //
 // Running those sections as prose made the audit slow, variable between runs,
@@ -49,6 +49,12 @@
 //   6. budget           — always-loaded context within
 //                         workspace.alwaysLoadedBudgetBytes
 //   7. freshness        — template version vs the npm registry
+//   8. team             — the team roster (workspace.team, gh:133): the
+//                         roster itself is consistent, every team-member/
+//                         folder belongs to a member (an alias's folder is
+//                         a split to merge), and this machine's
+//                         workspace.user, git email and forge login agree
+//                         with it. No roster, no checks — one ✓ line says so
 //
 // Severity, and what each means for the exit code:
 //   issue   — broken references, unparseable files, structural violations:
@@ -61,12 +67,16 @@
 // Rather than re-implementing, the checks reuse the shipped helpers:
 // context-footprint.mjs (measure/readBudget/resolveImports) for sections 1
 // and 6, build-workspace-context.mjs (regenerateAll/fingerprint) for section
-// 5, lib/freshness.mjs (refreshIfStale) for section 7. Only git runs as a
-// subprocess, always with an argv array.
+// 5, lib/freshness.mjs (refreshIfStale) for section 7, lib/team-roster.mjs
+// for section 8. Subprocesses run with an argv array: git throughout, and
+// the forge CLI (gh or glab) once, for section 8's login lookup.
 //
-// Section 7 is the one network user, and refreshIfStale also rewrites the
-// local-only-template-freshness.md banner and the version cache — the same
-// writes /maintenance section 7 has always made. --offline skips it.
+// Two checks use the network, and --offline skips both. Section 7 asks the
+// npm registry, and refreshIfStale also rewrites the
+// local-only-template-freshness.md banner and the version cache, the same
+// writes /maintenance section 7 has always made. Section 8 asks the forge
+// who this machine is signed in as, and only when there is a roster and a
+// workspace.user to compare it with.
 //
 // Usage:
 //   node maintenance-audit.mjs [--root <dir>] [--json] [--offline]
@@ -78,7 +88,8 @@
 //                  <workspace>/.workspace-update/.claude/scripts/.
 //   --json         emit { issues: [{section,severity,file,message,
 //                  fromUpdate?}], summary } instead of the human report
-//   --offline      skip section 7 (no network, no banner/cache writes)
+//   --offline      skip section 7 and section 8's forge login lookup (no
+//                  network, no banner/cache writes)
 //   --changed      mark findings whose file is in the list with
 //                  fromUpdate: true ("(from this update)" in text). The value
 //                  is one path, or a file containing a newline-separated path
@@ -104,6 +115,14 @@ import { hashBytes, readBaseline } from './template-baseline.mjs';
 import { readTemplateModifications } from './template-modifications.mjs';
 import { refreshIfStale } from '../lib/freshness.mjs';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
+import {
+  normalizeRoster,
+  identityFindings,
+  folderFindings,
+  listTeamFolders,
+  readGitEmail,
+  readForgeLogin,
+} from '../lib/team-roster.mjs';
 
 function isMainModule(metaUrl) {
   if (!process.argv[1]) return false;
@@ -120,6 +139,7 @@ const SECTIONS = [
   { key: 'auto-files', n: 5, label: 'Context auto-files', ok: 'index.md and canonical.md current' },
   { key: 'budget', n: 6, label: 'Always-loaded budget', ok: '' },
   { key: 'freshness', n: 7, label: 'Template freshness', ok: '' },
+  { key: 'team', n: 8, label: 'Team identity', ok: '' },
 ];
 
 const STALE_DAYS = 7;
@@ -163,6 +183,7 @@ export async function runAudit({
   offline = false,
   fetchFn = fetch,
   nowFn = () => new Date(),
+  forgeLoginFn = (wsCfg) => readForgeLogin(wsCfg),
 } = {}) {
   const absRoot = resolve(root);
   const changedSet = new Set(changed.map((c) => toRootRelative(absRoot, c)));
@@ -937,6 +958,38 @@ export async function runAudit({
     freshness = r.skipped ? { status: 'skipped', reason: r.skipped } : r;
   }
 
+  // ---------- 8. team identity ----------
+
+  // The roster is opt-in: with none, nothing is checked and the report says
+  // so in its one ✓ line. workspace.user is machine-local and gitignored, so
+  // it lives at the launcher. An audit run from a worktree reads it there,
+  // as section 4 does for the launcher's branch. Machine findings are never
+  // marked "(from this update)": an update cannot cause them.
+  const roster = normalizeRoster(ws.team);
+  const teamFolders = listTeamFolders(absRoot, wcDir);
+  const team = { present: roster.present, members: roster.members.length, folders: teamFolders.length };
+  for (const p of roster.problems) add('team', p.severity, 'workspace.json', p.message);
+  if (roster.present) {
+    for (const f of folderFindings(roster, teamFolders)) {
+      add('team', f.severity, `${wcDir}/team-member/${f.folder}/`, f.message);
+    }
+    const identityRoot = gitInfo.launcherRoot ?? absRoot;
+    let localUser = null;
+    try {
+      const s = JSON.parse(readFileSync(join(identityRoot, '.claude', 'settings.local.json'), 'utf8'));
+      if (typeof s?.workspace?.user === 'string' && s.workspace.user) localUser = s.workspace.user;
+    } catch {
+      // No settings.local.json is the setup hint's business, not this section's.
+    }
+    if (localUser) {
+      const forgeLogin = offline ? null : forgeLoginFn(ws);
+      const gitEmail = readGitEmail(identityRoot);
+      for (const f of identityFindings(roster, { user: localUser, forgeLogin, gitEmail })) {
+        add('team', f.severity, '.claude/settings.local.json', f.message, { noFromUpdate: true });
+      }
+    }
+  }
+
   const count = (severity) => findings.filter((f) => f.severity === severity).length;
   return {
     issues: findings,
@@ -951,6 +1004,7 @@ export async function runAudit({
         : null,
       freshness,
       agentWorktrees,
+      team,
       exitCode: count('issue') > 0 ? 1 : 0,
     },
   };
@@ -989,6 +1043,10 @@ export function renderReport({ issues, summary }) {
       const fr = summary.freshness;
       if (fr && fr.status === 'current') lines.push(`   ✓ Template is up to date (v${fr.latest}).`);
       else lines.push(`   - skipped (--offline)`);
+    } else if (sec.key === 'team') {
+      lines.push(summary.team?.present
+        ? `   ✓ ${summary.team.members} member(s); team-member folders and this machine agree with the roster`
+        : '   ✓ no team roster (workspace.team) — optional; identity checks are off');
     } else {
       lines.push(`   ✓ ${sec.ok}`);
     }

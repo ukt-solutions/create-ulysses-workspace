@@ -38,7 +38,7 @@ updateSessionFile("session.md", { status: "paused" });
 '
 ```
 
-If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, post a pause comment on the linked issue via the adapter:
+If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, post a pause comment on the linked issue via the adapter. `currentUser` is the `handle` that `node .claude/scripts/team-roster.mjs --whoami --root .` prints. That is the forge login the team roster records for you, else the forge CLI's live login, else `workspace.user`:
 
 ```javascript
 import { createTracker } from './.claude/scripts/trackers/interface.mjs';

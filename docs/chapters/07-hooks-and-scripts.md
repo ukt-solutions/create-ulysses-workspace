@@ -20,7 +20,7 @@ The workspace ships with eight hooks. The design philosophy is minimal intervent
 
 **Fires:** When a new Claude Code conversation begins.
 
-**Does:** Walks `work-sessions/` for any `session.md` trackers and surfaces active work sessions. If there are active or paused sessions, it injects a summary so Claude can offer to resume them. It also injects a one-line workspace config summary (`Workspace config (workspace.json):` — session model, tracker, forge, repo names), which is why CLAUDE.md no longer imports workspace.json itself. Also surfaces recent handoffs so the conversation starts with awareness of prior work.
+**Does:** Walks `work-sessions/` for any `session.md` trackers and surfaces active work sessions. If there are active or paused sessions, it injects a summary so Claude can offer to resume them. It also injects a one-line workspace config summary (`Workspace config (workspace.json):` — session model, tracker, forge, repo names), which is why CLAUDE.md no longer imports workspace.json itself. When `workspace.json` has a team roster, it adds a `Team identity:` line for each way this machine disagrees with it. That covers a `workspace.user` that is an alias or missing from the roster, and git committing as another member. Each line names its fix, and none needs the network. Also surfaces recent handoffs so the conversation starts with awareness of prior work.
 
 This is how `/start-work` knows about existing sessions — the hook has already told Claude what is available before you type anything.
 
@@ -109,6 +109,21 @@ node .claude/scripts/add-repo-to-session.mjs \
   --session-name "fix-auth" \
   --repo "my-api"
 ```
+
+### team-roster.mjs
+
+Reads and maintains the team roster in `workspace.json` → `workspace.team`. The roster is keyed by `team-member/` folder name, and each entry may carry a display `name`, a `forge` login (or a list of them), `gitEmails` and `aliases`. All fields are optional, and a workspace without a roster has every identity check off. The script also manages the machine-local `workspace.user` that points into the roster. `/workspace-init`, `/maintenance`, `/pause-work` and `/complete-work` call it; you run it yourself mainly to add your entry.
+
+```bash
+node .claude/scripts/team-roster.mjs --suggest                      # default name for this machine
+node .claude/scripts/team-roster.mjs --whoami                       # who this machine is, and its @handle
+node .claude/scripts/team-roster.mjs --check                        # roster, folders and this machine
+node .claude/scripts/team-roster.mjs --add alice --name "Alice" --detect   # record this machine's login and email
+node .claude/scripts/team-roster.mjs --set-user alice               # point this machine at a member
+node .claude/scripts/team-roster.mjs --merge-alias alicew [--apply] # merge an alias's folder into its owner's
+```
+
+`--add` edits `workspace.json` (a tracked change) and refuses a result that would give one login or email to two people. `--merge-alias` is a dry run until `--apply`. It moves tracked files with `git mv`, so history follows them, and stops before moving anything if a path exists in both folders.
 
 ## How Hooks and Scripts Work Together
 

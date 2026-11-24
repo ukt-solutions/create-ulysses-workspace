@@ -132,7 +132,8 @@ Before your team clones the workspace, make sure:
 1. **workspace.json has all repos** with correct remotes and default branches.
 2. **Locked context has team truths** — at minimum, project status and key architectural decisions.
 3. **Optional rules are activated** for your team's needs.
-4. **Push the workspace** to the remote so your team can clone it.
+4. **The team roster has you in it** (`workspace.json` → `workspace.team`). `/workspace-init` offers to start it. Add teammates now if you already made a `team-member/` folder for one, say by extracting their context: `node .claude/scripts/team-roster.mjs --add <folder> --name "Their Name" --forge <login> --email <email> --root .`. The folder name is the key, so their machine joins as that name instead of making a second folder.
+5. **Push the workspace** to the remote so your team can clone it.
 
 ```bash
 git add -A
@@ -144,7 +145,9 @@ git push -u origin main
 
 Send your team the workspace repo URL and point them to the [New Team Member Guide](new-team-member.md). They will clone, run `/workspace-init`, and start working.
 
-Each person gets their own user-scoped directory (`shared-context/{their-name}/`). Their work sessions are independent — no coordination needed for parallel work.
+Each person gets their own user-scoped directory (`workspace-context/team-member/{their-name}/`), and adds themselves to the roster in their first change. Their work sessions are independent — no coordination needed for parallel work.
+
+When one person ends up with two folders anyway, list the second name in their entry's `aliases`. `/maintenance` then reports the split and merges the folders with `git mv`, so the history stays with the files: `node .claude/scripts/team-roster.mjs --merge-alias <alias> --apply --root .`. A teammate whose machine still uses the alias gets a session-start warning carrying the one command that switches it: `--set-user <name>`.
 
 When it is time to release, `/release` combines everyone's branch notes into a unified version document.
 

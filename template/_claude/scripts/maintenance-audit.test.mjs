@@ -554,7 +554,7 @@ console.log('# maintenance-audit');
     writeFileSync(join(nestedScripts, f), readFileSync(join(here, f), 'utf8'));
   }
   mkdirSync(join(payloadClaude, 'lib'), { recursive: true });
-  for (const f of ['freshness.mjs', 'registry-check.mjs', 'require-node.mjs', 'session-frontmatter.mjs']) {
+  for (const f of ['freshness.mjs', 'registry-check.mjs', 'require-node.mjs', 'session-frontmatter.mjs', 'team-roster.mjs']) {
     writeFileSync(join(payloadClaude, 'lib', f), readFileSync(join(here, '..', 'lib', f), 'utf8'));
   }
   const r = spawnSync(
@@ -1237,6 +1237,97 @@ console.log('# maintenance-audit');
     w.reasons.some((r) => r.includes('prunable') || r.includes('integrity')),
     'the reason names the integrity gate',
   );
+  cleanup(root);
+}
+
+// Section 8 — team identity (gh:133). The fixture is the split that
+// motivated it: andre's context in andre/, more of it in mccar/ (his OS
+// username), and a machine still set to mccar.
+const TEAM = {
+  myron: { forge: 'myron-gh', gitEmails: ['fixture@example.com'] },
+  andre: { forge: 'andre-gh', gitEmails: ['andre@example.com'], aliases: ['mccar'] },
+};
+
+function teamWorkspace(team = TEAM) {
+  const root = makeWorkspace({}, (r) => {
+    const cfg = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    cfg.workspace.team = team;
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(cfg, null, 2) + '\n');
+    for (const who of ['andre', 'mccar', 'stray']) {
+      mkdirSync(join(r, 'workspace-context', 'team-member', who), { recursive: true });
+      writeFileSync(join(r, 'workspace-context', 'team-member', who, 'note.md'), '---\ndescription: n\n---\nx\n');
+    }
+    writeCatalogs(r); // the per-user indexes, so section 5 stays clean
+  });
+  // Machine-local, never committed — written after the fixture's commit.
+  writeFileSync(join(root, '.claude', 'settings.local.json'), JSON.stringify({ workspace: { user: 'mccar' } }));
+  return root;
+}
+
+// 8a. no roster → no findings, one ✓ line that says the checks are off
+{
+  const root = makeWorkspace();
+  const result = await audit(root);
+  assertEq(bySection(result, 'team'), [], 'no roster → no team findings');
+  assertEq(result.summary.team.present, false, 'summary records the roster as absent');
+  assertTrue(renderReport(result).includes('8. Team identity\n   ✓ no team roster'), 'report says the checks are off');
+  cleanup(root);
+}
+
+// 8b. the split: alias folder, orphan folder, alias user, someone else's email
+{
+  const root = teamWorkspace();
+  let asked = 0;
+  const result = await audit(root, {
+    offline: false,
+    fetchFn: CURRENT,
+    forgeLoginFn: () => { asked++; return 'andre-gh'; },
+  });
+  const team = bySection(result, 'team');
+  const files = team.map((f) => `${f.severity} ${f.file}`).sort();
+  assertEq(files, [
+    'warning .claude/settings.local.json',
+    'warning .claude/settings.local.json',
+    'warning workspace-context/team-member/mccar/',
+    'warning workspace-context/team-member/stray/',
+  ], 'alias folder, orphan folder, alias user and email mismatch reported');
+  assertTrue(team.some((f) => f.message.includes('--merge-alias mccar')), 'alias folder names the merge command');
+  assertTrue(team.some((f) => f.message.includes('--set-user andre')), 'alias user names the switch command');
+  assertTrue(team.some((f) => f.message.includes('fixture@example.com') && f.message.includes('myron')),
+    'email mismatch names the owner');
+  assertTrue(!team.some((f) => f.message.includes('andre-gh')), 'the forge login matches the alias owner — no mismatch');
+  assertEq(asked, 1, 'the forge is asked once');
+  assertEq(result.summary.exitCode, 0, 'team warnings do not fail the audit');
+  cleanup(root);
+}
+
+// 8c. --offline never asks the forge
+{
+  const root = teamWorkspace();
+  let asked = 0;
+  await audit(root, { forgeLoginFn: () => { asked++; return 'x'; } });
+  assertEq(asked, 0, '--offline skips the forge login lookup');
+  cleanup(root);
+}
+
+// 8d. a roster that contradicts itself is an issue
+{
+  const root = teamWorkspace({ a: { forge: 'same' }, b: { forge: 'SAME' } });
+  const result = await audit(root);
+  assertTrue(bySection(result, 'team').some((f) => f.severity === 'issue' && f.file === 'workspace.json'),
+    'a login given to two members is an issue on workspace.json');
+  assertEq(result.summary.exitCode, 1, 'and fails the audit');
+  cleanup(root);
+}
+
+// 8e. from a task worktree, workspace.user is read at the launcher
+{
+  const root = teamWorkspace();
+  const wtPath = join(root, '.claude', 'worktrees', 'feature-x');
+  git(root, ['worktree', 'add', '-q', '-b', 'feature/x', wtPath]);
+  const result = await audit(wtPath);
+  assertTrue(bySection(result, 'team').some((f) => f.message.includes('--set-user andre')),
+    'the launcher’s settings.local.json is checked from a worktree');
   cleanup(root);
 }
 

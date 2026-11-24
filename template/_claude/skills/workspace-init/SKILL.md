@@ -40,10 +40,15 @@ If all are present, report "Workspace already initialized and this machine is se
 A join sets up one person on one machine. It never touches tracked files, creates no branch and makes no commits — everything it writes is gitignored (`repos/`, `.claude/settings.local.json`, `CLAUDE.local.md`, the generated per-user index). It skips the template install, rule activation, knowledge extraction, tracker setup, root cleanup and remote setup: the teammate who initialized the workspace already did those, and their results arrived with the clone.
 
 1. **Report what is missing** — one line per piece from the join check, and say this run is a join, not an init.
-2. **User identity.** If `workspace.user` is unset, ask "What name should be used for your user-scoped context? [{system-username}]". List the existing `workspace-context/team-member/*/` folders so a returning person can pick theirs; a name with no folder is a new team member. The name must match `^[A-Za-z0-9_-]+$`. Write it to `.claude/settings.local.json`, merging into any existing content rather than replacing it:
+2. **User identity.** If `workspace.user` is unset, get the default from the team roster (`workspace.team`, gh:133):
+   ```bash
+   node .claude/scripts/team-roster.mjs --suggest --root .
+   ```
+   It prints a `suggestion` and its `source`. That is the roster member whose forge login or git email matches this machine. Failing that, it is the OS username, mapped to its owner when the roster lists it as an alias. Ask "What name should be used for your user-scoped context? [{suggestion}]". List the roster's `members`, with their names, and the existing `folders`, so a returning person picks the one that is theirs. If the answer is an alias, use its owner, and say so: an alias is exactly the second folder this check exists to prevent. The name must match `^[A-Za-z0-9_-]+$`. Write it to `.claude/settings.local.json`, merging into any existing content rather than replacing it:
    ```json
    { "workspace": { "user": "{name}" } }
    ```
+   If the workspace has a roster (`roster: true`) and the name is not one of its members, this is a new team member. A join writes no tracked file, so it doesn't add them itself. Tell them to add themselves in their first change, with `node .claude/scripts/team-roster.mjs --add {name} --detect --root .` (pass `--name "{display name}"` too). The session-start hook reminds them until they do.
 3. **Clone missing repos.** For each repo in `workspace.json` without `repos/{name}`: ask "Clone {name} from {remote}? [Y/n]", then `git clone {remote} repos/{name}`. If the entry names a `branch`, check that the clone is on it. A clone that fails (no access, wrong URL) is reported and skipped, never retried in a loop.
 4. **Per-user folder.** If `workspace-context/team-member/{user}/` does not exist, create it. The generator in the next step builds an index only for folders that exist, so without it `CLAUDE.local.md` would import a missing file.
 5. **CLAUDE.local.md.** Run:
@@ -56,6 +61,7 @@ A join sets up one person on one machine. It never touches tracked files, create
    "Joined {workspace-name} as {user}.
    - Repos cloned: {list} (already present: {list}; failed: {list})
    - User identity: {set now | already set}
+   - Team roster: {listed | not listed yet — add yourself in your first change | no roster}
    - CLAUDE.local.md: {written | unchanged}
    - Work lifecycle: {workspace.sessionModel}
 
@@ -334,9 +340,9 @@ MCP (Model Context Protocol) servers extend what Claude can do inside the worksp
 
 **This step is guidance only.** The right LSP server depends on your language; the right internal-tool server depends on what your team builds. Configure `.mcp.json` after init when you know what you need — there is no pressure to choose now. The Playwright entry already present in `.mcp.json` satisfies the template's audit assertion; additional servers are additive.
 
-### Step 13: Configure user identity
+### Step 13: Configure user identity and start the team roster
 
-Ask: "What name should be used for your user-scoped context? [{system-username}]"
+Run `node .claude/scripts/team-roster.mjs --suggest --root .` for the default. On a fresh workspace this is usually the OS username. If `workspace.json` arrived with a roster, it is whichever member's forge login or git email matches this machine. Ask: "What name should be used for your user-scoped context? [{suggestion}]".
 Save to `.claude/settings.local.json`:
 ```json
 {
@@ -345,6 +351,14 @@ Save to `.claude/settings.local.json`:
   }
 }
 ```
+
+Then make the person initializing the first entry in the team roster (`workspace.json` → `workspace.team`). The roster is how later sessions tell that a teammate's name, forge login and git email belong to the same person, and notice when they drift apart. Ask "Start the team roster with you as its first member? [Y/n]". On yes:
+```bash
+node .claude/scripts/team-roster.mjs --add {name} --name "{git config user.name}" --detect --root .
+```
+`--detect` records this machine's forge login and git email. Leave out `--name` when git has no `user.name`. Each teammate adds their own entry in their first change after joining. On no, skip the roster: every roster check stays off until a team adds one.
+
+**Commit (if the roster was started):** `git commit -m "feat: start the team roster" -- workspace.json`
 
 ### Step 14: Clean root directory
 

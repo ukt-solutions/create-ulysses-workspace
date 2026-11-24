@@ -309,7 +309,7 @@ cd "repos/{repo}" && git merge --ff-only "{branch}"
 
 ### Step 10: Close the linked issue on the tracker
 
-If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, close the linked issue via the adapter after all PRs have merged:
+If the session tracker has a `workItem:` field AND `workspace.tracker` is configured, close the linked issue via the adapter after all PRs have merged. `currentUser` is the `handle` that `node .claude/scripts/team-roster.mjs --whoami --root .` prints. That is the forge login the team roster records for you, else the forge CLI's live login, else `workspace.user`:
 
 ```javascript
 import { createTracker } from './.claude/scripts/trackers/interface.mjs';
