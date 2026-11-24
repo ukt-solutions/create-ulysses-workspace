@@ -140,6 +140,12 @@ const roster = normalizeRoster(TEAM);
   assertEq(quoteArg('sam@example.com'), 'sam@example.com', 'a plain email is left bare, so cmd.exe reads it too');
   assertEq(quoteArg('sam-example_2'), 'sam-example_2', 'a plain login is left bare');
   assertEq(quoteArg(''), `''`, 'an empty value is still one argument');
+  assertEq(quoteArg('=foo'), `'=foo'`, 'a leading = is quoted (zsh expands =word)');
+  assertEq(quoteArg('@foo'), `'@foo'`, 'a leading @ is quoted (PowerShell splatting)');
+  assertEq(quoteArg('-x'), `'-x'`, 'a leading - is quoted');
+  assertEq(quoteArg('a,b@example.com'), `'a,b@example.com'`, 'a comma is quoted (PowerShell array)');
+  assertEq(quoteArg('a%USER%@example.com'), `'a%USER%@example.com'`, 'a % is quoted');
+  assertEq(quoteArg('sam+ci@example.com'), 'sam+ci@example.com', 'a plus-addressed email stays bare');
   assertEq(quoteArg('Sam Example <sam@example.com>; rm -rf x'), `'Sam Example <sam@example.com>; rm -rf x'`,
     'spaces and metacharacters stay inside the quotes, unexpanded');
   assertEq(quoteArg("it's"), `'it'"'"'s'`, "an embedded ' reads the same to sh and to PowerShell");

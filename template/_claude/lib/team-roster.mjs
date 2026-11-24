@@ -213,19 +213,24 @@ const FIX_LINE = '    ';
 
 /**
  * Quote a value for a command line a person will copy out of a finding.
- * A value made only of characters no shell treats specially (letters,
- * digits and @ % + = : , . / _ -) is left bare: that covers real emails,
+ * A value made only of characters no shell treats specially is left bare:
+ * letters, digits and @ + = : . / _ -, starting with a letter, digit, `.`,
+ * `/` or `_` (zsh expands a leading `=`, PowerShell reads a leading `@` as
+ * splatting, and a leading `-` looks like a flag). That covers real emails,
  * logins and member keys, and a bare word reads the same in sh, PowerShell
- * and cmd.exe, where single quotes would be kept as part of the value.
+ * and cmd.exe, where single quotes would be kept as part of the value. `,`
+ * and `%` are left out on purpose: PowerShell splits on `,` and cmd.exe
+ * expands `%VAR%`.
+ *
  * Anything else is single-quoted, which keeps spaces, `<`, `$` and `;`
  * literal in POSIX shells and in PowerShell alike. The one character they
  * disagree on is `'` itself, which sh writes `'\''` and PowerShell writes
  * `''`. Closing the string, giving the quote in double quotes and reopening
- * (`'"'"'`) reads the same in both: a double-quoted `'` has nothing to
- * expand, and in either shell a quote opened inside an argument continues
- * that argument.
+ * (`'"'"'`) is verified in bash, dash, zsh and fish, and is believed to read
+ * the same in PowerShell, where adjacent quoted segments in argument mode
+ * join into one argument — not yet checked on a Windows machine.
  */
-const SHELL_SAFE = /^[A-Za-z0-9@%+=:,./_-]+$/;
+const SHELL_SAFE = /^[A-Za-z0-9_./][A-Za-z0-9@+=:./_-]*$/;
 
 export function quoteArg(value) {
   const text = String(value);
