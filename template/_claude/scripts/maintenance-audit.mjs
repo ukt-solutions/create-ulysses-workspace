@@ -296,6 +296,9 @@ export async function runAudit({
 
   // ---------- 3. structure ----------
 
+  // Names that hold no content when found in a directory the audit judges empty.
+  const HOUSEKEEPING_FILES = new Set(['.gitkeep', '.keep', '.DS_Store', 'Thumbs.db']);
+
   if (!existsSync(wsJsonPath)) add('structure', 'issue', 'workspace.json', 'workspace.json is missing');
   if (!existsSync(join(absRoot, 'CLAUDE.md'))) {
     add('structure', 'issue', 'CLAUDE.md', 'CLAUDE.md is missing — cross-reference checks skipped');
@@ -326,7 +329,9 @@ export async function runAudit({
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         // Dirents do not follow links, so a symlinked subdirectory cannot loop.
         if (entry.isDirectory()) walk(join(dir, entry.name), `${prefix}${entry.name}/`);
-        else files.push(`${prefix}${entry.name}`);
+        // Housekeeping files hold no content, so a directory of only these
+        // still reads as empty and safe to delete.
+        else if (!HOUSEKEEPING_FILES.has(entry.name)) files.push(`${prefix}${entry.name}`);
       }
     };
     let present = false;
@@ -336,10 +341,12 @@ export async function runAudit({
         present = true;
       }
     } catch { /* absent or unreadable — nothing to judge */ }
-    const claudeMd = join(absRoot, 'CLAUDE.md');
-    const imported = present && existsSync(claudeMd)
-      && resolveImports(claudeMd, new Set([claudeMd]), [])
-        .some((p) => p === staleLocked || p.startsWith(staleLocked + sep));
+    // CLAUDE.local.md counts too: a file one user imports does load for them.
+    const imported = present && ['CLAUDE.md', 'CLAUDE.local.md']
+      .map((name) => join(absRoot, name))
+      .filter((file) => existsSync(file))
+      .some((file) => resolveImports(file, new Set([file]), [])
+        .some((p) => p === staleLocked || p.startsWith(staleLocked + sep)));
     if (present && !imported) {
       files.sort();
       const shown = files.slice(0, 5).join(', ') + (files.length > 5 ? ', …' : '');

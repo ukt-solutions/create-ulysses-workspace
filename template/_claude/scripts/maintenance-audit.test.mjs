@@ -292,6 +292,30 @@ console.log('# maintenance-audit');
   cleanup(root);
 }
 {
+  // only housekeeping files — still empty in every sense that matters
+  const root = makeWorkspace({}, (r) => {
+    mkdirSync(join(r, 'workspace-context', 'locked'), { recursive: true });
+    writeFileSync(join(r, 'workspace-context', 'locked', '.gitkeep'), '');
+    writeFileSync(join(r, 'workspace-context', 'locked', '.DS_Store'), '');
+  });
+  const result = await audit(root);
+  const stale = bySection(result, 'structure').filter((f) => f.file === 'workspace-context/locked');
+  assertTrue(stale[0]?.message.includes('is empty'), 'a locked/ of only .gitkeep and .DS_Store reads as empty');
+  cleanup(root);
+}
+{
+  // a file CLAUDE.local.md imports does load, for that user
+  const root = makeWorkspace({}, (r) => {
+    mkdirSync(join(r, 'workspace-context', 'locked'), { recursive: true });
+    writeFileSync(join(r, 'workspace-context', 'locked', 'mine.md'), '---\ndescription: Mine.\n---\nLoaded locally.\n');
+    writeFileSync(join(r, 'CLAUDE.local.md'), '@workspace-context/locked/mine.md\n');
+  });
+  const result = await audit(root);
+  const stale = bySection(result, 'structure').filter((f) => f.file === 'workspace-context/locked');
+  assertEq(stale.length, 0, 'a locked/ file imported from CLAUDE.local.md is not called never-loaded');
+  cleanup(root);
+}
+{
   // holding files — one at the top, one a directory down: both are found
   const root = makeWorkspace({}, (r) => {
     mkdirSync(join(r, 'workspace-context', 'locked', 'archive'), { recursive: true });
