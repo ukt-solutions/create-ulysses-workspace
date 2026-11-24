@@ -29,11 +29,11 @@ if (!sessionName || !repo) {
   process.exit(1);
 }
 
-// SECURITY (gh:129): the session name comes from chat, the tracker's branch
-// from the committed session.md, and the repo's branch from the committed
-// workspace.json. Every git call below is an argv array through
-// execFileSync — never shell text — and these values are checked before
-// anything is created.
+// SECURITY (gh:129): the session name and repo name come from chat, the
+// tracker's branch from the committed session.md, and the repo's branch from
+// the committed workspace.json. Every git call below is an argv array
+// through execFileSync — never shell text — and these values are checked
+// before anything is created.
 
 // A session name becomes a path segment under work-sessions/: one segment,
 // no separators or absolute paths, no leading dot (the same rule as
@@ -43,6 +43,15 @@ function isSessionSegment(name) {
   const segs = name.split(/[\\/]/);
   if (segs.length !== 1) return false;
   return !segs[0].startsWith('.');
+}
+
+// A project repo name: one path segment under repos/, not dots. It must
+// also be one of workspace.json's own repos keys — a committed key such as
+// `../../x` would otherwise point git at a repo outside the workspace.
+function isRepoSegment(name) {
+  if (typeof name !== 'string' || name === '' || isAbsolute(name)) return false;
+  const segs = name.split(/[\\/]/);
+  return segs.length === 1 && !/^\.+$/.test(segs[0]);
 }
 
 // git's own format check is the authority on branch names. `--branch`
@@ -62,6 +71,9 @@ function fail(error) {
 if (!isSessionSegment(sessionName)) {
   fail(`Invalid session name "${sessionName}": it must be a single path segment that does not start with a dot`);
 }
+if (!isRepoSegment(repo)) {
+  fail(`Invalid repo "${repo}": it must be a single path segment`);
+}
 
 // Promote to the launcher root via the active-session pointer so session
 // paths resolve correctly whether the script is invoked from the launcher
@@ -75,7 +87,7 @@ if (!tracker) {
   process.exit(1);
 }
 
-if (!config?.repos?.[repo]) {
+if (!Object.hasOwn(config?.repos ?? {}, repo)) {
   console.log(JSON.stringify({ success: false, error: `Repo "${repo}" not found in workspace.json` }));
   process.exit(1);
 }

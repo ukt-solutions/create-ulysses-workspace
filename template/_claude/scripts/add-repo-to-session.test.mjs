@@ -197,6 +197,45 @@ withFixture((fx) => {
   assertApiUntouched(fx, 'tampered repo branch');
 });
 
+// === Repo name must be a single path segment ===
+withFixture((fx) => {
+  // A committed repos key that climbs out of repos/, with a real repo (and
+  // origin) sitting where it points: without the segment check the script
+  // would branch and add a worktree inside that repo.
+  const outside = join(fx.base, 'x');
+  const origin = join(fx.base, 'origins', 'x.git');
+  mkdirSync(outside);
+  mkdirSync(origin, { recursive: true });
+  fx.git(origin, 'init', '-q', '--bare', '-b', 'main');
+  fx.git(outside, 'init', '-q', '-b', 'main');
+  writeFileSync(join(outside, 'README.md'), '# x\n');
+  fx.git(outside, 'add', '-A');
+  fx.git(outside, 'commit', '-q', '-m', 'init');
+  fx.git(outside, 'remote', 'add', 'origin', origin);
+  fx.git(outside, 'push', '-q', 'origin', 'main');
+  writeWorkspaceJson(fx.ws, { app: 'main', api: 'main', '../../x': 'main' });
+
+  const r = addRepo(fx, 'demo', '../../x');
+  assert(r.status !== 0, 'escaping repo key exits non-zero');
+  assertEq(r.json?.success, false, 'escaping repo key reports success:false');
+  assert(/invalid repo/i.test(r.json?.error || ''), `escaping repo key is rejected for its name (error: ${r.json?.error})`);
+  assertEq(branches(fx, outside), ['main'], 'the repo outside the workspace was not touched');
+  assert(!existsSync(join(fx.ws, 'work-sessions', 'demo', 'x')), 'no worktree created where the key pointed');
+  assertApiUntouched(fx, 'escaping repo key');
+});
+
+// === Repo must be an own key of workspace.json repos ===
+for (const repo of ['__proto__', 'constructor', 'toString']) {
+  withFixture((fx) => {
+    const r = addRepo(fx, 'demo', repo);
+    assert(r.status !== 0, `--repo ${repo} exits non-zero`);
+    assertEq(r.json?.success, false, `--repo ${repo} reports success:false`);
+    assert(/not found in workspace\.json/.test(r.json?.error || ''),
+      `--repo ${repo} is reported as not in workspace.json (error: ${r.json?.error})`);
+    assertApiUntouched(fx, `--repo ${repo}`);
+  });
+}
+
 // === Session name must be a single path segment ===
 withFixture((fx) => {
   // A real tracker reachable only through a traversal: without the segment
