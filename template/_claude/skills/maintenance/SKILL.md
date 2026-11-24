@@ -80,9 +80,12 @@ Within budget → an OK line (`✓ Always-loaded context: 43 KB / 64 KB`). Over 
 ### 7. Template freshness
 The script invokes `refreshIfStale` with a 24h TTL regardless of `workspace.versionCheck.ambient` — the user explicitly ran `/maintenance` — and reports:
 - `outdated` → warning: `Template v{current} → v{latest} available. Run npx @ulysses-ai/create-workspace@{latest} --upgrade.`
+- `current` with a `prerelease` → info, in place of the ✓ line: `Template v{current} is up to date; release candidate v{prerelease} is available. Run npx @ulysses-ai/create-workspace@{prerelease} --upgrade.` — "release candidate" for an `rc` build, "pre-release" for a `beta` one.
 - `current` → ✓ Template is up to date (v{latest})
 - `unknown` → warning: could not reach the npm registry
 - `skipped: 'uninitialized'` → info: workspace not initialized, freshness check unavailable
+
+The comparison follows the workspace's channel: a stable release against `latest`, a pre-release against the higher of `latest` and its channel's dist-tag. A `prerelease` is a pre-release the workspace does not compare against — `rc` for a workspace on the newest beta, the higher of `beta` and `rc` for one on a stable release — so it is offered, never urged. It does not make the workspace outdated, the audit is the only place that reports it, and the session-start banner stays silent about it.
 
 An `outdated` result also rewrites the `local-only-template-freshness.md` banner and the version cache, as this check always has.
 

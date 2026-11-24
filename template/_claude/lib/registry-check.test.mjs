@@ -82,6 +82,84 @@ console.log('\n# pickComparisonVersion');
   assertEq(picked, { version: '0.14.0', channel: 'stable', prerelease: null }, 'stable install picks latest');
 }
 
+console.log('\n# pickComparisonVersion — the rc tag');
+
+// Beta install on the newest beta while `rc` has moved on to 1.0: still
+// compared against the beta tag, with the release candidate offered
+{
+  const picked = pickComparisonVersion('0.26.0-beta.0', { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' });
+  assertEq(picked, { version: '0.26.0-beta.0', channel: 'beta', prerelease: '1.0.0-rc.0' }, 'beta install is offered the rc it does not compare against');
+}
+
+// Beta install behind the beta tag: outdated against beta, never against the rc
+{
+  const picked = pickComparisonVersion('0.25.0-beta.0', { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' });
+  assertEq(picked, { version: '0.26.0-beta.0', channel: 'beta', prerelease: '1.0.0-rc.0' }, 'the rc does not stand in for the beta tag the install is behind');
+}
+
+// Beta install, stale `rc` tag (below beta): nothing to offer
+{
+  const picked = pickComparisonVersion('0.26.0-beta.0', { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '0.25.0-rc.0' });
+  assertEq(picked, { version: '0.26.0-beta.0', channel: 'beta', prerelease: null }, 'an rc below the beta tag is not offered');
+}
+
+// Beta install, `latest` has passed the rc (1.0.0 is out): the stable release
+// is the upgrade, the rc it superseded is not offered
+{
+  const picked = pickComparisonVersion('0.26.0-beta.0', { latest: '1.0.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' });
+  assertEq(picked, { version: '1.0.0', channel: 'beta', prerelease: null }, 'an rc below latest is not offered');
+}
+
+// Beta install without a `latest` tag: the rc only has the beta tag to outrun
+{
+  const picked = pickComparisonVersion('0.26.0-beta.0', { beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' });
+  assertEq(picked, { version: '0.26.0-beta.0', channel: 'beta', prerelease: '1.0.0-rc.0' }, 'rc is offered against the tags present');
+}
+
+// Stable install, rc outruns both latest and beta: the higher pre-release wins
+{
+  const picked = pickComparisonVersion('1.0.0', { latest: '1.0.0', beta: '1.0.1-beta.0', rc: '1.1.0-rc.0' });
+  assertEq(picked, { version: '1.0.0', channel: 'stable', prerelease: '1.1.0-rc.0' }, 'stable install is offered the higher of beta and rc');
+}
+
+// Stable install, beta outruns a stale rc: beta, as before the rc tag existed
+{
+  const picked = pickComparisonVersion('1.0.0', { latest: '1.0.0', beta: '1.1.0-beta.0', rc: '1.0.0-rc.0' });
+  assertEq(picked, { version: '1.0.0', channel: 'stable', prerelease: '1.1.0-beta.0' }, 'a stale rc does not displace the beta a stable install is offered');
+}
+
+// rc install: compared against latest and rc, and offered nothing
+{
+  const picked = pickComparisonVersion('1.0.0-rc.0', { latest: '0.26.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.1' });
+  assertEq(picked, { version: '1.0.0-rc.1', channel: 'rc', prerelease: null }, 'rc install compares against the rc tag');
+}
+{
+  const picked = pickComparisonVersion('1.0.0-rc.0', { latest: '1.0.0', beta: '1.1.0-beta.0', rc: '1.0.0-rc.0' });
+  assertEq(picked, { version: '1.0.0', channel: 'rc', prerelease: null }, 'rc install picks a higher latest, still offered nothing');
+}
+
+// Another pre-release channel compares against its own tag, offered nothing
+{
+  const picked = pickComparisonVersion('0.9.0-canary.1', { latest: '0.26.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' });
+  assertEq(picked, { version: '0.26.0-beta.0', channel: 'canary', prerelease: null }, 'a channel with no tag of its own is offered nothing');
+}
+{
+  // The channel is whatever the version says, so it can name a property
+  // every object has; the lookup must not find one.
+  const picked = pickComparisonVersion('0.9.0-constructor.1', { latest: '0.26.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' });
+  assertEq(picked, { version: '0.26.0-beta.0', channel: 'constructor', prerelease: null }, 'a channel named after an object property is offered nothing');
+}
+
+// No `rc` tag: every install behaves as it did before the tag existed
+assertEq(pickComparisonVersion('0.26.0-beta.0', { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0' }),
+  { version: '0.26.0-beta.0', channel: 'beta', prerelease: null }, 'beta install without an rc tag');
+assertEq(pickComparisonVersion('1.0.0', { latest: '1.0.0', beta: '1.0.1-beta.0' }),
+  { version: '1.0.0', channel: 'stable', prerelease: '1.0.1-beta.0' }, 'stable install without an rc tag');
+
+// A stable install with no `latest` has nothing to compare a pre-release against
+assertEq(pickComparisonVersion('1.0.0', { beta: '1.0.1-beta.0', rc: '1.1.0-rc.0' }),
+  { version: null, channel: 'stable', prerelease: null }, 'no latest tag leaves nothing to offer');
+
 // No usable tags at all
 assertEq(pickComparisonVersion('0.19.0', {}), { version: null, channel: 'stable', prerelease: null }, 'empty tags yield null version');
 assertEq(pickComparisonVersion('0.19.0', null), { version: null, channel: 'stable', prerelease: null }, 'null tags yield null version');
@@ -153,6 +231,22 @@ function fakeFetch(body) {
     prerelease: null,
     error: null,
   }, 'stable success returns latest');
+}
+
+// Beta install on the newest beta, a release candidate is out: compared against
+// beta, the rc offered
+{
+  const result = await getLatestVersion({
+    current: '0.26.0-beta.0',
+    fetchFn: fakeFetch({ latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }),
+  });
+  assertEq(result, {
+    version: '0.26.0-beta.0',
+    channel: 'beta',
+    tags: { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' },
+    prerelease: '1.0.0-rc.0',
+    error: null,
+  }, 'beta install is offered the rc tag');
 }
 
 // Non-2xx response

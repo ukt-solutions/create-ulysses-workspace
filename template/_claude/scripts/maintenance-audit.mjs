@@ -48,7 +48,10 @@
 //                         semantics as build-workspace-context.mjs --check)
 //   6. budget           — always-loaded context within
 //                         workspace.alwaysLoadedBudgetBytes
-//   7. freshness        — template version vs the npm registry
+//   7. freshness        — template version vs the npm registry: an outdated
+//                         template is a warning; a pre-release the install
+//                         does not compare against (a release candidate,
+//                         for a workspace on the newest beta) is info
 //   8. team             — the team roster (workspace.team, gh:133): the
 //                         roster itself is consistent, every team-member/
 //                         folder belongs to a member (an alias's folder is
@@ -62,7 +65,7 @@
 //   warning — state drift a human should look at (uncommitted changes,
 //             stale context, over budget) that breaks nothing.
 //   info    — expected or ambient conditions (machine-local files absent,
-//             optional stubs, untracked paths).
+//             optional stubs, untracked paths, a pre-release on offer).
 //
 // Rather than re-implementing, the checks reuse the shipped helpers:
 // context-footprint.mjs (measure/readBudget/resolveImports) for sections 1
@@ -114,6 +117,7 @@ import {
 import { hashBytes, readBaseline } from './template-baseline.mjs';
 import { readTemplateModifications } from './template-modifications.mjs';
 import { refreshIfStale } from '../lib/freshness.mjs';
+import { channelOf } from '../lib/registry-check.mjs';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
 import {
   normalizeRoster,
@@ -144,6 +148,9 @@ const SECTIONS = [
 
 const STALE_DAYS = 7;
 const KB = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
+// What section 7 calls a pre-release it offers: the `rc` tag is a release
+// candidate, any other pre-release goes by the generic name.
+const prereleaseNoun = (version) => (channelOf(version) === 'rc' ? 'release candidate' : 'pre-release');
 
 function toPosix(p) {
   return p.split(sep).join('/');
@@ -954,6 +961,14 @@ export async function runAudit({
       add('freshness', 'warning', 'workspace.json', 'could not reach the npm registry — template freshness unknown');
     } else if (r.skipped === 'uninitialized') {
       add('freshness', 'info', 'workspace.json', 'workspace not initialized — freshness check unavailable');
+    } else if (r.prerelease) {
+      // Offered as info, and only here: the banner tells an outdated
+      // workspace to upgrade, and this one is current. No update causes a
+      // pre-release, so it is never "(from this update)". The line says the
+      // template is current because a finding replaces the ✓ line.
+      add('freshness', 'info', 'workspace.json',
+        `template v${r.current} is up to date; ${prereleaseNoun(r.prerelease)} v${r.prerelease} is available — run npx @ulysses-ai/create-workspace@${r.prerelease} --upgrade`,
+        { noFromUpdate: true });
     }
     freshness = r.skipped ? { status: 'skipped', reason: r.skipped } : r;
   }
