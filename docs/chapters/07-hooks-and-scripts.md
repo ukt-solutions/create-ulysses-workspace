@@ -12,29 +12,64 @@ A hook is a Node.js script in `.claude/hooks/` that runs automatically when Clau
 
 Hooks communicate with Claude through a simple mechanism: they can return an `additionalContext` string that gets injected into Claude's context for the current turn. This is how hooks influence behavior without requiring user action. A hook can say "you have an active work session" or "you are about to write to a repo outside your session" and Claude will see that information and act on it.
 
-The workspace ships with eight hooks. The design philosophy is minimal intervention — two surgical hooks, not a framework of automation. Each hook does one thing and does it quietly.
+The workspace ships with nine hook scripts. `.claude/settings.json` registers them across six Claude Code events; one of them, `workspace-update-check`, is registered on two:
+
+| Event | Hooks under `.claude/hooks/` |
+|---|---|
+| `SessionStart` | `workspace-update-check.mjs`, `session-start.mjs`, `version-freshness-check.mjs` |
+| `SubagentStart` | `subagent-start.mjs` |
+| `PreCompact` | `pre-compact.mjs` |
+| `PostCompact` | `post-compact.mjs` |
+| `PreToolUse` | `workspace-update-check.mjs`, `repo-write-detection.mjs`, `bash-output-advisory.mjs` |
+| `SessionEnd` | `session-end.mjs` |
 
 ## Hook Inventory
+
+The hooks below follow that table, so each entry can be checked against `settings.json`. `workspace-update-check` has one entry although it is registered on two events.
+
+### workspace-update-check
+
+**Fires:** When a Claude Code conversation begins, and then on every tool call (`SessionStart` and `PreToolUse`).
+
+**Does:** Checks whether a `.workspace-update/` directory exists. That directory means the CLI has staged a template payload — a first-time init or an upgrade — that has not been applied yet. If there is none, the hook exits without saying anything. If there is, it reads the payload's manifest and injects a message marked `MANDATORY`: read the staged skill's `SKILL.md` (`workspace-init` for an init payload, `workspace-update` for an upgrade) and follow it before doing anything else. An upgrade message names both versions, and a payload staged more than five minutes ago is called out as one that survived a previous session. [Chapter 10](10-installation-and-upgrades.md) covers the upgrade flow.
 
 ### session-start
 
 **Fires:** When a new Claude Code conversation begins.
 
-**Does:** Walks `work-sessions/` for any `session.md` trackers and surfaces active work sessions. If there are active or paused sessions, it injects a summary so Claude can offer to resume them. It also injects a one-line workspace config summary (`Workspace config (workspace.json):` — session model, tracker, forge, repo names), which is why CLAUDE.md no longer imports workspace.json itself. When `workspace.json` has a team roster, it adds a `Team identity:` line for each way this machine disagrees with it. That covers a `workspace.user` that is an alias or missing from the roster, and git committing as another member. Each finding names its fix, and none needs the network. Also surfaces recent handoffs so the conversation starts with awareness of prior work.
+**Does:** What it reports depends on where the chat starts.
+
+Inside a session's workspace worktree, it registers the chat in the session tracker's `chatSessions` frontmatter and names the active session and the main workspace root.
+
+At the workspace root, it begins with the workspace name and a one-line summary of `workspace.json` (`Workspace config (workspace.json):` — session model, tracker, forge, repo names), which is why CLAUDE.md no longer imports workspace.json itself. It then names this chat's record (`Chat record:`) and the workspace root (`Workspace root:`), so skills never have to derive either. It points at `/workspace-init` when this machine is missing something that skill provides — repos that are not cloned yet, a user identity, or `CLAUDE.local.md`. When `workspace.json` has a team roster, it adds a `Team identity:` line for each way this machine disagrees with it. That covers a `workspace.user` that is an alias or missing from the roster, and git committing as another member. Each finding names its fix, and none needs the network. It fetches each cloned project repo (best effort) and reports `Repos synced:`.
+
+It then lists two kinds of prior work, so the conversation starts aware of them. Every work session that has a tracker under `work-sessions/` is listed with its status, description, branch, repos and worktree path, so Claude can offer to resume one; a session whose worktree is gone is marked orphaned. And the team-visible files under `workspace-context/shared/` are listed by topic, lifecycle and last update under a `Workspace context:` heading.
+
+If there is no `workspace.json`, it says so and points at `/workspace-init` instead.
 
 This is how `/start-work` knows about existing sessions — the hook has already told Claude what is available before you type anything.
 
-### session-end
+### version-freshness-check
 
-**Fires:** When a Claude Code conversation ends.
+**Fires:** When a new Claude Code conversation begins.
 
-**Does:** Records the chat session's end timestamp in the active session tracker. This timestamp is used by history reconstruction — when you resume a session, the system checks whether work was captured between the previous chat's end and the tracker's last update.
+**Does:** Refreshes the template-freshness banner that CLAUDE.md imports under Workspace Config (`local-only-template-freshness.md`). It compares the workspace's `templateVersion` with the newest template on its release channel, asking the npm registry at most once every 24 hours and showing the last known state in between. The hook injects nothing itself and never stops a session from starting, even when the registry cannot be reached. Set `workspace.versionCheck.ambient` to `false` to turn the check off.
+
+### subagent-start
+
+**Fires:** When Claude Code launches a subagent (a separate Claude instance for a subtask).
+
+**Does:** Injects the workspace's canonical truths — the files in `workspace-context/shared/locked/` — into the subagent's context. Subagents do not load CLAUDE.md, so they start with no conversation history and no team context unless something provides it. This hook solves that structurally: every subagent automatically receives team knowledge without anyone remembering to provide it.
+
+Not every file is pasted in whole. A locked file is inlined, with its frontmatter stripped, when it is at most `workspace.subagentInlineMaxBytes` (8 KB from the template). A longer one becomes a one-line pointer giving the file's name, description and size, for the subagent to read if its task touches it. Gitignored files and `local-only-*` files are never included. If the inlined files together exceed `workspace.subagentContextMaxBytes` (32 KB), the largest are turned into pointers first, until the total fits.
+
+This is one of the most important hooks in the workspace. Without it, subagents would need explicit context pasted into every dispatch. With it, team truths arrive automatically.
 
 ### pre-compact
 
 **Fires:** Before Claude Code compresses the conversation context (when the context window is getting full).
 
-**Does:** Analyzes the session state and suggests capture. If there is an active work session with uncaptured discussion, it nudges Claude to suggest `/braindump` or `/handoff` before the context is compressed. This is the automatic "you are about to lose context, want to save anything?" prompt.
+**Does:** Checks the session state and suggests capture. Inside an active work session it looks at when the session tracker file was last modified. If that was more than 30 minutes ago, it suggests `/handoff`, so the tracker reflects the conversation before the context is compressed. If the tracker is recent, it says so and notes that earlier conversation details may still be lost. Outside a session it suggests `/braindump` or `/handoff`. This is the automatic "you are about to lose context, want to save anything?" prompt.
 
 The full conversation is still available when this hook fires — it is the last chance to capture before compaction removes older messages.
 
@@ -42,37 +77,37 @@ The full conversation is still available when this hook fires — it is the last
 
 **Fires:** After context compaction completes.
 
-**Does:** Injects a gentle reminder that context was compressed. This helps Claude (and you) be aware that earlier conversation details may no longer be in memory, so important decisions should be verified against shared context rather than recalled from conversation.
-
-### subagent-start
-
-**Fires:** When Claude Code launches a subagent (a separate Claude instance for a subtask).
-
-**Does:** Injects the contents of `shared-context/locked/` into the subagent's context. Subagents start with zero conversation history — they know nothing about the project unless they are told. This hook solves that structurally: every subagent automatically receives team knowledge without anyone remembering to provide it.
-
-This is one of the most important hooks in the workspace. Without it, subagents would need explicit context pasted into every dispatch. With it, team truths arrive automatically.
+**Does:** Injects a reminder that earlier context was compacted, and suggests `/braindump` or `/handoff` for any decision or progress not yet captured. This helps Claude (and you) be aware that earlier conversation details may no longer be in memory, so important decisions should be verified against `workspace-context/` rather than recalled from conversation.
 
 ### repo-write-detection
 
-**Fires:** On every file-writing tool call (PreToolUse event for Bash, Edit, Write).
+**Fires:** On every tool call (`PreToolUse`). It acts only on Bash, Edit and Write.
 
 **Does two things:**
 
-First, when running from the workspace root (main branch), it enforces write restrictions. Only `workspace-scratchpad/` and `local-only-*` files are writable from the root. Attempts to write to repos, shared context, template files, or session folders trigger a warning telling Claude to use a workspace worktree.
+First, when running from the workspace root (the launcher, on its default branch), it enforces write restrictions. Only `workspace-scratchpad/`, `local-only-*` files and the task model's worktrees (`repos/{repo}/.claude/worktrees/{slug}/` and `.claude/worktrees/{slug}/`) are writable from the root. Attempts to write to the source clones in `repos/`, to `workspace-context/`, to `work-sessions/`, or to the template files under `.claude/` trigger a warning telling Claude that work belongs in a worktree. A Bash command that starts with `git`, `ls`, `cat` or another utility from a short list of read-only ones passes without a warning, and so does a `node` invocation of a script under `.claude/scripts/`.
 
 Second, when running from a workspace worktree with an active session, it detects writes to repos that are not part of the session. If you try to write to `my-api` but your session only includes `my-app`, the hook warns Claude so it can offer to add the repo to the session before proceeding.
 
-### workspace-update-check
+### bash-output-advisory
 
-**Fires:** On every tool call (PreToolUse event).
+**Fires:** On every tool call (`PreToolUse`). It acts only on Bash.
 
-**Does:** Checks whether a `.workspace-update/` directory exists, indicating that a template update has been staged by the CLI. If found, it nudges Claude to suggest running `/workspace-update`. This is a fast check — it calls `existsSync` and exits immediately if no update is pending.
+**Does:** Gives a one-line advisory when a command is likely to flood the context with output. It recognizes four shapes: a test runner with nothing scoping it (`npm test`, `cargo test`), a recursive `grep` without `--include` or `--exclude`, `find` on `/` or the home directory without `-name` or `-path`, and `cat` on a `.log`, `.jsonl` or `.ndjson` file. The advisory suggests scoping the command — a path, a filter, or a pipe to `head`, `tail` or `grep`. A command already piped to a bounding command, or redirected to a file, gets none. The hook never modifies or blocks the command: the model decides what to do with the hint. Its patterns are deliberately narrow, because a false positive teaches the model to ignore the hook.
+
+### session-end
+
+**Fires:** When a Claude Code conversation ends.
+
+**Does:** Records that this chat has ended, and always appends an entry to the disposable session log at `workspace-scratchpad/session-log.jsonl`.
+
+Inside an active work session it does three more things. It marks this chat's `ended` timestamp in the session tracker — the timestamp resume uses to tell whether work happened after the tracker was last updated. It appends a short "Session ended" note to the tracker's body and commits it on the session branch, so the next chat can see that the previous one closed without capturing explicitly. And it reads the tracker's Progress section for correction-shaped sentences ("actually", "instead of", "I was wrong") and records any it finds in `workspace-scratchpad/session-reflect.json`, a best-effort reflection record.
 
 ## What Scripts Are
 
 Scripts are Node.js files in `.claude/scripts/` that consolidate mechanical git sequences. Skills call them — you do not call them directly. They exist to reduce the number of individual shell commands that skills need to issue, which reduces token overhead and error surface.
 
-Each script takes explicit arguments, fails loudly on errors, and prints a JSON result for Claude to parse.
+The command scripts take explicit arguments, fail loudly on errors, and print a JSON result for the calling skill to parse. Some serve the session lifecycle and some the task lifecycle; both are listed below.
 
 Two of these files are adapter layers rather than command sequences: `.claude/scripts/forges/interface.mjs` and `.claude/scripts/trackers/interface.mjs`. Skills never call `gh` or `glab` directly for pull-request, release, workflow-run, or issue operations — they call `createForge()` / `createTracker()`, which dispatch to a `github` or `gitlab` module behind a single method surface. The adapter choice lives in `workspace.json` (`workspace.forge.type`, with `workspace.forge.host` naming a self-managed GitLab), and when no type is set, each repo's own origin host picks its adapter — so one workspace can mix GitHub and GitLab repos.
 
@@ -110,6 +145,32 @@ node .claude/scripts/add-repo-to-session.mjs \
   --repo "my-api"
 ```
 
+### task-worktree.mjs
+
+Creates, removes and detects the worktrees of the task lifecycle, where a task is one issue, one branch and one worktree per repo it touches. `--create` makes a worktree at `repos/{repo}/.claude/worktrees/{slug}/` — the same location Claude Code's own worktree feature uses — or at `.claude/worktrees/{slug}/` for the workspace repo itself, which is addressed as `.`. `--remove` tears one down. `--detect` works out which task or session the chat is working on; because a task's chat stays at the workspace root rather than inside a worktree, it consults the chat record and the session trackers as well as the current directory. [Chapter 2](02-work-sessions.md#the-task-model) covers the flow.
+
+```bash
+node .claude/scripts/task-worktree.mjs --root . --create --repo "my-app" --branch "bugfix/fix-auth"
+node .claude/scripts/task-worktree.mjs --root . --remove --repo "my-app" --branch "bugfix/fix-auth"
+```
+
+### chat-record.mjs
+
+Reads and updates the chat record at `workspace-scratchpad/chats/{chat}.json`: the tasks a chat has open, each with its work item, branch and repos. `--add-task` and `--remove-task` change that list, `--whoami` recovers the chat's own name, and `--owner` names the chat that owns a work item's open task.
+
+```bash
+node .claude/scripts/chat-record.mjs --root . --add-task --chat "fix-login" --work-item "gh:42" --branch "bugfix/fix-auth" --repo "my-app"
+node .claude/scripts/chat-record.mjs --root . --owner "gh:42"
+```
+
+### task-pr.mjs
+
+The task lifecycle's pull-request step, in three commands. `--create` pushes each branch and opens one PR per repo, and writes a JSON description of the run to `--out`. `--checks` reads every PR's CI state without merging anything. `--merge` merges the PRs in order and closes the linked issue. The last two take that JSON file as `--prs`. A repo with no forge remote is neither pushed nor given a PR; `--merge` fast-forwards its default branch instead. [Chapter 2](02-work-sessions.md#the-task-model) has the full sequence, including merge approval.
+
+```bash
+node .claude/scripts/task-pr.mjs --checks --root . --prs "workspace-scratchpad/chats/fix-login/prs-bugfix-fix-auth.json"
+```
+
 ### team-roster.mjs
 
 Reads and maintains the team roster in `workspace.json` → `workspace.team`. The roster is keyed by `team-member/` folder name, and each entry may carry a display `name`, a `forge` login (or a list of them), `gitEmails` and `aliases`. All fields are optional, and a workspace without a roster has every identity check off. The script also manages the machine-local `workspace.user` that points into the roster. `/workspace-init`, `/maintenance`, `/pause-work` and `/complete-work` call it; you run it yourself mainly to add your entry.
@@ -129,11 +190,11 @@ node .claude/scripts/team-roster.mjs --merge-alias alicew [--apply] # merge an a
 
 The layers interact in a clear pattern:
 
-**Hooks detect conditions.** session-start detects active sessions. pre-compact detects uncaptured work. repo-write-detection detects out-of-scope writes.
+**Hooks detect conditions.** session-start lists the existing sessions and this chat's record. pre-compact notices a session tracker that has gone stale. repo-write-detection detects out-of-scope writes.
 
 **Skills make decisions.** When Claude receives a hook's context injection, it uses skill knowledge to decide what to do. "There's an active session" leads to offering resume. "There's uncaptured work before compaction" leads to suggesting capture.
 
-**Scripts execute mechanics.** When a skill decides to create a session, it calls create-work-session.mjs. When it decides to clean up, it calls cleanup-work-session.mjs. The skill handles the judgment; the script handles the git operations.
+**Scripts execute mechanics.** When a skill decides to create a session, it calls create-work-session.mjs. When it decides to clean up, it calls cleanup-work-session.mjs. The task lifecycle keeps the same split: `/start-work` calls task-worktree.mjs for each worktree and records the task with chat-record.mjs, and `/complete-work` hands the push, PR and merge sequence to task-pr.mjs. The skill handles the judgment; the script handles the git operations.
 
 This separation means hooks are simple (detect and report), skills are expressive (decide and guide), and scripts are mechanical (execute and confirm). No layer tries to do another layer's job.
 
@@ -142,7 +203,8 @@ This separation means hooks are simple (detect and report), skills are expressiv
 ## Key Takeaways
 
 - Hooks fire automatically on Claude Code events. You do not invoke them.
+- The workspace ships nine hook scripts across six events; `.claude/settings.json` is the list to check them against.
 - Hooks influence behavior through `additionalContext` injection — adding information to Claude's context at key moments.
-- The subagent-start hook is critical — it injects locked context into every subagent automatically.
+- The subagent-start hook is critical — it carries the locked context to every subagent, inlining the short files and pointing to the long ones.
 - Scripts consolidate mechanical git sequences that skills invoke. They take explicit arguments and return JSON.
 - The pattern: hooks detect, skills decide, scripts execute.
