@@ -142,7 +142,7 @@ Step 9: Preserve local preferences from CLAUDE.md.bak
 Step 10: Create locked team knowledge
 Step 11: Formalize existing worktrees as work sessions
 Step 12: Set up issue tracker
-Step 13: Configure user identity
+Step 13: Configure user identity and start the team roster
 Step 14: Clean root directory
 Step 15: Clean up payload and pre-migration artifacts
 Step 16: Verify — self-contradiction check

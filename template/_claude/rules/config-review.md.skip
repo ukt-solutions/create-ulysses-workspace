@@ -10,7 +10,7 @@ The 180-day threshold is not arbitrary: it corresponds to roughly two major Clau
 
 ## Connection to /maintenance
 
-The `/maintenance` skill's **Component age check** (step 7 in the Cleanup section) surfaces which files have drifted past 180 days by reading their frontmatter `updated:` field. Files without an `updated:` field are skipped — the check is incremental and only flags files that have opted in by carrying the field.
+The `/maintenance` skill's **Component age check** (in the Cleanup section) surfaces which files have drifted past 180 days by reading their frontmatter `updated:` field. Files without an `updated:` field are skipped — the check is incremental and only flags files that have opted in by carrying the field.
 
 When `/maintenance` reports stale components, the recommended action is to open each flagged file, read it against the current Claude Code documentation and platform behavior, update the content where needed, and bump `updated:` to today.
 

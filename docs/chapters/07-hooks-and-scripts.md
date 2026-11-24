@@ -123,7 +123,7 @@ node .claude/scripts/team-roster.mjs --set-user alice               # point this
 node .claude/scripts/team-roster.mjs --merge-alias alicew [--apply] # merge an alias's folder into its owner's
 ```
 
-`--add` edits `workspace.json` (a tracked change) and refuses a result that would give one login or email to two people. `--merge-alias` is a dry run until `--apply`. It moves tracked files with `git mv`, so history follows them, and stops before moving anything if a path exists in both folders.
+`--add` edits `workspace.json` (a tracked change) and refuses a result that would give one login or email to two people. `--merge-alias` is a dry run until `--apply`. It moves tracked files with `git mv`, so history follows them, and moves symlinks as links without following them. It stops before moving anything if a path exists in both folders, even if only the case differs, or if a tracked file is missing from disk. A merge that fails part-way can be finished by running it again.
 
 ## How Hooks and Scripts Work Together
 
