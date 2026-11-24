@@ -206,11 +206,40 @@ export function attributionHandle(roster, { user = null, forgeLogin = null } = {
 
 const SCRIPT = 'node .claude/scripts/team-roster.mjs';
 
+// The fixes a finding offers as alternatives, one per line: copying a line
+// then copies one command. The lines are indented past the three spaces a
+// report puts before a finding, and so still read as that finding's.
+const FIX_LINE = '    ';
+
+/**
+ * Quote a value for a command line a person will copy out of a finding.
+ * A value made only of characters no shell treats specially (letters,
+ * digits and @ % + = : , . / _ -) is left bare: that covers real emails,
+ * logins and member keys, and a bare word reads the same in sh, PowerShell
+ * and cmd.exe, where single quotes would be kept as part of the value.
+ * Anything else is single-quoted, which keeps spaces, `<`, `$` and `;`
+ * literal in POSIX shells and in PowerShell alike. The one character they
+ * disagree on is `'` itself, which sh writes `'\''` and PowerShell writes
+ * `''`. Closing the string, giving the quote in double quotes and reopening
+ * (`'"'"'`) reads the same in both: a double-quoted `'` has nothing to
+ * expand, and in either shell a quote opened inside an argument continues
+ * that argument.
+ */
+const SHELL_SAFE = /^[A-Za-z0-9@%+=:,./_-]+$/;
+
+export function quoteArg(value) {
+  const text = String(value);
+  if (SHELL_SAFE.test(text)) return text;
+  return `'${text.replaceAll("'", `'"'"'`)}'`;
+}
+
 /**
  * Findings about this machine's identity: workspace.user against the roster,
  * and the git email / forge login against what the roster says about them.
- * Each finding is { severity, code, message }. Nothing is reported without a
- * roster, or without a workspace.user (session-start's setup hint covers that).
+ * Each finding is { severity, code, message }. A finding that offers a
+ * choice of fixes puts each on its own indented line, so that a reader
+ * copies one command at a time. Nothing is reported without a roster, or
+ * without a workspace.user (session-start's setup hint covers that).
  *
  * forgeLogin and gitEmail are optional — pass only what was cheap to read.
  * session-start passes the git email alone (no network); /maintenance adds
@@ -226,9 +255,9 @@ export function identityFindings(roster, { user = null, forgeLogin = null, gitEm
       severity: 'warning',
       code: 'user-unknown',
       message:
-        `workspace.user "${user}" is not in the team roster (workspace.team). ` +
-        `If you already have an entry, switch to it: ${SCRIPT} --set-user <name> --root . — ` +
-        `if you are new, add yourself in your next change: ${SCRIPT} --add ${user} --detect --root .`,
+        `workspace.user "${user}" is not in the team roster (workspace.team).\n` +
+        `${FIX_LINE}If you already have an entry, switch to it: ${SCRIPT} --set-user <name> --root .\n` +
+        `${FIX_LINE}If you are new, add yourself in your next change: ${SCRIPT} --add ${quoteArg(user)} --detect --root .`,
     });
   } else if (hit.via === 'alias') {
     effective = hit.member;
@@ -237,7 +266,7 @@ export function identityFindings(roster, { user = null, forgeLogin = null, gitEm
       code: 'user-alias',
       message:
         `workspace.user "${user}" is an alias of "${hit.member.key}" in the team roster, so your ` +
-        `context loads from the wrong folder. Switch: ${SCRIPT} --set-user ${hit.member.key} --root .`,
+        `context loads from the wrong folder. Switch: ${SCRIPT} --set-user ${quoteArg(hit.member.key)} --root .`,
     });
   } else {
     effective = hit.member;
@@ -270,7 +299,7 @@ export function identityFindings(roster, { user = null, forgeLogin = null, gitEm
       code: 'forge-unrecorded',
       message:
         `forge login "${forgeLogin}" is not in ${effective.key}'s roster entry — record it: ` +
-        `${SCRIPT} --add ${effective.key} --forge ${forgeLogin} --root .`,
+        `${SCRIPT} --add ${quoteArg(effective.key)} --forge ${quoteArg(forgeLogin)} --root .`,
     });
   }
   // An email nobody claims means one of two things. If the member has
@@ -284,9 +313,10 @@ export function identityFindings(roster, { user = null, forgeLogin = null, gitEm
       code: 'email-unknown',
       message:
         `git commits here as ${gitEmail}, which isn't one of ${effective.key}'s emails ` +
-        `(${effective.gitEmails.join(', ')}). If that's a mistake: ` +
-        `git config user.email ${effective.gitEmails[0]} — if it's a new address of yours: ` +
-        `${SCRIPT} --add ${effective.key} --email ${gitEmail} --root .`,
+        `(${effective.gitEmails.join(', ')}).\n` +
+        `${FIX_LINE}If that's a mistake: git config user.email ${quoteArg(effective.gitEmails[0])}\n` +
+        `${FIX_LINE}If it's a new address of yours: ` +
+        `${SCRIPT} --add ${quoteArg(effective.key)} --email ${quoteArg(gitEmail)} --root .`,
     });
   } else if (effective && gitEmail && !emailOwner) {
     findings.push({
@@ -294,7 +324,7 @@ export function identityFindings(roster, { user = null, forgeLogin = null, gitEm
       code: 'email-unrecorded',
       message:
         `git email ${gitEmail} is not in ${effective.key}'s roster entry yet — record it: ` +
-        `${SCRIPT} --add ${effective.key} --email ${gitEmail} --root .`,
+        `${SCRIPT} --add ${quoteArg(effective.key)} --email ${quoteArg(gitEmail)} --root .`,
     });
   }
   return findings;
@@ -334,7 +364,7 @@ export function folderFindings(roster, folders = []) {
         folder,
         message:
           `belongs to ${hit.member.key} ("${folder}" is an alias) — merge it into ` +
-          `team-member/${hit.member.key}/: ${SCRIPT} --merge-alias ${folder} --root .`,
+          `team-member/${hit.member.key}/: ${SCRIPT} --merge-alias ${quoteArg(folder)} --root .`,
       });
       continue;
     }

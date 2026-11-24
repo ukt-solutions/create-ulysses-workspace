@@ -1292,8 +1292,8 @@ function teamWorkspace(team = TEAM) {
     'warning workspace-context/team-member/alexw/',
     'warning workspace-context/team-member/stray/',
   ], 'alias folder, orphan folder, alias user and email mismatch reported');
-  assertTrue(team.some((f) => f.message.includes('--merge-alias alexw')), 'alias folder names the merge command');
-  assertTrue(team.some((f) => /--set-user alex\b/.test(f.message)), 'alias user names the switch command');
+  assertTrue(team.some((f) => f.message.includes("--merge-alias alexw")), 'alias folder names the merge command');
+  assertTrue(team.some((f) => f.message.includes("--set-user alex --root .")), 'alias user names the switch command');
   assertTrue(team.some((f) => f.message.includes('fixture@example.com') && f.message.includes('sam')),
     'email mismatch names the owner');
   assertTrue(!team.some((f) => f.message.includes('alex-example')), 'the forge login matches the alias owner — no mismatch');
@@ -1327,7 +1327,7 @@ function teamWorkspace(team = TEAM) {
   const wtPath = join(root, '.claude', 'worktrees', 'feature-x');
   git(root, ['worktree', 'add', '-q', '-b', 'feature/x', wtPath]);
   const result = await audit(wtPath);
-  assertTrue(bySection(result, 'team').some((f) => /--set-user alex\b/.test(f.message)),
+  assertTrue(bySection(result, 'team').some((f) => f.message.includes("--set-user alex --root .")),
     'the launcher’s settings.local.json is checked from a worktree');
   cleanup(root);
 }
@@ -1382,7 +1382,7 @@ function teamWorkspace(team = TEAM) {
     'warning .claude/settings.local.json',
     `warning ${TM}/alexw/`,
   ], '8f: the audit flags the alias folder and the alias user');
-  assertTrue(before.some((f) => f.message.includes('--merge-alias alexw')), '8f: the folder finding names the merge');
+  assertTrue(before.some((f) => f.message.includes("--merge-alias alexw")), '8f: the folder finding names the merge');
 
   // Dry run by default: a plan, and nothing on disk or in the index changes.
   const statusBefore = status();
@@ -1434,6 +1434,22 @@ function teamWorkspace(team = TEAM) {
   const after = await audit(root);
   assertEq(bySection(after, 'team'), [], '8f: after the merge the team section is clean');
   assertEq(after.summary.team.present, true, '8f: with the roster still on');
+  cleanup(root);
+}
+
+// 8g. a finding that offers a choice of fixes keeps them on separate lines
+// in the report, indented under the finding: one line is one command to copy
+{
+  const root = teamWorkspace();
+  git(root, ['config', 'user.email', 'laptop@example.com']);
+  writeFileSync(join(root, '.claude', 'settings.local.json'), JSON.stringify({ workspace: { user: 'sam' } }));
+  const text = renderReport(await audit(root));
+  assertTrue(text.includes(
+    "   ⚠ .claude/settings.local.json: git commits here as laptop@example.com, which isn't one of sam's emails "
+      + '(fixture@example.com).\n'
+      + "    If that's a mistake: git config user.email fixture@example.com\n"
+      + "    If it's a new address of yours: node .claude/scripts/team-roster.mjs --add sam --email laptop@example.com --root .",
+  ), 'the unknown-email finding renders its two fixes on their own lines');
   cleanup(root);
 }
 
