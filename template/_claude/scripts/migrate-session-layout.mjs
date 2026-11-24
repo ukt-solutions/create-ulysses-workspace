@@ -42,6 +42,13 @@ function isMainModule(metaUrl) {
   } catch { return false; }
 }
 
+// Filenames are literal paths, not patterns: `--literal-pathspecs` stops
+// `git add` and `git rm` from reading `[a]`, `*` or `?` in a name as a glob,
+// which would stage or remove other files that happen to match. The
+// `ls-files` listing below is the one call that wants globs, so it does not
+// use it.
+const LITERAL = '--literal-pathspecs';
+
 export function migrateSession(root, sessionName) {
   const { workSessionsDir } = getWorkspacePaths(root);
   const sessionFolder = join(workSessionsDir, sessionName);
@@ -88,13 +95,13 @@ export function migrateSession(root, sessionName) {
     if (/^(design|plan)-.*\.md$/.test(entry)) toAdd.push(entry);
   }
   if (toAdd.length > 0) {
-    execFileSync('git', ['add', '--', ...toAdd], { cwd: worktree, stdio: 'pipe' });
+    execFileSync('git', [LITERAL, 'add', '--', ...toAdd], { cwd: worktree, stdio: 'pipe' });
   }
 
   // Remove cross-contamination ghosts that this branch inherited from main
   const ghosts = listTrackedSessionContent(worktree);
   for (const ghost of ghosts) {
-    execFileSync('git', ['rm', '--', ghost], { cwd: worktree, stdio: 'pipe' });
+    execFileSync('git', [LITERAL, 'rm', '--', ghost], { cwd: worktree, stdio: 'pipe' });
   }
 
   // Only commit if there are staged changes
@@ -174,7 +181,7 @@ export function migrateMain(root) {
   // git rm --cached every launcher-tracked tracker/spec/plan file
   const listed = listTrackedSessionContent(root);
   for (const path of listed) {
-    execFileSync('git', ['rm', '--cached', '--', path], { cwd: root, stdio: 'pipe' });
+    execFileSync('git', [LITERAL, 'rm', '--cached', '--', path], { cwd: root, stdio: 'pipe' });
   }
 
   // Bump templateVersion in workspace.json
@@ -186,7 +193,7 @@ export function migrateMain(root) {
   }
 
   // Stage and commit
-  execFileSync('git', ['add', '--', '.gitignore', 'workspace.json'], { cwd: root, stdio: 'pipe' });
+  execFileSync('git', [LITERAL, 'add', '--', '.gitignore', 'workspace.json'], { cwd: root, stdio: 'pipe' });
   execFileSync(
     'git',
     ['commit', '-m', 'chore: migrate workspace to in-worktree session layout'],

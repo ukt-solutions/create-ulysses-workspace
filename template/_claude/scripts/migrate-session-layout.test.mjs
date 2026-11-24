@@ -226,5 +226,45 @@ function buildFixture(extraSpecs = []) {
   }
 }
 
+// A filename is a literal path, not a glob: `design-[a].md` must be staged
+// and removed on its own, never together with the unrelated `design-a.md`
+// that the pattern `design-[a].md` would also match.
+{
+  const specs = ['design-[a].md', 'design-a.md'];
+  const root = buildFixture(specs);
+  try {
+    const worktree = join(root, 'work-sessions', 'demo', 'workspace');
+    const lsFiles = (cwd) =>
+      execFileSync('git', ['ls-files', '-z'], { cwd }).toString().split('\0').filter(Boolean);
+
+    let result;
+    try {
+      result = migrateSession(root, 'demo');
+    } catch (err) {
+      result = { status: `threw: ${String(err.message).split('\n')[0]}` };
+    }
+    assertEq(result.status, 'migrated', 'session with glob-character filenames migrates');
+    const inBranch = lsFiles(worktree);
+    for (const name of specs) {
+      assertTrue(inBranch.includes(name), `worktree tracks ${name} at its top level`);
+    }
+    assertTrue(!inBranch.some((f) => f.startsWith('work-sessions/')),
+      'branch no longer tracks any ghost, glob-character names included');
+
+    let main;
+    try {
+      main = migrateMain(root);
+    } catch (err) {
+      main = { status: `threw: ${String(err.message).split('\n')[0]}` };
+    }
+    assertEq(main.status, 'migrated', 'main migration with glob-character filenames succeeds');
+    assertEq(main.removed?.length, 4, 'main untracks the tracker and all three specs, each by its own path');
+    assertTrue(!lsFiles(root).some((f) => f.startsWith('work-sessions/')),
+      'main no longer tracks any session file, glob-character names included');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 console.log(`Passed: ${passed}, Failed: ${failed}`);
 if (failed > 0) process.exit(1);
