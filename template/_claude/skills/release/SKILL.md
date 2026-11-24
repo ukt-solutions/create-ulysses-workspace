@@ -53,20 +53,65 @@ If the repo has a `package.json` with a `version`, set it to `{version}` (edit t
 
 Push the branch and open a PR through the same per-repo forge (`forgeConfigForRepo` from Step 2) with head `release/v{version}`. Ask `Merge? [Y/n]`, then merge (squash, delete branch).
 
-**Step 5: Leak audit (optional)**
+**Step 5: Leak audit and consumer-facing review**
 
-Pull the merge, then audit what is about to be tagged:
+Pull the merge, then look at what is about to be tagged: a scripted pattern audit first, an advisory read of the consumer-facing prose second. The tag is the lock point — a published version cannot be taken back — so both run now, before it exists.
 
 ```bash
 git -C repos/{repo} pull --ff-only
+```
+
+*5a — Pattern audit (optional).*
+
+```bash
 node .claude/scripts/release-leak-audit.mjs --root . --repo "{repo}"
 ```
 
-Patterns live in `workspace.json` — `repos.{repo}.release.leakPatterns` for one repo, `workspace.release.leakPatterns` for every repo — as arrays of strings: `/…/flags` is that regex, anything else a case-insensitive literal. Mind the seam between the forms: a path-like literal whose tail parses as a flags run (`/keys/i`) reads as a regex — write such literals without the leading slash or escape them as a regex.
+Patterns live in `workspace.json` — `repos.{repo}.release.leakPatterns` for one repo, `workspace.release.leakPatterns` for every repo (the workspace repo `.` reads the workspace block) — as arrays of strings: `/…/flags` is that regex, anything else a case-insensitive literal. Mind the seam between the forms: a path-like literal whose tail parses as a flags run (`/keys/i`) reads as a regex — write such literals without the leading slash or escape them as a regex. A workspace can start from patterns like these, which are examples to adapt and not defaults — what counts as internal is specific to each workspace:
 
-The script scans what this release publishes: for a publishable package the `npm pack --dry-run --ignore-scripts` file list (the root package only — a monorepo's workspace packages are not enumerated, and build artifacts a publish workflow generates only in CI are not in npm's local list) together with the files changed since the last tag, else the changed files alone (`--tag-range <from>..<to>` overrides, reading contents from the range's end commit when it is not HEAD) — plus every commit message in the range, squash-merged PR bodies included. The worktree must be clean, since contents are read from disk (`--allow-dirty` overrides). Matched spans are masked in the excerpt, so showing a match never echoes the secret.
+```json
+"release": {
+  "leakPatterns": [
+    "/\\/Users\\/[^/\\s]+/",
+    "local-only-",
+    "workspace-scratchpad/",
+    "/\\bgh:\\d+\\b/"
+  ]
+}
+```
 
-Exit 1 lists matches as `{ file, line, pattern, excerpt }` plus a `skipped` list of files it could not read: stop and show them; never edit files to silence the audit. Exit 0 with `no leak patterns configured` is the no-patterns case — the step still runs and exits 0, so a workspace that never opts in needs no special-casing. Exit 2 means the audit itself could not run (including a dirty worktree); report that too. Whether a match is a true leak, an over-broad pattern, or a release to redo is the operator's call — cheap before the tag is pushed, impossible after.
+The script scans what this release publishes, as one union: the `npm pack --dry-run --ignore-scripts` file list of the root package when it is publishable and of every non-private npm workspace package (array or `{ packages }` form; exact directories and `packages/*`; build artifacts a publish workflow generates only in CI are not in npm's local list), the files changed since the last tag (`--tag-range <from>..<to>` overrides, reading contents from the range's end commit when it is not HEAD), and any paths named by `repos.{repo}.release.consumerFacing` / `workspace.release.consumerFacing` — repo-relative strings where a trailing `/` makes a directory prefix, for documents that ship whether or not they changed (`["docs/", "openapi.yaml"]`: an API spec, an error catalog). It also scans every commit message in the range, squash-merged PR bodies included. The worktree must be clean, since contents are read from disk (`--allow-dirty` overrides). Matched spans are masked in the excerpt, so showing a match never echoes the secret.
+
+Exit 1 lists matches as `{ file, line, pattern, excerpt }`: stop and show them; never edit files to silence the audit. Either way `skipped` lists what the script could not read or enumerate — an unreadable file, a failed package pack, a `workspaces` entry it does not understand or a workspace directory without a readable `package.json`, a `consumerFacing` path that matched no file — and those places were not scanned, so show them too; it is informational and never changes the exit code. Exit 0 with `no leak patterns configured` is the no-patterns case — the step still runs and exits 0, so a workspace that never opts in needs no special-casing. Exit 2 means the audit itself could not run (including a dirty worktree); report that too. Whether a match is a true leak, an over-broad pattern, or a release to redo is the operator's call — cheap before the tag is pushed, impossible after.
+
+*5b — Consumer-facing review (advisory).*
+
+Patterns catch what a workspace can name in advance. They cannot catch prose that is fine as text and wrong as documentation: a README step that only the maintainers can perform, or a changelog line that points at an internal ticket. This review reads for that, once 5a is settled. It is on by default; set `repos.{repo}.release.consumerReview` or `workspace.release.consumerReview` to `false` to opt out (the repo's own setting wins; the workspace repo `.` reads the workspace block). When it is off, say so in one line and go on to Step 6.
+
+1. List the consumer-facing prose — the README, CHANGELOG, CONTRIBUTING, SECURITY, UPGRADING and MIGRATION files, every `package.json`, and every `consumerFacing` path on the release surface:
+
+   ```bash
+   node .claude/scripts/release-leak-audit.mjs --root . --repo "{repo}" --list-consumer-facing
+   ```
+
+   The result is `{ mode, range, files: [{ path, changed }], skipped }`, and it needs no patterns configured. `changed` means changed since the last tag, except that a `package.json` counts only when something other than its `version` differs — the version bump made in Step 3 is not a prose change, so a release that touched nothing else is skipped below. Show a non-empty `skipped` — a package that could not be enumerated has not been reviewed.
+
+2. If no file has `changed: true`, report "No consumer-facing prose changed since v{previous} — review skipped" and go on to Step 6.
+
+3. Otherwise dispatch **one** `researcher` subagent (read-only). Give it the paths of the changed files, absolute under `repos/{repo}/` (the workspace root for `.`), and these five classes, then this instruction: "Report only passages a consumer of this published package would read and could not act on, or that expose internal detail. Return a list of `{ file, line, class, quote (≤ 120 chars), why }`. Return an empty list if nothing qualifies. Do not flag passages outside these classes."
+
+   - **Operator procedure** — steps only the maintainers can perform, written as if the reader could. Flag: "Open the vendor console, go to Settings → Tokens, and mint a publish token before running the release." Not: "Create an API key under Settings → API keys, then pass it to the client."
+   - **Internal infrastructure** — CI variable names, secret-store paths, private hosts, runbook or dashboard URLs. Flag: "The token lives in the `release-prod` vault at vault.corp.example/release." Not: "Set `API_KEY` in the environment; the client reads it at startup."
+   - **Internal identifiers** — references into a tracker or branch scheme the consumer cannot open. Flag: "Behavior changed for PLAT-4417 (branch `feature/auth-rewrite`)." Not: "Fixed in #214" where #214 is an issue in the public repo.
+   - **Cross-repo internal names** — private repositories, internal services, and packages that are not published. Flag: "Mirrors the retry logic in acme-billing-core (private)." Not: "Depends on `@acme/shared`," which is on the public registry.
+   - **Local filesystem paths** — paths from a maintainer's machine. Flag: "Build output is copied from `C:\Users\jo\work\app\dist`." Not: "Config is read from `~/.config/app/` by default," a documented location on the consumer's machine.
+
+4. Present the findings as one table. For each, the operator picks **fix**, **accept**, or **dismiss** (with a one-line reason):
+
+   - **Fix** — the release PR is already merged, so the fix goes through its own PR. After it merges, `git pull --ff-only` and re-run Step 5 before tagging.
+   - **Accept** and **dismiss** are recorded only in the Step 7 report, never in a file.
+
+The review is advisory: it never blocks the release on its own and never edits a file. Its findings are a prompt for the operator's judgment, the way a match from 5a is.
 
 **Step 6: Tag and publish**
 
@@ -108,7 +153,7 @@ Remove the release worktree:
 node .claude/scripts/task-worktree.mjs --root . --remove --repo "{repo}" --branch "release/v{version}" --delete-branch
 ```
 
-Report the PR, the tag, the release URL, and the publish status.
+Report the PR, the tag, the release URL, the publish status, and the consumer-facing review: skipped, or N findings (fixed / accepted / dismissed).
 
 **Step 8: Update workspace release state**
 
