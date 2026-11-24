@@ -11,6 +11,7 @@ import {
   suggestUser,
   sanitizeName,
   attributionHandle,
+  quoteArg,
   identityFindings,
   sessionStartLines,
   folderFindings,
@@ -128,6 +129,29 @@ const roster = normalizeRoster(TEAM);
   assertEq(attributionHandle(normalizeRoster(undefined), { user: 'zed' }), 'zed', 'nothing else → workspace.user');
 }
 
+// ---------- quoteArg ----------
+
+// A finding's commands are pasted into a shell, so a value must arrive as
+// the one argument it is whatever it holds. A plain value stays bare, which
+// every shell — cmd.exe included — reads as itself. Anything else is
+// single-quoted, literal in POSIX shells and in PowerShell alike; ' itself is
+// the one character they escape differently, hence the close-quote-reopen form.
+{
+  assertEq(quoteArg('sam@example.com'), 'sam@example.com', 'a plain email is left bare, so cmd.exe reads it too');
+  assertEq(quoteArg('sam-example_2'), 'sam-example_2', 'a plain login is left bare');
+  assertEq(quoteArg(''), `''`, 'an empty value is still one argument');
+  assertEq(quoteArg('=foo'), `'=foo'`, 'a leading = is quoted (zsh expands =word)');
+  assertEq(quoteArg('@foo'), `'@foo'`, 'a leading @ is quoted (PowerShell splatting)');
+  assertEq(quoteArg('-x'), `'-x'`, 'a leading - is quoted');
+  assertEq(quoteArg('a,b@example.com'), `'a,b@example.com'`, 'a comma is quoted (PowerShell array)');
+  assertEq(quoteArg('a%USER%@example.com'), `'a%USER%@example.com'`, 'a % is quoted');
+  assertEq(quoteArg('sam+ci@example.com'), 'sam+ci@example.com', 'a plus-addressed email stays bare');
+  assertEq(quoteArg('Sam Example <sam@example.com>; rm -rf x'), `'Sam Example <sam@example.com>; rm -rf x'`,
+    'spaces and metacharacters stay inside the quotes, unexpanded');
+  assertEq(quoteArg("it's"), `'it'"'"'s'`, "an embedded ' reads the same to sh and to PowerShell");
+  assertEq(quoteArg("a'$HOME"), `'a'"'"'$HOME'`, 'only the quote is closed and reopened; the rest stays single-quoted');
+}
+
 // ---------- identityFindings ----------
 
 {
@@ -135,18 +159,26 @@ const roster = normalizeRoster(TEAM);
   assertEq(identityFindings(roster, {}), [], 'no workspace.user → no findings (setup hint covers it)');
   assertEq(identityFindings(roster, { user: 'alex', forgeLogin: 'alex-example', gitEmail: 'alex@example.com' }), [],
     'consistent identity → no findings');
+  assertEq(identityFindings(roster, { user: 'sam', gitEmail: 'SAM@EXAMPLE.COM' }), [],
+    'a case variant of a recorded email is that email');
 }
 
 {
   const f = identityFindings(roster, { user: 'alexw', gitEmail: 'alex@example.com' });
   assertEq(codes(f), ['user-alias'], 'alias user warned; matching email is not a mismatch through the alias');
-  assert(/--set-user alex\b/.test(f[0].message), 'alias warning names the fix');
+  assert(f[0].message.endsWith("--set-user alex --root ."), 'alias warning names the fix');
 }
 
 {
   const f = identityFindings(roster, { user: 'zed' });
   assertEq(codes(f), ['user-unknown'], 'unknown user warned');
-  assert(f[0].message.includes('--add zed --detect'), 'unknown-user warning names the fix');
+  assertEq(f[0].message.split('\n'), [
+    'workspace.user "zed" is not in the team roster (workspace.team).',
+    "    If you already have an entry, switch to it: node .claude/scripts/team-roster.mjs --set-user <name> --root .",
+    "    If you are new, add yourself in your next change: node .claude/scripts/team-roster.mjs --add zed --detect --root .",
+  ], 'unknown-user warning names both fixes, each on its own line');
+  assert(identityFindings(roster, { user: 'zed q' })[0].message.includes("--add 'zed q' --detect"),
+    'an unknown user with a space in it is quoted');
 }
 
 {
@@ -155,16 +187,35 @@ const roster = normalizeRoster(TEAM);
   assert(f.every((x) => x.severity === 'warning'), 'mismatches are warnings');
 }
 
+// An email another member owns is a mismatch, full stop: it is theirs to
+// explain, not an address to offer a fix for.
+{
+  assertEq(codes(identityFindings(roster, { user: 'sam', gitEmail: 'alex@example.com' })), ['email-mismatch'],
+    'another member’s email is a mismatch, not an unknown email');
+}
+
+// With no roster entry to check against, there is nothing for an email or a
+// login to be outside of: only the unknown user is reported.
+{
+  assertEq(codes(identityFindings(roster, { user: 'zed', forgeLogin: 'new-login', gitEmail: 'laptop@example.com' })),
+    ['user-unknown'], 'an unknown user gets no email or login finding');
+}
+
 // An email nobody claims, from a member who has recorded emails: most likely
-// a wrong git config, so it is a warning that offers the fix first.
+// a wrong git config, so it is a warning that offers the fix first. The two
+// fixes are alternatives, so each is on its own line: copying a line copies
+// one command.
 {
   const f = identityFindings(roster, { user: 'sam', forgeLogin: 'new-login', gitEmail: 'laptop@example.com' });
   assertEq(codes(f), ['forge-unrecorded', 'email-unknown'], 'unclaimed login suggested; unknown email warned');
   assertEq(f.map((x) => x.severity), ['info', 'warning'], 'an unknown email from a member with emails is a warning');
-  const msg = f[1].message;
-  assert(msg.includes('(sam@example.com, SAM@work.example.com)'), 'the warning lists the recorded emails');
-  assert(msg.indexOf('git config user.email sam@example.com') < msg.indexOf('--add sam --email laptop@example.com'),
-    'the config fix comes before the record-it option');
+  assert(f[0].message.endsWith("--add sam --forge new-login --root ."), 'the login is recorded by a quoted command');
+  const [head, ...fixes] = f[1].message.split('\n');
+  assert(head.includes('(sam@example.com, SAM@work.example.com)'), 'the warning lists the recorded emails');
+  assertEq(fixes, [
+    "    If that's a mistake: git config user.email sam@example.com",
+    "    If it's a new address of yours: node .claude/scripts/team-roster.mjs --add sam --email laptop@example.com --root .",
+  ], 'each fix sits on its own indented line, the config fix first');
 }
 
 // The same email from a member with no recorded emails: the roster just
@@ -174,7 +225,37 @@ const roster = normalizeRoster(TEAM);
   const f = identityFindings(bare, { user: 'sam', gitEmail: 'laptop@example.com' });
   assertEq(codes(f), ['email-unrecorded'], 'no recorded emails → suggest recording');
   assertEq(f[0].severity, 'info', 'recording suggestion is info');
-  assert(f[0].message.includes('--add sam --email laptop@example.com'), 'suggestion names the command');
+  assert(f[0].message.endsWith("--add sam --email laptop@example.com --root ."), 'suggestion names the command');
+}
+
+// An email that is only whitespace is no email: the entry has none to fix
+// git with, so this is the unrecorded case too.
+{
+  const blank = normalizeRoster({ sam: { gitEmails: ['  '] } });
+  assertEq(blank.members[0].gitEmails, [], 'a whitespace-only email is not recorded');
+  const f = identityFindings(blank, { user: 'sam', gitEmail: 'laptop@example.com' });
+  assertEq(f.map((x) => [x.code, x.severity]), [['email-unrecorded', 'info']],
+    'a roster whose only email is whitespace falls back to the unrecorded suggestion');
+  assert(!f[0].message.includes('git config user.email'), 'and offers no config fix from an empty list');
+}
+
+// Whatever a value holds, it reaches its command quoted. An email can carry a
+// name typed into the wrong setting; bare, it would split into arguments or
+// be read as a redirection.
+{
+  const f = identityFindings(roster, { user: 'sam', gitEmail: 'Sam Example <sam@example.com>' });
+  assert(f[0].message.endsWith("--email 'Sam Example <sam@example.com>' --root ."),
+    'an email with spaces is quoted in the command that records it');
+  const quoted = identityFindings(roster, { user: 'sam', gitEmail: "it's@example.com" })[0].message;
+  assert(quoted.includes(`--email 'it'"'"'s@example.com'`), 'an email holding a quote survives the same way');
+  const spaced = normalizeRoster({ sam: { gitEmails: ['sam example@example.com'] }, alex: { gitEmails: ['alex@example.com'] } });
+  const fix = identityFindings(spaced, { user: 'sam', gitEmail: 'laptop@example.com' })[0].message.split('\n')[1];
+  assertEq(fix, "    If that's a mistake: git config user.email 'sam example@example.com'",
+    'a recorded email with a space is quoted in the config fix');
+  const login = identityFindings(normalizeRoster({ sam: {}, alex: {} }), { user: 'sam', forgeLogin: 'sam example' });
+  assertEq(codes(login), ['forge-unrecorded'], 'a login with a space is merely unrecorded');
+  assert(login[0].message.endsWith("--add sam --forge 'sam example' --root ."),
+    'and is quoted in the command that records it');
 }
 
 // ---------- sessionStartLines ----------
@@ -183,12 +264,15 @@ const roster = normalizeRoster(TEAM);
   const lines = sessionStartLines(roster, { user: 'alexw', gitEmail: 'sam@example.com' });
   assertEq(lines.length, 2, 'alias and email mismatch both printed');
   assert(lines.every((l) => l.startsWith('Team identity: ')), 'lines are labelled');
-  assert(lines[0].endsWith('--set-user alex --root .'), 'a closing command is left copyable (no trailing period)');
+  assert(lines[0].endsWith("--set-user alex --root ."), 'a closing command is left copyable (no trailing period)');
   assertEq(sessionStartLines(normalizeRoster({ sam: {} }), { user: 'sam', gitEmail: 'laptop@example.com' }), [],
     'infos are not printed at session start');
   const unknown = sessionStartLines(roster, { user: 'sam', gitEmail: 'laptop@example.com' });
-  assertEq(unknown.length, 1, 'an email outside the member’s recorded ones is printed at session start');
-  assert(unknown[0].includes('git config user.email sam@example.com'), 'the printed line carries the fix');
+  assertEq(unknown.length, 1, 'an email outside the member’s recorded ones is printed at session start, as one finding');
+  assertEq(unknown[0].split('\n').slice(1), [
+    "    If that's a mistake: git config user.email sam@example.com",
+    "    If it's a new address of yours: node .claude/scripts/team-roster.mjs --add sam --email laptop@example.com --root .",
+  ], 'its fixes follow on their own lines, the config fix first');
   assertEq(sessionStartLines(normalizeRoster(undefined), { user: 'alexw' }), [], 'no roster → silent');
 }
 
@@ -199,7 +283,7 @@ const roster = normalizeRoster(TEAM);
   const f = folderFindings(roster, ['alex', 'alexw', 'sam', 'stray']);
   assertEq(f.map((x) => [x.folder, x.code]), [['alexw', 'alias-folder'], ['stray', 'orphan-folder']],
     'alias and orphan folders found; member folders pass');
-  assert(f[0].message.includes('--merge-alias alexw'), 'alias-folder finding names the merge');
+  assert(f[0].message.endsWith("--merge-alias alexw --root ."), 'alias-folder finding names the merge');
 }
 
 // Names that differ only in case are one folder on macOS and Windows.
