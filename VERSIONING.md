@@ -51,7 +51,7 @@ The contract is that each of these hooks is registered on its event.
 
 ### Scripts
 
-Most of `.claude/scripts/` is called by skills. A skill and the scripts it calls change together, and a workspace is not expected to call them, so they are not on this list even where a documentation chapter shows their command line.
+Most of `.claude/scripts/` is called by skills. A skill and the scripts it calls change together, and a workspace is not expected to call them, so they are not on this list even where a documentation chapter shows their command line. The migrators are in that group too, including the ones a chapter shows being run by hand.
 
 The scripts documented for people to run themselves are the contract, by name and by the flags their headers and `docs/` give them:
 
@@ -60,7 +60,6 @@ The scripts documented for people to run themselves are the contract, by name an
 | `team-roster.mjs` | `--suggest`, `--whoami`, `--check`, `--add <folder>`, `--set-user <name>`, `--merge-alias <alias>`, `--root <dir>`, `--offline`, `--name`, `--forge`, `--email`, `--alias`, `--detect`, `--new`, `--apply` |
 | `generate-claude-local.mjs` | `--root <path>`, `--force` |
 | `context-footprint.mjs` | `--root <dir>`, `--json`, `--budget <bytes>`, `--add <bytes>`, `--as <destination>` |
-| `migrate-session-layout.mjs` | `--session-name <name>`, `--all`, `--main`, `--root <path>` |
 
 `team-roster.mjs` takes one command at a time. `--name`, `--forge`, `--email`, `--alias` and `--detect` belong to `--add`, `--new` to `--set-user`, and `--apply` to `--merge-alias`, which is a dry run without it.
 
@@ -71,7 +70,7 @@ The fields under `workspace`, and what they mean. An absent field behaves as its
 | Field | Meaning |
 |---|---|
 | `name` | The workspace's name, shown at session start. |
-| `templateVersion` | The template version the workspace is on. `--init` sets it and `/workspace-update` advances it. |
+| `templateVersion` | The template version the workspace is on. Scaffolding sets it and `/workspace-update` advances it. |
 | `initialized` | `true` once `/workspace-init` has finished. `/workspace-update` requires it. |
 | `sessionModel` | The lifecycle for new work: `"session"`, the default, or `"task"`. |
 | `tracker` | The issue tracker, or `null` for none. `type` is `github-issues` or `gitlab-issues`. `repo` is the slug, or `"auto"` to take it from the git remote. `host` names a self-managed GitLab. `epics: "native"` selects GitLab group epics, and absent means label mode. `epicLabelPrefix` defaults to `epic:`. |
@@ -80,11 +79,12 @@ The fields under `workspace`, and what they mean. An absent field behaves as its
 | `mergeApproval` | `"ask"`, the default, merges after one question. `"operator"` stops before the merge and leaves it to a person. |
 | `release` | Settings for `/release`. `leakPatterns` are the patterns the release audit stops on. `consumerFacing` lists paths that ship whether or not they changed. `consumerReview: false` turns the advisory read of consumer-facing prose off. |
 | `team` | The team roster, keyed by folder name under `workspace-context/team-member/`. An entry may carry `name`, `forge`, `gitEmails` and `aliases`. |
-| `versionCheck` | `ambient`, `true` by default, sets whether a session start checks npm for a newer template. |
-| `alwaysLoadedBudgetBytes` | Budget for everything read at launch: `CLAUDE.md`, its imports and the active rules. Absent means no budget. |
+| `versionCheck` | `ambient` sets whether a session start checks npm for a newer template. It is `true` by default today. A comment in the hook that reads it says the default will flip to `false` at v1.0, so 1.0.0 is planned to change it. That is recorded here so the current default is not read as a promise. |
+| `alwaysLoadedBudgetBytes` | Budget for everything read at launch: `CLAUDE.md`, its imports and the active rules. The template ships `65536`. A workspace without the field has no budget. |
 | `canonicalBudgetBytes` | Budget for `workspace-context/canonical.md` alone. Off unless it holds a number. |
 | `subagentInlineMaxBytes` | Locked files up to this size are inlined into a subagent's context. Larger ones become pointers. |
 | `subagentContextMaxBytes` | The ceiling on what a subagent receives in all. Past it, the largest inlined files become pointers, largest first. |
+| `greeting` | Shipped by the template and read by nothing, so it has no effect. It may be removed before 1.0.0. |
 | `scratchpadDir`, `workSessionsDir`, `workspaceContextDir` | Where the scratchpad, work sessions and workspace context live: `workspace-scratchpad`, `work-sessions` and `workspace-context` by default. |
 
 `repos` has one entry per project repository, keyed by its directory under `repos/`. An entry carries `remote` and `branch`, the default branch that worktrees start from and PRs target (`main` when absent). It may also carry `primary: true`, which makes it the repo that `/start-work` and `/release` default to, and `merge`, `mergeApproval` and `release`, which mean what they mean under `workspace` but for that repository alone.
@@ -93,11 +93,14 @@ The fields under `workspace`, and what they mean. An absent field behaves as its
 
 Two keys are left over from earlier versions: `localFiles` and `templateModifications`. They are still read, and `/workspace-update` offers to move them into `.claude/template-modifications.json`.
 
-### CLI flags
+### CLI
 
-| Flag | What it does |
+Three forms are the contract:
+
+| Form | What it does |
 |---|---|
-| `--init [dir]` | Scaffolds a new workspace. With no `dir`, the current directory becomes the workspace. |
+| No flag, as in `npm create @ulysses-ai/workspace@<tag>` | Scaffolds a workspace by prompt. It asks for the name, the directory, the repos to register, a user name and which optional rules to activate, then initialises the git repo and clones the repos. |
+| `--init [dir]` | Scaffolds a new workspace without prompts. With no `dir`, the current directory becomes the workspace. |
 | `--upgrade [dir]` | Stages a template update for an existing workspace. With no `dir`, the current directory is used. |
 
 `--migrate` is not part of the contract. It is deprecated, and the CLI exits with an error that points to `--init` or `--upgrade`.
@@ -125,20 +128,23 @@ Paths are relative to `.claude/`. `localFiles` lists files the workspace owns ou
 
 ### Lifecycles
 
-Two lifecycles: **session**, the default, and **task**. `workspace.sessionModel` selects the one new work uses.
+Two lifecycles: **session**, the default, and **task**, the forward path for new work. `workspace.sessionModel` selects the one new work uses.
 
 ## Major (breaking)
 
-A major version is one where an existing workspace needs a manual step, a migration or a behaviour change to keep working after `--upgrade` and `/workspace-update`. A manual step is anything a person has to do beyond running those two and answering what the skill asks: edit a file, move content, change a setting.
+A major version is one where an existing workspace needs a manual step or a behaviour change to keep working after `--upgrade` and `/workspace-update`. A manual step is anything a person has to do beyond running those two and answering the update's own prompts: edit a file, move content, change a setting. A behaviour change is a change to something on the contract list above: a workspace can no longer rely on it working as documented. The internals of a skill or hook, and the wording of anything, can change in any release.
 
-Changes that are breaking. Each is minor instead when the release ships an automatic migration for it, which is the last item under Minor:
+Changes that are breaking:
 
-- A skill, rule, hook or listed script is removed or renamed.
+- A skill is removed or renamed. A migration can move files, but it cannot help someone who types a command that is no longer there, so this is always breaking unless the old name keeps working as an alias for at least one minor release.
+- A rule, hook or listed script is removed or renamed.
 - A `workspace.json` field is removed or renamed, or its meaning changes, or its default changes in a way that changes behaviour.
-- A CLI flag is removed or renamed.
+- A CLI flag is removed or renamed, or the interactive form is removed.
 - A lifecycle is removed.
 - The directory layout changes in a way that existing content has to move for.
 - The minimum Node version goes up. It is `>=20.9.0` today, from `engines` in `package.json`.
+
+Every item but the first is minor instead when the release ships an automatic migration for it, as defined under Minor.
 
 ## Minor
 
@@ -148,7 +154,9 @@ Changes that are breaking. Each is minor instead when the release ships an autom
 - A new lifecycle or option.
 - A change that ships with an automatic migration the upgrade runs, so that no manual step is needed.
 
-The last item is the one to be precise about. An automated migration that needs no operator action is not breaking. A directory rename is major when workspaces have to move their content by hand, and minor when a migrator in the payload does the move as part of the update. `/workspace-update` runs the migrators that ship in the payload whenever the workspace's previous version predates the step they were written for.
+The last item is the one to be precise about. A migration counts as automatic only when `/workspace-update` itself runs it, with no separate skill invocation and no operator decision beyond answering the update's own prompts. An automatic migration is not breaking.
+
+The update runs two idempotent migrators on every update. The rest are one-shot and version-gated, and it runs those inline when the workspace's previous version predates the step each was written for, with two exceptions. `migrate-sessions.mjs` is driven by the `/migrate-sessions` skill, which the update only suggests. `migrate-open-work.mjs` runs only when the user asks for it. A change that relies on `/migrate-sessions` or on any other separate step is breaking. A directory rename shows the difference: minor when a migrator does the move as part of the update, major when workspaces have to move their content by hand.
 
 ## Patch
 
@@ -156,7 +164,7 @@ Fixes that leave the contract as documented, and corrections to documentation an
 
 ## Before 1.0
 
-Before 1.0.0 a breaking change rides on a minor bump (`0.X.0`), not a major, so that the version number does not imply a stability that does not exist yet. The Major list still describes what such a release does to a workspace, and because the number will not carry the warning, the notes for the release have to say when a manual step is needed. After 1.0.0 the rules above apply as written.
+Before 1.0.0 a breaking change rides on a minor bump (`0.X.0`), not a major, so that the version number does not imply a stability that does not exist yet. The Major list still describes what such a release does to a workspace. Because the number will not carry the warning, the warning goes in the release notes, which are generated from merged PR titles, so a PR that makes a pre-1.0 breaking change has to say so in its title. After 1.0.0 the rules above apply as written.
 
 ## Pre-releases and dist-tags
 

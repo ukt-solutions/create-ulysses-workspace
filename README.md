@@ -130,7 +130,7 @@ The eleven [chapters](https://github.com/ukt-solutions/create-ulysses-workspace/
 | | [10](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/10-installation-and-upgrades.md) | Installation and Upgrades |
 | Practice | [11](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/11-behavioral-patterns.md) | Behavioral Patterns |
 
-What counts as a breaking change, and what the version number does and does not promise, is defined in [VERSIONING.md](VERSIONING.md).
+What counts as a breaking change, and what the version number does and does not promise, is defined in [VERSIONING.md](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/VERSIONING.md).
 
 ## Status
 
