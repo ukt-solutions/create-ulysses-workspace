@@ -37,10 +37,10 @@ function assertEq(actual, expected, msg) {
 
 const codes = (findings) => findings.map((f) => f.code);
 
-// The aegisprotect shape that motivated gh:133: one person, two folders.
+// The shape that motivated gh:133: one person, two folders.
 const TEAM = {
-  myron: { name: 'Myron', forge: 'myron-gh', gitEmails: ['myron@example.com', 'MYRON@work.example'] },
-  andre: { name: 'Andre', forge: 'andre-gh', gitEmails: ['andre@example.com'], aliases: ['mccar'] },
+  sam: { name: 'Sam Example', forge: 'sam-example', gitEmails: ['sam@example.com', 'SAM@work.example.com'] },
+  alex: { name: 'Alex Example', forge: 'alex-example', gitEmails: ['alex@example.com'], aliases: ['alexw'] },
 };
 
 // ---------- normalizeRoster ----------
@@ -57,9 +57,9 @@ const TEAM = {
   const r = normalizeRoster(TEAM);
   assert(r.present, 'roster present');
   assertEq(r.problems, [], 'clean roster has no problems');
-  assertEq(r.members.map((m) => m.key), ['myron', 'andre'], 'members keep key order');
-  assertEq(r.members[0].forge, ['myron-gh'], 'string forge becomes a list');
-  assertEq(r.members[1].aliases, ['mccar'], 'aliases kept');
+  assertEq(r.members.map((m) => m.key), ['sam', 'alex'], 'members keep key order');
+  assertEq(r.members[0].forge, ['sam-example'], 'string forge becomes a list');
+  assertEq(r.members[1].aliases, ['alexw'], 'aliases kept');
 }
 
 {
@@ -69,7 +69,7 @@ const TEAM = {
 }
 
 {
-  const r = normalizeRoster({ alex: { gitEmail: 'a@x', forge: 7, name: '' } });
+  const r = normalizeRoster({ alex: { gitEmail: 'a@example.com', forge: 7, name: '' } });
   const warnings = r.problems.filter((p) => p.severity === 'warning').map((p) => p.message);
   assert(warnings.some((m) => m.includes('unknown field "gitEmail"')), 'typo field warned');
   assert(warnings.some((m) => m.includes('forge must be')), 'non-string forge warned');
@@ -79,8 +79,8 @@ const TEAM = {
 
 {
   const r = normalizeRoster({
-    a: { forge: 'Same', gitEmails: ['x@y.z'], aliases: ['b', 'shared'] },
-    b: { forge: 'same', gitEmails: ['X@Y.Z'], aliases: ['shared'] },
+    a: { forge: 'Same', gitEmails: ['x@example.com'], aliases: ['b', 'shared'] },
+    b: { forge: 'same', gitEmails: ['X@EXAMPLE.COM'], aliases: ['shared'] },
   });
   const issues = r.problems.filter((p) => p.severity === 'issue').map((p) => p.message);
   assert(issues.some((m) => m.includes('alias "b" is also a member')), 'alias colliding with a member key');
@@ -101,18 +101,18 @@ const TEAM = {
 const roster = normalizeRoster(TEAM);
 
 {
-  assertEq(lookup(roster, 'andre')?.via, 'key', 'lookup by key');
-  assertEq(lookup(roster, 'mccar')?.member.key, 'andre', 'lookup resolves an alias to its owner');
+  assertEq(lookup(roster, 'alex')?.via, 'key', 'lookup by key');
+  assertEq(lookup(roster, 'alexw')?.member.key, 'alex', 'lookup resolves an alias to its owner');
   assertEq(lookup(roster, 'nobody'), null, 'unknown name');
-  assertEq(lookup(normalizeRoster(undefined), 'andre'), null, 'no roster → no lookup');
+  assertEq(lookup(normalizeRoster(undefined), 'alex'), null, 'no roster → no lookup');
 }
 
 {
-  assertEq(suggestUser(roster, { forgeLogin: 'ANDRE-GH', osUser: 'whoever' }).user, 'andre', 'forge login wins');
-  assertEq(suggestUser(roster, { forgeLogin: 'nobody', gitEmail: 'myron@work.example' }).source, 'git-email',
+  assertEq(suggestUser(roster, { forgeLogin: 'ALEX-EXAMPLE', osUser: 'whoever' }).user, 'alex', 'forge login wins');
+  assertEq(suggestUser(roster, { forgeLogin: 'nobody', gitEmail: 'sam@work.example.com' }).source, 'git-email',
     'git email is second');
-  const os = suggestUser(roster, { osUser: 'mccar' });
-  assertEq([os.user, os.source], ['andre', 'os-alias'], 'an OS username that is an alias suggests its owner');
+  const os = suggestUser(roster, { osUser: 'alexw' });
+  assertEq([os.user, os.source], ['alex', 'os-alias'], 'an OS username that is an alias suggests its owner');
   assertEq(suggestUser(roster, { osUser: 'jane.doe' }).user, 'jane-doe', 'OS username is sanitized');
   assertEq(suggestUser(normalizeRoster(undefined), { osUser: 'zed' }), { user: 'zed', source: 'os', member: null },
     'no roster → OS username');
@@ -121,8 +121,8 @@ const roster = normalizeRoster(TEAM);
 }
 
 {
-  assertEq(attributionHandle(roster, { user: 'andre', forgeLogin: 'live' }), 'andre-gh', 'handle from the roster');
-  assertEq(attributionHandle(roster, { user: 'mccar' }), 'andre-gh', 'handle through an alias');
+  assertEq(attributionHandle(roster, { user: 'alex', forgeLogin: 'live' }), 'alex-example', 'handle from the roster');
+  assertEq(attributionHandle(roster, { user: 'alexw' }), 'alex-example', 'handle through an alias');
   assertEq(attributionHandle(normalizeRoster({ zed: {} }), { user: 'zed', forgeLogin: 'zed-live' }), 'zed-live',
     'no roster login → live login');
   assertEq(attributionHandle(normalizeRoster(undefined), { user: 'zed' }), 'zed', 'nothing else → workspace.user');
@@ -131,16 +131,16 @@ const roster = normalizeRoster(TEAM);
 // ---------- identityFindings ----------
 
 {
-  assertEq(identityFindings(normalizeRoster(undefined), { user: 'mccar' }), [], 'no roster → no findings');
+  assertEq(identityFindings(normalizeRoster(undefined), { user: 'alexw' }), [], 'no roster → no findings');
   assertEq(identityFindings(roster, {}), [], 'no workspace.user → no findings (setup hint covers it)');
-  assertEq(identityFindings(roster, { user: 'andre', forgeLogin: 'andre-gh', gitEmail: 'andre@example.com' }), [],
+  assertEq(identityFindings(roster, { user: 'alex', forgeLogin: 'alex-example', gitEmail: 'alex@example.com' }), [],
     'consistent identity → no findings');
 }
 
 {
-  const f = identityFindings(roster, { user: 'mccar', gitEmail: 'andre@example.com' });
+  const f = identityFindings(roster, { user: 'alexw', gitEmail: 'alex@example.com' });
   assertEq(codes(f), ['user-alias'], 'alias user warned; matching email is not a mismatch through the alias');
-  assert(f[0].message.includes('--set-user andre'), 'alias warning names the fix');
+  assert(/--set-user alex\b/.test(f[0].message), 'alias warning names the fix');
 }
 
 {
@@ -150,13 +150,13 @@ const roster = normalizeRoster(TEAM);
 }
 
 {
-  const f = identityFindings(roster, { user: 'myron', forgeLogin: 'andre-gh', gitEmail: 'andre@example.com' });
+  const f = identityFindings(roster, { user: 'sam', forgeLogin: 'alex-example', gitEmail: 'alex@example.com' });
   assertEq(codes(f), ['forge-mismatch', 'email-mismatch'], 'someone else’s login and email both flagged');
   assert(f.every((x) => x.severity === 'warning'), 'mismatches are warnings');
 }
 
 {
-  const f = identityFindings(roster, { user: 'myron', forgeLogin: 'new-login', gitEmail: 'laptop@example.com' });
+  const f = identityFindings(roster, { user: 'sam', forgeLogin: 'new-login', gitEmail: 'laptop@example.com' });
   assertEq(codes(f), ['forge-unrecorded', 'email-unrecorded'], 'unclaimed login and email suggested for recording');
   assert(f.every((x) => x.severity === 'info'), 'unrecorded identities are info');
 }
@@ -164,23 +164,23 @@ const roster = normalizeRoster(TEAM);
 // ---------- sessionStartLines ----------
 
 {
-  const lines = sessionStartLines(roster, { user: 'mccar', gitEmail: 'myron@example.com' });
+  const lines = sessionStartLines(roster, { user: 'alexw', gitEmail: 'sam@example.com' });
   assertEq(lines.length, 2, 'alias and email mismatch both printed');
   assert(lines.every((l) => l.startsWith('Team identity: ')), 'lines are labelled');
-  assert(lines[0].endsWith('--set-user andre --root .'), 'a closing command is left copyable (no trailing period)');
-  assertEq(sessionStartLines(roster, { user: 'myron', gitEmail: 'laptop@example.com' }), [],
+  assert(lines[0].endsWith('--set-user alex --root .'), 'a closing command is left copyable (no trailing period)');
+  assertEq(sessionStartLines(roster, { user: 'sam', gitEmail: 'laptop@example.com' }), [],
     'infos are not printed at session start');
-  assertEq(sessionStartLines(normalizeRoster(undefined), { user: 'mccar' }), [], 'no roster → silent');
+  assertEq(sessionStartLines(normalizeRoster(undefined), { user: 'alexw' }), [], 'no roster → silent');
 }
 
 // ---------- folderFindings ----------
 
 {
   assertEq(folderFindings(normalizeRoster(undefined), ['x']), [], 'no roster → no folder findings');
-  const f = folderFindings(roster, ['andre', 'mccar', 'myron', 'stray']);
-  assertEq(f.map((x) => [x.folder, x.code]), [['mccar', 'alias-folder'], ['stray', 'orphan-folder']],
+  const f = folderFindings(roster, ['alex', 'alexw', 'sam', 'stray']);
+  assertEq(f.map((x) => [x.folder, x.code]), [['alexw', 'alias-folder'], ['stray', 'orphan-folder']],
     'alias and orphan folders found; member folders pass');
-  assert(f[0].message.includes('--merge-alias mccar'), 'alias-folder finding names the merge');
+  assert(f[0].message.includes('--merge-alias alexw'), 'alias-folder finding names the merge');
 }
 
 // ---------- readers ----------

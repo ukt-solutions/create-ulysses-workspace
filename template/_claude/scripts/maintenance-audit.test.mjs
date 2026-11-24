@@ -1241,11 +1241,11 @@ console.log('# maintenance-audit');
 }
 
 // Section 8 — team identity (gh:133). The fixture is the split that
-// motivated it: andre's context in andre/, more of it in mccar/ (his OS
-// username), and a machine still set to mccar.
+// motivated it: alex's context in alex/, more of it in alexw/ (their OS
+// username), and a machine still set to alexw.
 const TEAM = {
-  myron: { forge: 'myron-gh', gitEmails: ['fixture@example.com'] },
-  andre: { forge: 'andre-gh', gitEmails: ['andre@example.com'], aliases: ['mccar'] },
+  sam: { forge: 'sam-example', gitEmails: ['fixture@example.com'] },
+  alex: { forge: 'alex-example', gitEmails: ['alex@example.com'], aliases: ['alexw'] },
 };
 
 function teamWorkspace(team = TEAM) {
@@ -1253,14 +1253,14 @@ function teamWorkspace(team = TEAM) {
     const cfg = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
     cfg.workspace.team = team;
     writeFileSync(join(r, 'workspace.json'), JSON.stringify(cfg, null, 2) + '\n');
-    for (const who of ['andre', 'mccar', 'stray']) {
+    for (const who of ['alex', 'alexw', 'stray']) {
       mkdirSync(join(r, 'workspace-context', 'team-member', who), { recursive: true });
       writeFileSync(join(r, 'workspace-context', 'team-member', who, 'note.md'), '---\ndescription: n\n---\nx\n');
     }
     writeCatalogs(r); // the per-user indexes, so section 5 stays clean
   });
   // Machine-local, never committed — written after the fixture's commit.
-  writeFileSync(join(root, '.claude', 'settings.local.json'), JSON.stringify({ workspace: { user: 'mccar' } }));
+  writeFileSync(join(root, '.claude', 'settings.local.json'), JSON.stringify({ workspace: { user: 'alexw' } }));
   return root;
 }
 
@@ -1281,21 +1281,21 @@ function teamWorkspace(team = TEAM) {
   const result = await audit(root, {
     offline: false,
     fetchFn: CURRENT,
-    forgeLoginFn: () => { asked++; return 'andre-gh'; },
+    forgeLoginFn: () => { asked++; return 'alex-example'; },
   });
   const team = bySection(result, 'team');
   const files = team.map((f) => `${f.severity} ${f.file}`).sort();
   assertEq(files, [
     'warning .claude/settings.local.json',
     'warning .claude/settings.local.json',
-    'warning workspace-context/team-member/mccar/',
+    'warning workspace-context/team-member/alexw/',
     'warning workspace-context/team-member/stray/',
   ], 'alias folder, orphan folder, alias user and email mismatch reported');
-  assertTrue(team.some((f) => f.message.includes('--merge-alias mccar')), 'alias folder names the merge command');
-  assertTrue(team.some((f) => f.message.includes('--set-user andre')), 'alias user names the switch command');
-  assertTrue(team.some((f) => f.message.includes('fixture@example.com') && f.message.includes('myron')),
+  assertTrue(team.some((f) => f.message.includes('--merge-alias alexw')), 'alias folder names the merge command');
+  assertTrue(team.some((f) => /--set-user alex\b/.test(f.message)), 'alias user names the switch command');
+  assertTrue(team.some((f) => f.message.includes('fixture@example.com') && f.message.includes('sam')),
     'email mismatch names the owner');
-  assertTrue(!team.some((f) => f.message.includes('andre-gh')), 'the forge login matches the alias owner — no mismatch');
+  assertTrue(!team.some((f) => f.message.includes('alex-example')), 'the forge login matches the alias owner — no mismatch');
   assertEq(asked, 1, 'the forge is asked once');
   assertEq(result.summary.exitCode, 0, 'team warnings do not fail the audit');
   cleanup(root);
@@ -1326,7 +1326,7 @@ function teamWorkspace(team = TEAM) {
   const wtPath = join(root, '.claude', 'worktrees', 'feature-x');
   git(root, ['worktree', 'add', '-q', '-b', 'feature/x', wtPath]);
   const result = await audit(wtPath);
-  assertTrue(bySection(result, 'team').some((f) => f.message.includes('--set-user andre')),
+  assertTrue(bySection(result, 'team').some((f) => /--set-user alex\b/.test(f.message)),
     'the launcher’s settings.local.json is checked from a worktree');
   cleanup(root);
 }

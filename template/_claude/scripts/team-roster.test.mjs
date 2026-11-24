@@ -44,8 +44,8 @@ function assertThrows(fn, matcher, msg) {
 }
 
 const TEAM = {
-  myron: { name: 'Myron', forge: 'myron-gh', gitEmails: ['myron@example.com'] },
-  andre: { name: 'Andre', forge: 'andre-gh', gitEmails: ['andre@example.com'], aliases: ['mccar'] },
+  sam: { name: 'Sam Example', forge: 'sam-example', gitEmails: ['sam@example.com'] },
+  alex: { name: 'Alex Example', forge: 'alex-example', gitEmails: ['alex@example.com'], aliases: ['alexw'] },
 };
 
 /** Real git; gh answers with `login` (null = signed out) and records the call. */
@@ -64,7 +64,7 @@ function git(root, ...args) {
   return r.stdout;
 }
 
-function workspace({ team = TEAM, user = null, email = 'andre@example.com', gitRepo = true } = {}) {
+function workspace({ team = TEAM, user = null, email = 'alex@example.com', gitRepo = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'team-roster-cli-'));
   writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { name: 't', team }, repos: {} }, null, 2) + '\n');
   if (user) {
@@ -94,32 +94,32 @@ const TM = 'workspace-context/team-member';
   assertThrows(() => parseArgs(['--check', '--whoami']), /pick one/, 'one command only');
   assertThrows(() => parseArgs(['--add']), /needs a value/, '--add needs a key');
   assertThrows(() => parseArgs(['--check', '--bogus']), /unknown argument/, 'unknown flag');
-  const a = parseArgs(['--add', 'zed', '--forge', 'a', '--forge', 'b', '--email', 'z@x', '--detect']);
-  assertEq([a.command, a.target, a.forge, a.emails, a.detect], ['add', 'zed', ['a', 'b'], ['z@x'], true], 'repeatable values');
+  const a = parseArgs(['--add', 'zed', '--forge', 'a', '--forge', 'b', '--email', 'z@example.com', '--detect']);
+  assertEq([a.command, a.target, a.forge, a.emails, a.detect], ['add', 'zed', ['a', 'b'], ['z@example.com'], true], 'repeatable values');
 }
 
 // ---------- --suggest ----------
 
 {
   const root = workspace({ email: 'nobody@example.com' });
-  put(root, `${TM}/andre/a.md`, 'x');
-  put(root, `${TM}/mccar/b.md`, 'y');
-  const { out } = run(['--suggest', '--root', root, '--offline'], { spawnFn: fakeSpawn(), osUser: 'mccar' });
-  assertEq([out.suggestion, out.source], ['andre', 'os-alias'], 'OS alias suggests the owner');
-  assertEq(out.folders, ['andre', 'mccar'], 'folders listed');
-  assertEq(out.aliases, { mccar: 'andre' }, 'alias map listed');
-  const live = run(['--suggest', '--root', root], { spawnFn: fakeSpawn('MYRON-GH'), osUser: 'mccar' }).out;
-  assertEq([live.suggestion, live.source], ['myron', 'forge'], 'forge login outranks the OS username');
+  put(root, `${TM}/alex/a.md`, 'x');
+  put(root, `${TM}/alexw/b.md`, 'y');
+  const { out } = run(['--suggest', '--root', root, '--offline'], { spawnFn: fakeSpawn(), osUser: 'alexw' });
+  assertEq([out.suggestion, out.source], ['alex', 'os-alias'], 'OS alias suggests the owner');
+  assertEq(out.folders, ['alex', 'alexw'], 'folders listed');
+  assertEq(out.aliases, { alexw: 'alex' }, 'alias map listed');
+  const live = run(['--suggest', '--root', root], { spawnFn: fakeSpawn('SAM-EXAMPLE'), osUser: 'alexw' }).out;
+  assertEq([live.suggestion, live.source], ['sam', 'forge'], 'forge login outranks the OS username');
   cleanup(root);
 }
 
 // ---------- --whoami ----------
 
 {
-  const root = workspace({ user: 'mccar' });
+  const root = workspace({ user: 'alexw' });
   const calls = [];
   const { out } = run(['--whoami', '--root', root], { spawnFn: fakeSpawn('ignored', calls) });
-  assertEq([out.user, out.member, out.via, out.handle], ['mccar', 'andre', 'alias', 'andre-gh'], 'alias resolves to owner and handle');
+  assertEq([out.user, out.member, out.via, out.handle], ['alexw', 'alex', 'alias', 'alex-example'], 'alias resolves to owner and handle');
   assertEq(calls, [], 'roster login answers without calling the forge');
   cleanup(root);
 }
@@ -136,14 +136,14 @@ const TM = 'workspace-context/team-member';
 // ---------- --check ----------
 
 {
-  const root = workspace({ user: 'mccar' });
-  put(root, `${TM}/andre/a.md`, 'x');
-  put(root, `${TM}/mccar/b.md`, 'y');
+  const root = workspace({ user: 'alexw' });
+  put(root, `${TM}/alex/a.md`, 'x');
+  put(root, `${TM}/alexw/b.md`, 'y');
   put(root, `${TM}/stray/c.md`, 'z');
   const { out, code } = run(['--check', '--root', root, '--offline'], { spawnFn: fakeSpawn() });
   assertEq(code, 0, 'warnings only → exit 0');
   assertEq(out.findings.map((f) => f.code).sort(), ['alias-folder', 'orphan-folder', 'user-alias'], 'all three problems found');
-  assertEq(out.gitEmail, 'andre@example.com', 'git email read from the repo');
+  assertEq(out.gitEmail, 'alex@example.com', 'git email read from the repo');
   cleanup(root);
 }
 
@@ -166,19 +166,19 @@ const TM = 'workspace-context/team-member';
   assertEq(JSON.parse(written).workspace.name, 't', 'other workspace keys kept');
   const again = run(['--add', 'zed', '--detect', '--root', root], { spawnFn: fakeSpawn('ZED-GH') }).out;
   assertEq(again.changed, false, 're-running is a no-op (case-insensitive union)');
-  const more = run(['--add', 'zed', '--forge', 'zed-gl', '--email', 'zed@work.example', '--root', root], { spawnFn: fakeSpawn() }).out;
+  const more = run(['--add', 'zed', '--forge', 'zed-gl', '--email', 'zed@work.example.com', '--root', root], { spawnFn: fakeSpawn() }).out;
   assertEq(more.entry.forge, ['zed-gh', 'zed-gl'], 'a second login turns forge into a list');
   cleanup(root);
 }
 
 {
-  const root = workspace({ email: 'andre@example.com' });
-  const { out } = run(['--add', 'zed', '--detect', '--root', root], { spawnFn: fakeSpawn('myron-gh') });
+  const root = workspace({ email: 'alex@example.com' });
+  const { out } = run(['--add', 'zed', '--detect', '--root', root], { spawnFn: fakeSpawn('sam-example') });
   assertEq(out.entry, {}, 'identities owned by others are not copied');
   assertEq(out.notes.length, 2, 'both skips explained');
-  assertThrows(() => run(['--add', 'zed', '--email', 'myron@example.com', '--root', root], { spawnFn: fakeSpawn() }),
+  assertThrows(() => run(['--add', 'zed', '--email', 'sam@example.com', '--root', root], { spawnFn: fakeSpawn() }),
     /contradict/, 'an explicit email owned by someone else is refused');
-  assertThrows(() => run(['--add', 'mccar', '--root', root], { spawnFn: fakeSpawn() }), /alias of andre/,
+  assertThrows(() => run(['--add', 'alexw', '--root', root], { spawnFn: fakeSpawn() }), /alias of alex\b/,
     'adding an alias as a member is refused');
   assertThrows(() => run(['--add', 'bad/key', '--root', root], { spawnFn: fakeSpawn() }), /valid folder name/,
     'invalid key refused');
@@ -188,34 +188,34 @@ const TM = 'workspace-context/team-member';
 // ---------- --set-user ----------
 
 {
-  const root = workspace({ user: 'mccar', gitRepo: false });
-  writeFileSync(join(root, 'CLAUDE.local.md'), renderClaudeLocal('mccar'));
-  const { out } = run(['--set-user', 'andre', '--root', root], { spawnFn: fakeSpawn() });
-  assertEq([out.previous, out.user, out.claudeLocal, out.createdFolder], ['mccar', 'andre', 'written', true],
+  const root = workspace({ user: 'alexw', gitRepo: false });
+  writeFileSync(join(root, 'CLAUDE.local.md'), renderClaudeLocal('alexw'));
+  const { out } = run(['--set-user', 'alex', '--root', root], { spawnFn: fakeSpawn() });
+  assertEq([out.previous, out.user, out.claudeLocal, out.createdFolder], ['alexw', 'alex', 'written', true],
     'generated CLAUDE.local.md rewritten, folder created');
   const settings = JSON.parse(readFileSync(join(root, '.claude', 'settings.local.json'), 'utf8'));
-  assertEq([settings.workspace.user, settings.other], ['andre', 1], 'settings merged, not replaced');
-  assertEq(readFileSync(join(root, 'CLAUDE.local.md'), 'utf8'), renderClaudeLocal('andre'), 'CLAUDE.local.md points at andre');
-  assert(existsSync(join(root, TM, 'andre')), 'owner folder exists');
+  assertEq([settings.workspace.user, settings.other], ['alex', 1], 'settings merged, not replaced');
+  assertEq(readFileSync(join(root, 'CLAUDE.local.md'), 'utf8'), renderClaudeLocal('alex'), 'CLAUDE.local.md points at alex');
+  assert(existsSync(join(root, TM, 'alex')), 'owner folder exists');
   cleanup(root);
 }
 
 {
-  const root = workspace({ user: 'mccar', gitRepo: false });
-  writeFileSync(join(root, 'CLAUDE.local.md'), `# mine\n${renderClaudeLocal('mccar')}\nmore notes\n`);
-  assertEq(run(['--set-user', 'andre', '--root', root], { spawnFn: fakeSpawn() }).out.claudeLocal, 'import-updated',
+  const root = workspace({ user: 'alexw', gitRepo: false });
+  writeFileSync(join(root, 'CLAUDE.local.md'), `# mine\n${renderClaudeLocal('alexw')}\nmore notes\n`);
+  assertEq(run(['--set-user', 'alex', '--root', root], { spawnFn: fakeSpawn() }).out.claudeLocal, 'import-updated',
     'a customised CLAUDE.local.md has only its import swapped');
   const text = readFileSync(join(root, 'CLAUDE.local.md'), 'utf8');
-  assert(text.includes('# mine') && text.includes('team-member/andre/index.md') && !text.includes('mccar'), 'custom lines kept');
+  assert(text.includes('# mine') && text.includes('team-member/alex/index.md') && !text.includes('alexw'), 'custom lines kept');
   writeFileSync(join(root, 'CLAUDE.local.md'), '# hand written\n');
-  assertEq(run(['--set-user', 'myron', '--new', '--root', root], { spawnFn: fakeSpawn() }).out.claudeLocal, 'left-alone',
+  assertEq(run(['--set-user', 'sam', '--new', '--root', root], { spawnFn: fakeSpawn() }).out.claudeLocal, 'left-alone',
     'a CLAUDE.local.md without the import is left alone');
   cleanup(root);
 }
 
 {
-  const root = workspace({ user: 'mccar', gitRepo: false });
-  assertThrows(() => run(['--set-user', 'mccar', '--root', root], { spawnFn: fakeSpawn() }), /alias of andre/, 'alias refused');
+  const root = workspace({ user: 'alexw', gitRepo: false });
+  assertThrows(() => run(['--set-user', 'alexw', '--root', root], { spawnFn: fakeSpawn() }), /alias of alex\b/, 'alias refused');
   assertThrows(() => run(['--set-user', 'zed', '--root', root], { spawnFn: fakeSpawn() }), /not in the team roster/,
     'unknown name refused');
   assertEq(run(['--set-user', 'zed', '--new', '--root', root], { spawnFn: fakeSpawn() }).out.user, 'zed', '--new allows it');
@@ -225,66 +225,66 @@ const TM = 'workspace-context/team-member';
 // ---------- --merge-alias ----------
 
 function splitWorkspace() {
-  const root = workspace({ user: 'andre' });
+  const root = workspace({ user: 'alex' });
   put(root, '.gitignore', 'local-only-*\n');
-  put(root, `${TM}/andre/research_x.md`, '---\nauthor: andre\n---\nmine\n');
-  put(root, `${TM}/andre/design_w.md`, '---\nauthor: mccar\n---\nwritten from the alias machine\n');
-  put(root, `${TM}/mccar/braindump_y.md`, '---\ntype: braindump\nauthor: mccar\n---\nbody mentions author: mccar\n');
-  put(root, `${TM}/mccar/sub/handoff_z.md`, '---\nauthor: "mccar"\n---\n');
-  put(root, `${TM}/mccar/index.md`, '# generated\n');
-  put(root, 'workspace-context/shared/notes.md', 'see team-member/mccar/braindump_y.md\n');
+  put(root, `${TM}/alex/research_x.md`, '---\nauthor: alex\n---\nmine\n');
+  put(root, `${TM}/alex/design_w.md`, '---\nauthor: alexw\n---\nwritten from the alias machine\n');
+  put(root, `${TM}/alexw/braindump_y.md`, '---\ntype: braindump\nauthor: alexw\n---\nbody mentions author: alexw\n');
+  put(root, `${TM}/alexw/sub/handoff_z.md`, '---\nauthor: "alexw"\n---\n');
+  put(root, `${TM}/alexw/index.md`, '# generated\n');
+  put(root, 'workspace-context/shared/notes.md', 'see team-member/alexw/braindump_y.md\n');
   git(root, 'add', '-A');
   git(root, 'commit', '-q', '-m', 'seed');
-  put(root, `${TM}/mccar/local-only-draft.md`, 'draft\n');
+  put(root, `${TM}/alexw/local-only-draft.md`, 'draft\n');
   return root;
 }
 
 {
   const root = splitWorkspace();
-  const { out, code } = run(['--merge-alias', 'mccar', '--root', root], { spawnFn: fakeSpawn() });
+  const { out, code } = run(['--merge-alias', 'alexw', '--root', root], { spawnFn: fakeSpawn() });
   assertEq(code, 0, 'dry run exits 0');
   assertEq(out.dryRun, true, 'dry run by default');
-  assertEq(out.owner, 'andre', 'owner resolved');
+  assertEq(out.owner, 'alex', 'owner resolved');
   assertEq(out.moves.map((m) => [m.to.split('/').slice(-2).join('/'), m.tracked]).sort(),
-    [['andre/braindump_y.md', true], ['andre/local-only-draft.md', false], ['sub/handoff_z.md', true]],
+    [['alex/braindump_y.md', true], ['alex/local-only-draft.md', false], ['sub/handoff_z.md', true]],
     'tracked and local-only files planned');
-  assertEq(out.drop, [{ path: `${TM}/mccar/index.md`, tracked: true }], 'generated index dropped');
+  assertEq(out.drop, [{ path: `${TM}/alexw/index.md`, tracked: true }], 'generated index dropped');
   assertEq(out.references, ['workspace-context/shared/notes.md'], 'hand-written references listed');
-  assertEq(out.retag, [`${TM}/andre/design_w.md`], "owner-folder file authored as the alias planned for retagging");
-  assert(existsSync(join(root, TM, 'mccar', 'braindump_y.md')), 'dry run moves nothing');
+  assertEq(out.retag, [`${TM}/alex/design_w.md`], "owner-folder file authored as the alias planned for retagging");
+  assert(existsSync(join(root, TM, 'alexw', 'braindump_y.md')), 'dry run moves nothing');
 
-  const applied = run(['--merge-alias', 'mccar', '--apply', '--root', root], { spawnFn: fakeSpawn() }).out;
+  const applied = run(['--merge-alias', 'alexw', '--apply', '--root', root], { spawnFn: fakeSpawn() }).out;
   assertEq([applied.result.moved, applied.result.tracked, applied.result.authorsRewritten, applied.result.folderRemoved],
     [3, 2, 3, true], 'moved, authors rewritten (two moved, one already in place), alias folder removed');
-  assert(readFileSync(join(root, TM, 'andre', 'design_w.md'), 'utf8').startsWith('---\nauthor: andre\n---'),
+  assert(readFileSync(join(root, TM, 'alex', 'design_w.md'), 'utf8').startsWith('---\nauthor: alex\n---'),
     'owner-folder file retagged');
-  assert(!existsSync(join(root, TM, 'mccar')), 'alias folder gone');
-  const y = readFileSync(join(root, TM, 'andre', 'braindump_y.md'), 'utf8');
-  assert(y.includes('author: andre') && y.includes('body mentions author: mccar'), 'only frontmatter author rewritten');
-  assert(readFileSync(join(root, TM, 'andre', 'sub', 'handoff_z.md'), 'utf8').includes('author: "andre"'), 'quoted author rewritten');
+  assert(!existsSync(join(root, TM, 'alexw')), 'alias folder gone');
+  const y = readFileSync(join(root, TM, 'alex', 'braindump_y.md'), 'utf8');
+  assert(/^author: alex$/m.test(y) && y.includes('body mentions author: alexw'), 'only frontmatter author rewritten');
+  assert(readFileSync(join(root, TM, 'alex', 'sub', 'handoff_z.md'), 'utf8').includes('author: "alex"'), 'quoted author rewritten');
   const status = git(root, 'status', '--porcelain');
-  assert(/^R. .*mccar\/braindump_y\.md -> .*andre\/braindump_y\.md$/m.test(status), 'git records a rename');
-  assert(/^D. .*mccar\/index\.md$/m.test(status), 'tracked index removed from git');
-  assert(existsSync(join(root, TM, 'andre', 'local-only-draft.md')), 'local-only draft moved');
-  const rerun = run(['--merge-alias', 'mccar', '--root', root], { spawnFn: fakeSpawn() }).out;
+  assert(/^R. .*alexw\/braindump_y\.md -> .*alex\/braindump_y\.md$/m.test(status), 'git records a rename');
+  assert(/^D. .*alexw\/index\.md$/m.test(status), 'tracked index removed from git');
+  assert(existsSync(join(root, TM, 'alex', 'local-only-draft.md')), 'local-only draft moved');
+  const rerun = run(['--merge-alias', 'alexw', '--root', root], { spawnFn: fakeSpawn() }).out;
   assertEq([rerun.moves.length, rerun.drop.length, rerun.retag.length], [0, 0, 0], 'a second run finds nothing to do');
   cleanup(root);
 }
 
 {
   const root = splitWorkspace();
-  put(root, `${TM}/andre/braindump_y.md`, 'clash\n');
-  const { out, code } = run(['--merge-alias', 'mccar', '--root', root], { spawnFn: fakeSpawn() });
+  put(root, `${TM}/alex/braindump_y.md`, 'clash\n');
+  const { out, code } = run(['--merge-alias', 'alexw', '--root', root], { spawnFn: fakeSpawn() });
   assertEq([code, out.conflicts.length], [1, 1], 'conflict reported in the dry run');
-  assertThrows(() => run(['--merge-alias', 'mccar', '--apply', '--root', root], { spawnFn: fakeSpawn() }),
+  assertThrows(() => run(['--merge-alias', 'alexw', '--apply', '--root', root], { spawnFn: fakeSpawn() }),
     /already exist/, 'apply refuses on conflict');
-  assert(existsSync(join(root, TM, 'mccar', 'sub', 'handoff_z.md')), 'nothing moved on refusal');
+  assert(existsSync(join(root, TM, 'alexw', 'sub', 'handoff_z.md')), 'nothing moved on refusal');
   cleanup(root);
 }
 
 {
   const root = workspace();
-  assertThrows(() => run(['--merge-alias', 'andre', '--root', root], { spawnFn: fakeSpawn() }), /member, not an alias/,
+  assertThrows(() => run(['--merge-alias', 'alex', '--root', root], { spawnFn: fakeSpawn() }), /member, not an alias/,
     'a member is not mergeable');
   assertThrows(() => run(['--merge-alias', 'zed', '--root', root], { spawnFn: fakeSpawn() }), /not in the team roster/,
     'an undeclared folder is not mergeable');
@@ -294,15 +294,15 @@ function splitWorkspace() {
 // ---------- CLI process ----------
 
 {
-  const root = workspace({ user: 'mccar' });
+  const root = workspace({ user: 'alexw' });
   const script = join(here, 'team-roster.mjs');
-  const r = spawnSync(process.execPath, [script, '--set-user', 'mccar', '--root', root], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [script, '--set-user', 'alexw', '--root', root], { encoding: 'utf8' });
   assertEq(r.status, 1, 'refusal exits 1');
-  assert(JSON.parse(r.stdout).refused.includes('alias of andre'), 'refusal printed as JSON');
+  assert(JSON.parse(r.stdout).refused.match(/alias of alex\b/), 'refusal printed as JSON');
   const bad = spawnSync(process.execPath, [script, '--nope'], { encoding: 'utf8' });
   assertEq(bad.status, 2, 'usage error exits 2');
   const ok = spawnSync(process.execPath, [script, '--whoami', '--offline', '--root', root], { encoding: 'utf8' });
-  assertEq([ok.status, JSON.parse(ok.stdout).handle], [0, 'andre-gh'], 'whoami from the CLI');
+  assertEq([ok.status, JSON.parse(ok.stdout).handle], [0, 'alex-example'], 'whoami from the CLI');
   cleanup(root);
 }
 
