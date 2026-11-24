@@ -36,7 +36,8 @@
   ],
   "scripts": {
     "audit:tarball": "node scripts/audit-tarball.mjs",
-    "prepublishOnly": "npm run audit:tarball"
+    "prepublishOnly": "npm run audit:tarball",
+    "test": "node scripts/run-tests.mjs && npm run audit:tarball"
   },
   "dependencies": {
     "prompts": "^2.4.2"
