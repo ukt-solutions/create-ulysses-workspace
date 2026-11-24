@@ -151,7 +151,7 @@ const CONTEXT_CHARS = 40;
 // joined command line stays honest — the same shape lib/payload.mjs uses.
 function defaultNpmFn(cmd, args, opts = {}) {
   if (process.platform !== 'win32') return spawnSync(cmd, args, { encoding: 'utf8', ...opts });
-  return spawnSync('npm.cmd', args.map((a) => `"${a}"`), { shell: true, encoding: 'utf8', ...opts });
+  return spawnSync('npm.cmd', args.map((a) => `"${a}"`), { shell: true, encoding: 'utf8', ...opts }); // audit:allow-shell — npm.cmd needs a shell on Windows; args are validated/fixed
 }
 
 function gitRun(gitFn, repoDir, args, opts = {}) {

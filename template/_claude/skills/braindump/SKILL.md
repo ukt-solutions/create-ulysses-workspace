@@ -15,15 +15,17 @@ Capture discussion reasoning, exploration results, and design rationale into wor
 
 ## Lifecycle-Aware Behavior
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
 
 - Default behavior: append reasoning and decisions to the session tracker body at `work-sessions/{session-name}/workspace/session.md`
 - Add a new section to the tracker body (Context, Exploration, Decisions, Implications) — do NOT touch the frontmatter
 - Auto-commit from inside the worktree so the update lands on the session branch:
   ```bash
-  cd work-sessions/{session-name}/workspace
+  cd 'work-sessions/{session-name}/workspace'
   git add session.md
-  git commit -m "braindump: update {session-name} tracker"
+  git commit -m 'braindump: update {session-name} tracker'
   ```
 
 Under the task model — `workspace.sessionModel` is `"task"` (the SessionStart hook's `Workspace config (workspace.json):` line carries it; read `workspace.json` when that line is not in context) AND the SessionStart hook injected a `Chat record:` line (`{chat}` is its name):
@@ -45,13 +47,17 @@ The flows below apply when NOT in an active work session, or when the user expli
 Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to:
 
 ```bash
-echo "$BODY" | node .claude/scripts/capture-context.mjs \
+node .claude/scripts/capture-context.mjs \
   --type braindump \
-  --topic {kebab-case-name} \
+  --topic '{kebab-case-name}' \
   --scope team-member \
   --user {workspace.user} \
-  --description "{one-line summary}"
+  --description '{one-line summary}' <<'BODY'
+{body}
+BODY
 ```
+
+The body goes in on stdin through the quoted heredoc (`<<'BODY'`), so backticks and `$` in it stay literal — never `echo "…" |`. Use another delimiter if `BODY` occurs on a line of its own in the body.
 
 Add `--scope shared` (and drop `--user`) to put the file in `workspace-context/shared/` for team visibility. Add `--local-only` to keep it gitignored. Add `--update` to overwrite an existing file with the same name; without it, the helper appends `-2`, `-3`, etc. on collision.
 
@@ -114,8 +120,8 @@ When updating, rewrite as a fresh snapshot (coherent-revisions rule) and pass `-
 ## Auto-commit
 Use the path that `capture-context.mjs` printed:
 ```bash
-git add {printed-path}
-git commit -m "braindump: {name}"
+git add '{printed-path}'
+git commit -m 'braindump: {name}'
 ```
 
 ## Notes

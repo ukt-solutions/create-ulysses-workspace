@@ -153,9 +153,11 @@ Get the infrastructure clean before writing any content.
 
 #### Install Docusaurus
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 ```bash
-cd {project-root}
-npx create-docusaurus@latest {output-path} classic --typescript
+cd '{project-root}'
+npx create-docusaurus@latest '{output-path}' classic --typescript
 ```
 
 #### Cleanup defaults
@@ -200,7 +202,7 @@ If the project will have many diagrams, create `src/theme/MDXComponents.tsx` so 
 #### Build verification
 
 ```bash
-cd {output-path}
+cd '{output-path}'
 npm run build  # must complete with no errors
 npm start      # dev server
 ```
@@ -235,9 +237,9 @@ While writing, draw from the Phase 2 sources. Each chapter may consolidate conte
 
 Walk through `checklists/review.md`. Four passes:
 
-1. **Leak grep** — `node .claude/skills/build-docs-site/scripts/leak-grep.mjs {project-root} {docs-path}`. For each hit, propose a replacement. User approves, rewrites, or marks acceptable.
+1. **Leak grep** — `node .claude/skills/build-docs-site/scripts/leak-grep.mjs '{project-root}' '{docs-path}'`. For each hit, propose a replacement. User approves, rewrites, or marks acceptable.
 
-2. **Forbidden-word sweep** — `node .claude/skills/build-docs-site/scripts/forbidden-word-grep.mjs {docs-path} {wordlist.json}`. For each hit, user decides.
+2. **Forbidden-word sweep** — `node .claude/skills/build-docs-site/scripts/forbidden-word-grep.mjs '{docs-path}' '{wordlist.json}'`. For each hit, user decides.
 
 3. **Coverage check** — verify every item in the existing-docs mapping is covered in the new site. Update mapping rows: `replaced`, `partial`, or `superseded`.
 

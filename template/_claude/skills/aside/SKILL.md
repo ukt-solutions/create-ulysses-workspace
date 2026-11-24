@@ -24,14 +24,18 @@ No subagent. Execute these steps directly:
 4. Use the centralized helper to compute the path, apply the `braindump_` prefix, write the frontmatter (with `variant: aside`), and stay gitignored:
 
 ```bash
-echo "$BODY" | node .claude/scripts/capture-context.mjs \
+node .claude/scripts/capture-context.mjs \
   --type braindump \
-  --topic {kebab-slug} \
+  --topic '{kebab-slug}' \
   --scope team-member \
   --user {workspace.user} \
   --variant aside \
-  --local-only
+  --local-only <<'BODY'
+{body}
+BODY
 ```
+
+The body goes in on stdin through the quoted heredoc (`<<'BODY'`), so backticks and `$` in it stay literal — never `echo "…" |`. Use another delimiter if `BODY` occurs on a line of its own in the body. Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
 
 5. Report the printed path to the user: "Noted: `{path}`."
 
@@ -58,7 +62,7 @@ Dispatch the `aside-researcher` agent in the background. The full mode uses `--t
    ```bash
    node .claude/scripts/capture-context.mjs \
      --type research \
-     --topic {kebab-slug} \
+     --topic '{kebab-slug}' \
      --scope team-member \
      --user {workspace.user} \
      --variant aside \
@@ -73,7 +77,7 @@ Dispatch the `aside-researcher` agent in the background. The full mode uses `--t
      - The target file path (from step 3)
      - The workspace root path
      - The Research Mode body template (below)
-   - Tell the agent to write the body via `capture-context.mjs --update` so the same path is reused, and to pipe the rendered body on stdin.
+   - Tell the agent to write the body via `capture-context.mjs --update` so the same path is reused, and to pass the rendered body on stdin through a quoted heredoc (`<<'BODY'`), never `echo "…" |`.
 5. Confirm dispatch to the user: "Researching in the background. I'll let you know when it's done."
 6. When the agent completes, report: file path and a one-line summary of what was found.
 

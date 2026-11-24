@@ -13,6 +13,8 @@ Save structured workstream state to workspace-context. Usable anytime, any numbe
 
 ## Lifecycle-Aware Behavior
 
+> **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
 When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
 
 - Default behavior: update the session tracker body at `work-sessions/{session-name}/workspace/session.md`
@@ -21,9 +23,9 @@ When called within an active work session (the active-session pointer at `.claud
 - Skip the naming and scoping questions — the tracker is already scoped to this session
 - Auto-commit from inside the worktree so the update lands on the session branch:
   ```bash
-  cd work-sessions/{session-name}/workspace
+  cd 'work-sessions/{session-name}/workspace'
   git add session.md
-  git commit -m "handoff: update {session-name} tracker"
+  git commit -m 'handoff: update {session-name} tracker'
   ```
 
 Under the task model — `workspace.sessionModel` is `"task"` (the SessionStart hook's `Workspace config (workspace.json):` line carries it; read `workspace.json` when that line is not in context) AND the SessionStart hook injected a `Chat record:` line (`{chat}` is its name):
@@ -50,13 +52,17 @@ The flows below apply when NOT in an active work session, or when the user expli
 3. Use the centralized helper to compute the path, apply the `handoff_` prefix, and write the file with full frontmatter:
 
 ```bash
-echo "$BODY" | node .claude/scripts/capture-context.mjs \
+node .claude/scripts/capture-context.mjs \
   --type handoff \
-  --topic {kebab-case-name} \
+  --topic '{kebab-case-name}' \
   --scope team-member \
   --user {workspace.user} \
-  --description "{one-line summary}"
+  --description '{one-line summary}' <<'BODY'
+{body}
+BODY
 ```
+
+The body goes in on stdin through the quoted heredoc (`<<'BODY'`), so backticks and `$` in it stay literal — never `echo "…" |`. Use another delimiter if `BODY` occurs on a line of its own in the body.
 
 Pass `--update` to overwrite an existing handoff with the same name (otherwise the helper appends `-2`, `-3`, … to avoid clobbering). The helper prints the absolute path of the written file on stdout — use that path for the commit step.
 
@@ -80,8 +86,8 @@ The helper writes the frontmatter (`state: ephemeral`, `lifecycle: active`, `typ
 
 4. Auto-commit the handoff file alone:
    ```bash
-   git add {printed-path}
-   git commit -m "handoff: {name}"
+   git add '{printed-path}'
+   git commit -m 'handoff: {name}'
    ```
 
 ## Flow: No Parameter

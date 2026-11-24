@@ -3,7 +3,8 @@
 // package.json `prepublishOnly` so `npm publish` cannot ship a tarball that
 // leaks personal references, omits required structural files, includes
 // forbidden ones, exceeds a sane size, drifts from the README's claimed
-// counts, or carries a non-minimal permissions allowlist.
+// counts, carries a non-minimal permissions allowlist, or ships code that
+// builds a shell command line.
 //
 // On any violation: prints `Audit failed:` to stderr followed by one line per
 // violation, then exits 1. On success: one line `Audit OK — N files, X.X kB.`
@@ -13,6 +14,7 @@ import { execSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, extname, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scanShellExecFiles } from './shell-exec-scan.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -60,10 +62,11 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // fix rounds) → 360 kB (v0.24: epics, template-modifications registry,
 // leak audit, prChecks/merge approval — with lib/ tests excluded).
 //
-// The CLI's own tests (lib/**/*.test.mjs) are excluded through a "files"
-// negation in package.json and checkForbiddenFiles asserts they stay out.
-// Template tests still ship: template/ installs into every workspace, where
-// those tests run against the installed scripts. Further trimming is gh:189.
+// No test file ships. The CLI's own tests (lib/**/*.test.mjs) are excluded
+// through a "files" negation in package.json, and checkForbiddenFiles asserts
+// they stay out. The template's tests (template/**/*.test.mjs) are excluded by
+// template/.npmignore, so installed workspaces never receive them. Further
+// trimming is gh:189.
 const SIZE_LIMIT_BYTES = 360 * 1024;
 
 function runDryRun() {
@@ -190,6 +193,13 @@ function checkForbiddenFiles(files) {
     }
   }
   return violations;
+}
+
+// Shipped code never builds a command line for a shell (gh:129). The rules,
+// and the one reviewed exception (`audit:allow-shell`), live in
+// shell-exec-scan.mjs, which has its own tests.
+function checkShellExec(files) {
+  return scanShellExecFiles(files, REPO_ROOT);
 }
 
 function checkRequiredFiles(files) {
@@ -458,6 +468,7 @@ function main() {
   const violations = [
     ...scanContentDenylist(files),
     ...checkForbiddenFiles(files),
+    ...checkShellExec(files),
     ...checkRequiredFiles(files),
     ...checkSettingsSanity(),
     ...checkSizeBound(result.size),

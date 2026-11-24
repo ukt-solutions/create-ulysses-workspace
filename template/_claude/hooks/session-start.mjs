@@ -3,7 +3,7 @@
 // and surface open sessions + shared context.
 import { readdirSync, statSync, readFileSync, existsSync } from 'fs';
 import { join, basename, relative } from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import {
   getWorkspaceRoot,
   readJSON,
@@ -120,7 +120,7 @@ for (const name of repoNames) {
   if (existsSync(repoPath)) {
     existing.push(name);
     try {
-      execSync('git fetch --quiet', { cwd: repoPath, stdio: 'pipe', timeout: 10000 });
+      execFileSync('git', ['fetch', '--quiet'], { cwd: repoPath, stdio: 'pipe', timeout: 10000 });
     } catch {}
   } else {
     missing.push(name);
