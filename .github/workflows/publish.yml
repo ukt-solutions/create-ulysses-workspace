@@ -32,6 +32,9 @@ jobs:
           fi
           echo "Verified: $pkg_version"
 
+      - name: Test the dist-tag mapping
+        run: node scripts/dist-tag.test.mjs
+
       - name: Determine dist-tag from tag suffix
         id: tag
         run: node scripts/dist-tag.mjs "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
