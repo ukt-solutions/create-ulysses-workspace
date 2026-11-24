@@ -20,6 +20,7 @@ import {
   readFileSync,
   utimesSync,
   realpathSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -261,6 +262,137 @@ console.log('# maintenance-audit');
     'uncloned manifest repo is a warning');
   assertEq(result.summary.exitCode, 0, 'structure warning alone exits 0');
   cleanup(root);
+}
+
+// 4b. section 3 — a stale workspace-context/locked/ directory. Older
+//     scaffolds created it there, but canonical.md is built from
+//     shared/locked/ only, so nothing reads it. Either state is one warning:
+//     empty says it is a leftover and safe to delete; files are counted,
+//     named and pointed at shared/locked/. The audit only reports — nothing
+//     is deleted, moved or otherwise touched.
+{
+  // empty — what an old scaffold leaves behind
+  const root = makeWorkspace({}, (r) => {
+    mkdirSync(join(r, 'workspace-context', 'locked'), { recursive: true });
+  });
+  const result = await audit(root);
+  const stale = bySection(result, 'structure').filter((f) => f.file === 'workspace-context/locked');
+  assertEq(stale.length, 1, 'an empty stale locked/ is one structure finding');
+  assertEq(stale[0]?.severity, 'warning', 'and only a warning');
+  assertTrue(stale[0]?.message.includes('leftover from an old scaffold'), 'an empty one is called a leftover from an old scaffold');
+  assertTrue(stale[0]?.message.includes('safe to delete'), 'and safe to delete');
+  assertTrue(!stale[0]?.message.includes('never load'), 'the empty case makes no claim about files');
+  assertEq(result.summary.warnings, 1, 'nothing else is warned about');
+  assertEq(result.summary.exitCode, 0, 'a stale empty directory alone exits 0');
+  assertTrue(renderReport(result).includes(
+    '   ⚠ workspace-context/locked: is empty — a leftover from an old scaffold',
+  ), 'the report renders it under workspace structure');
+  assertTrue(existsSync(join(root, 'workspace-context', 'locked')), 'the audit deleted nothing');
+  assertTrue(existsSync(join(root, 'workspace-context', 'shared', 'locked', 'truth.md')), 'shared/locked/ is untouched');
+  cleanup(root);
+}
+{
+  // holding files — one at the top, one a directory down: both are found
+  const root = makeWorkspace({}, (r) => {
+    mkdirSync(join(r, 'workspace-context', 'locked', 'archive'), { recursive: true });
+    writeFileSync(join(r, 'workspace-context', 'locked', 'conventions.md'), '---\ndescription: Conventions.\n---\nNever loaded.\n');
+    writeFileSync(join(r, 'workspace-context', 'locked', 'archive', 'old-notes.md'), '---\ndescription: Old notes.\n---\nNever loaded either.\n');
+  });
+  const result = await audit(root);
+  const stale = bySection(result, 'structure').filter((f) => f.file === 'workspace-context/locked');
+  assertEq(stale.length, 1, 'a stale locked/ holding files is one structure finding');
+  assertEq(stale[0]?.severity, 'warning', 'files do not raise the severity');
+  assertTrue(stale[0]?.message.includes('holds 2 file(s) that never load'), 'the count reaches files nested below the top level');
+  assertTrue(stale[0]?.message.includes('conventions.md') && stale[0]?.message.includes('archive/old-notes.md'),
+    'the files are named, nested ones by their path');
+  assertTrue(stale[0]?.message.includes('workspace-context/shared/locked/'), 'the message points at the directory that is read');
+  assertTrue(!stale[0]?.message.includes('safe to delete'), 'a directory with files is never called safe to delete');
+  assertEq(result.summary.warnings, 1, 'nothing else is warned about');
+  assertEq(result.summary.exitCode, 0, 'a stale directory with files alone exits 0');
+  assertTrue(existsSync(join(root, 'workspace-context', 'locked', 'conventions.md'))
+    && existsSync(join(root, 'workspace-context', 'locked', 'archive', 'old-notes.md')), 'nothing was moved or deleted');
+  assertTrue(!existsSync(join(root, 'workspace-context', 'shared', 'locked', 'conventions.md')), 'nothing was moved into shared/locked/');
+  cleanup(root);
+}
+{
+  // many files — the list is capped at five names so the line stays readable
+  const root = makeWorkspace({}, (r) => {
+    mkdirSync(join(r, 'workspace-context', 'locked'), { recursive: true });
+    for (const name of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+      writeFileSync(join(r, 'workspace-context', 'locked', `stale-${name}.md`), `---\ndescription: Stale ${name}.\n---\nNever loaded.\n`);
+    }
+  });
+  const result = await audit(root);
+  const stale = bySection(result, 'structure').filter((f) => f.file === 'workspace-context/locked');
+  assertEq(stale.length, 1, 'seven files are still one finding');
+  assertTrue(stale[0]?.message.includes('holds 7 file(s) that never load'), 'the count is complete');
+  assertTrue(stale[0]?.message.includes('stale-a.md, stale-b.md, stale-c.md, stale-d.md, stale-e.md, …'), 'the first five are listed, then an ellipsis');
+  assertTrue(!stale[0]?.message.includes('stale-f.md') && !stale[0]?.message.includes('stale-g.md'), 'the rest are not listed');
+  cleanup(root);
+}
+{
+  // workspaceContextDir is honored: the stale path is looked up under the
+  // configured directory, and the advice points into it
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.workspace.workspaceContextDir = 'team-context';
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    mkdirSync(join(r, 'team-context', 'locked'), { recursive: true });
+    writeFileSync(join(r, 'team-context', 'locked', 'note.md'), '---\ndescription: Note.\n---\nNever loaded.\n');
+    // not the configured directory, so not what the check judges
+    mkdirSync(join(r, 'workspace-context', 'locked'), { recursive: true });
+  });
+  const result = await audit(root);
+  const stale = bySection(result, 'structure').filter((f) => f.message.includes('that never load'));
+  assertEq(stale.map((f) => f.file), ['team-context/locked'], "only the configured directory's locked/ is reported");
+  assertTrue(stale[0]?.message.includes('team-context/shared/locked/'), 'the advice points into the configured directory');
+  assertEq(result.summary.warnings, 1, 'a custom workspace-context directory warns about nothing else');
+  assertEq(result.summary.exitCode, 0, 'and exits 0');
+  cleanup(root);
+}
+{
+  // a regular file named locked is not a directory to judge
+  const root = makeWorkspace({}, (r) => {
+    writeFileSync(join(r, 'workspace-context', 'locked'), 'not a directory\n');
+  });
+  const result = await audit(root);
+  assertTrue(!bySection(result, 'structure').some((f) => f.file === 'workspace-context/locked'), 'a file named locked raises no stale-directory finding');
+  assertEq(result.summary.exitCode, 0, 'and the audit completes');
+  cleanup(root);
+}
+{
+  // a symlink is not a leftover — it may be a deliberate alias of
+  // shared/locked/, whose files do load. Creating a directory symlink needs
+  // elevated rights on Windows, so the case runs only elsewhere.
+  if (process.platform !== 'win32') {
+    const root = makeWorkspace({}, (r) => {
+      symlinkSync(join(r, 'workspace-context', 'shared', 'locked'), join(r, 'workspace-context', 'locked'), 'dir');
+    });
+    const result = await audit(root);
+    assertTrue(!bySection(result, 'structure').some((f) => f.file === 'workspace-context/locked'), 'a symlinked locked/ is not reported as stale');
+    assertEq(result.summary.warnings, 0, 'and raises nothing else');
+    assertTrue(existsSync(join(root, 'workspace-context', 'locked', 'truth.md')), 'the link still resolves afterwards');
+    cleanup(root);
+  }
+}
+{
+  // a directory CLAUDE.md's import graph reaches is in use, not dead: its
+  // files load through the import, so "never load" would be false and the
+  // advice destructive. Nothing is reported, whether the import names the
+  // directory or one file in it.
+  for (const line of ['@workspace-context/locked/', '@workspace-context/locked/legacy.md']) {
+    const root = makeWorkspace({}, (r) => {
+      mkdirSync(join(r, 'workspace-context', 'locked'), { recursive: true });
+      writeFileSync(join(r, 'workspace-context', 'locked', 'legacy.md'), '---\ndescription: Legacy.\n---\nLoaded by import.\n');
+      writeFileSync(join(r, 'CLAUDE.md'), `## Skills\n- \`/demo\` — demonstrate\n\n${line}\n`);
+    });
+    const result = await audit(root);
+    assertTrue(!bySection(result, 'structure').some((f) => f.file === 'workspace-context/locked'),
+      `a locked/ that CLAUDE.md imports (${line}) is not reported`);
+    assertEq(result.summary.exitCode, 0, `and the import is not dangling (${line})`);
+    assertTrue(existsSync(join(root, 'workspace-context', 'locked', 'legacy.md')), 'its file is left where it is');
+    cleanup(root);
+  }
 }
 
 // 5. section 4 — git state
