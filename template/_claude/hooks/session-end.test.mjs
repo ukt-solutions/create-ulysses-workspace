@@ -4,7 +4,8 @@
 //
 // Each case builds a real workspace in a temp directory (a workspace repo, a
 // project repo with a bare origin, a copy of .claude/), creates a session
-// with create-work-session.mjs, points .claude/.active-session.json at it,
+// with create-work-session.mjs (renaming its folder where a case needs a name
+// that script no longer accepts), points .claude/.active-session.json at it,
 // and runs the hook as a subprocess with a SessionEnd payload on stdin.
 // The pointer file is untrusted input: its session name becomes a path and a
 // commit message. The cases below carry a shell payload that would create a
@@ -19,7 +20,7 @@
 import { execFileSync, spawnSync } from 'child_process';
 import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, mkdtempSync,
-  readdirSync, realpathSync,
+  readdirSync, realpathSync, renameSync,
 } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -151,10 +152,18 @@ withFixture((fx) => {
   assertEq(r.stderr.trim(), '', 'valid session writes nothing to stderr');
 });
 
-// === A shell-metacharacter session name is a valid segment and stays literal ===
+// === An existing session with a shell-metacharacter name stays literal ===
+// create-work-session now refuses such names, but a session created before
+// that rule can still carry one, and the hook must finish it safely. Build it
+// the way it would exist: create a session, then move its folder to the old
+// name and let git repair the worktree links.
 withFixture((fx) => {
   const name = 'a$(touch PWNED)';
-  const wt = createSession(fx, name, 'feature/dollar');
+  createSession(fx, 'legacy', 'feature/dollar');
+  renameSync(join(fx.ws, 'work-sessions', 'legacy'), join(fx.ws, 'work-sessions', name));
+  const wt = join(fx.ws, 'work-sessions', name, 'workspace');
+  fx.git(fx.ws, 'worktree', 'repair', wt);
+  fx.git(join(fx.ws, 'repos', 'app'), 'worktree', 'repair', join(wt, 'repos', 'app'));
   const r = runHook(fx, name);
   assertEq(r.status, 0, 'metacharacter name exits 0');
   assertEq(fx.git(wt, 'log', '-1', '--format=%s').trim(), `chore: session-end safety capture for ${name}`,
