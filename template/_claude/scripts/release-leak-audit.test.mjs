@@ -86,8 +86,15 @@ const SUBJECT = 'feat: rotate the sk-live-abcdef token';
 // `pkg` adds a package.json at the base (an object as-is, so
 // `private: true` is one field away); `tag` drops the v1.0.0 tag for the
 // no-tags fallback; `weird` adds non-ASCII/quoted/space-leaden paths and
-// a rename, proving raw -z paths and disabled rename detection.
-function makeLauncher({ pkg = null, repoPatterns = null, wsPatterns = null, tag = true, weird = false } = {}) {
+// a rename, proving raw -z paths and disabled rename detection;
+// `baseFiles` ({ path: text }) are committed at the base alongside the
+// README, so they sit unchanged in the release range; `repoRelease` and
+// `wsRelease` merge extra keys (consumerFacing, say) into the repo-level
+// and workspace-level `release` blocks.
+function makeLauncher({
+  pkg = null, repoPatterns = null, wsPatterns = null, tag = true, weird = false,
+  baseFiles = {}, repoRelease = {}, wsRelease = {},
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'leak-audit-'));
   const dir = join(root, 'repos', 'app');
   mkdirSync(join(dir, 'lib'), { recursive: true });
@@ -96,6 +103,7 @@ function makeLauncher({ pkg = null, repoPatterns = null, wsPatterns = null, tag 
   git(dir, ['init', '-q', '-b', 'main']);
   writeFileSync(join(dir, 'README.md'), '# app\n');
   if (pkg) writeFileSync(join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+  writeTree(dir, baseFiles);
   git(dir, ['add', '-A']);
   git(dir, ['commit', '-q', '-m', 'chore: init']);
   if (tag) git(dir, ['tag', 'v1.0.0']);
@@ -120,10 +128,59 @@ function makeLauncher({ pkg = null, repoPatterns = null, wsPatterns = null, tag 
   }
 
   const config = { workspace: { name: 'fixture' }, repos: { app: { branch: 'main' } } };
-  if (wsPatterns) config.workspace.release = { leakPatterns: wsPatterns };
-  if (repoPatterns) config.repos.app.release = { leakPatterns: repoPatterns };
+  const wsBlock = { ...(wsPatterns ? { leakPatterns: wsPatterns } : {}), ...wsRelease };
+  const repoBlock = { ...(repoPatterns ? { leakPatterns: repoPatterns } : {}), ...repoRelease };
+  if (Object.keys(wsBlock).length > 0) config.workspace.release = wsBlock;
+  if (Object.keys(repoBlock).length > 0) config.repos.app.release = repoBlock;
   writeFileSync(join(root, 'workspace.json'), JSON.stringify(config, null, 2));
   return { root, dir, sha };
+}
+
+// Write { relative/path: text } under dir, creating parent directories.
+function writeTree(dir, files) {
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), text);
+  }
+}
+
+// A launcher whose repos/app is an npm-workspaces monorepo. Tagged v1.0.0
+// carries everything below; one root file changes after the tag, so the
+// package READMEs are on the release surface only if packing finds them.
+//   packages/a      public,  README holds MONO-LEAK-1
+//   packages/b      private, README holds MONO-LEAK-1 as well
+//   packages/c      public,  README holds MONO-LEAK-2
+//   packages/tools  no package.json at all
+function makeMonorepo({ workspaces = ['packages/*'], rootPrivate = true, patterns = ['MONO-LEAK-1'], repoRelease = {} } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'leak-audit-mono-'));
+  const dir = join(root, 'repos', 'app');
+  mkdirSync(dir, { recursive: true });
+  git(dir, ['init', '-q', '-b', 'main']);
+  const pkg = (name, extra = {}) => `${JSON.stringify({ name, version: '1.0.0', ...extra }, null, 2)}\n`;
+  writeTree(dir, {
+    'package.json': pkg('mono', { private: rootPrivate, workspaces }),
+    'README.md': '# mono\n',
+    'packages/a/package.json': pkg('@mono/a'),
+    'packages/a/README.md': '# a\nsee MONO-LEAK-1 here\n',
+    'packages/a/index.js': 'export const a = 1;\n',
+    'packages/b/package.json': pkg('@mono/b', { private: true }),
+    'packages/b/README.md': '# b\nsee MONO-LEAK-1 here\n',
+    'packages/c/package.json': pkg('@mono/c'),
+    'packages/c/README.md': '# c\nsee MONO-LEAK-2 here\n',
+    'packages/tools/README.md': '# tools\n',
+  });
+  git(dir, ['add', '-A']);
+  git(dir, ['commit', '-q', '-m', 'chore: init']);
+  git(dir, ['tag', 'v1.0.0']);
+  writeFileSync(join(dir, 'root-note.txt'), 'a note\n');
+  git(dir, ['add', '-A']);
+  git(dir, ['commit', '-q', '-m', 'chore: note']);
+  const release = { leakPatterns: patterns, ...repoRelease };
+  writeFileSync(join(root, 'workspace.json'), JSON.stringify({
+    workspace: { name: 'fixture' },
+    repos: { app: { branch: 'main', release } },
+  }, null, 2));
+  return { root, dir };
 }
 
 // A npmFn fake returning a canned pack file list behind the notice noise
@@ -138,6 +195,25 @@ function fakeNpm(files, log = []) {
         + JSON.stringify([{ id: 'app@1.0.0', files: files.map((path) => ({ path, size: 10, mode: 420 })) }]),
       stderr: '',
     };
+  };
+}
+
+// A npmFn fake answering per working directory — a monorepo has one pack
+// list per package. A value is a file list, or { status, stderr } to fail
+// that package; an unlisted cwd fails loudly, so a stray call (a private
+// package, a directory with no package.json) surfaces in `skipped`.
+function fakeNpmByCwd(byCwd, log = []) {
+  return (cmd, args, opts = {}) => {
+    const entry = byCwd[opts.cwd];
+    if (entry === undefined) {
+      log.push({ cmd, args, cwd: opts.cwd });
+      return { status: 1, stdout: '', stderr: `unexpected cwd ${opts.cwd}` };
+    }
+    if (!Array.isArray(entry)) {
+      log.push({ cmd, args, cwd: opts.cwd });
+      return { status: entry.status, stdout: '', stderr: entry.stderr };
+    }
+    return fakeNpm(entry, log)(cmd, args, opts);
   };
 }
 
@@ -165,6 +241,9 @@ console.log('# parseArgs validation');
   assertEq(parseArgs(['node', 's', '--repo', 'app', '--allow-dirty']).allowDirty, true, '--allow-dirty stands alone');
   assertEq(parseArgs(['node', 's', '--repo', 'app']).root, '.', 'root defaults to the current directory');
   assertEq(parseArgs(['node', 's', '--repo', 'app']).allowDirty, false, 'the worktree must be clean by default');
+  assertEq(parseArgs(['node', 's', '--repo', 'app']).listConsumerFacing, false, 'the scan is the default mode');
+  assertEq(parseArgs(['node', 's', '--repo', 'app', '--list-consumer-facing']).listConsumerFacing, true,
+    '--list-consumer-facing stands alone');
 }
 
 console.log('# no leak patterns configured: exit-0 fast path, nothing scanned');
@@ -517,6 +596,333 @@ console.log('# the workspace repo "." reads the workspace block for its patterns
   } finally { clean(root); }
 }
 
+const PACK_ARGS = ['pack', '--dry-run', '--ignore-scripts', '--json'];
+const PKG_FILES = ['README.md', 'package.json', 'index.js'];
+const UNSUPPORTED = 'unsupported workspaces pattern — packages under it were not enumerated';
+const pkgDir = (dir, name) => join(dir, 'packages', name);
+
+console.log('# monorepo: each public workspace package is packed from its own directory');
+{
+  const { root, dir } = makeMonorepo();
+  try {
+    const a = pkgDir(dir, 'a');
+    const c = pkgDir(dir, 'c');
+    const npmCalls = [];
+    const out = run(audit(root), {
+      gitFn: gitWithEnv(),
+      npmFn: fakeNpmByCwd({ [a]: PKG_FILES, [c]: PKG_FILES }, npmCalls),
+    });
+    assertEq(out.matches, [
+      { file: 'packages/a/README.md', line: 2, pattern: 'MONO-LEAK-1', excerpt: 'see [match:11 chars] here' },
+    ], 'the public package README is on the surface with a repo-relative path — and the private twin is not');
+    assertEq(npmCalls.map((call) => call.cwd), [a, c],
+      'npm ran in each public package directory, never in the private one or the plain directory');
+    assert(npmCalls.every((call) => call.cmd === 'npm' && JSON.stringify(call.args) === JSON.stringify(PACK_ARGS)),
+      'every pack is an argv array with scripts disabled');
+    assertEq(out.skipped, [], 'nothing on this surface was unreadable or unenumerated');
+    // a: README + package.json + index.js; c: README + package.json (its
+    // packed index.js was never on disk — a deletion, not a read); then
+    // root-note.txt from the range and the one post-tag message.
+    assertEq(out.scanned, 7, 'both packages\' files, root-note.txt, and the post-tag message were searched');
+  } finally { clean(root); }
+}
+
+console.log('# monorepo: yarn object form, exact entries, and a public root all enumerate');
+{
+  const yarn = makeMonorepo({ workspaces: { packages: ['packages/*'] } });
+  try {
+    const a = pkgDir(yarn.dir, 'a');
+    const c = pkgDir(yarn.dir, 'c');
+    const npmCalls = [];
+    const out = run(audit(yarn.root), {
+      gitFn: gitWithEnv(), npmFn: fakeNpmByCwd({ [a]: PKG_FILES, [c]: PKG_FILES }, npmCalls),
+    });
+    assertEq(out.matches.map((m) => m.file), ['packages/a/README.md'], 'the { packages: [...] } form is enumerated');
+    assertEq(npmCalls.map((call) => call.cwd), [a, c], 'both public packages were packed');
+  } finally { clean(yarn.root); }
+
+  const exact = makeMonorepo({ workspaces: ['packages/a', './packages/c/'] });
+  try {
+    const a = pkgDir(exact.dir, 'a');
+    const c = pkgDir(exact.dir, 'c');
+    const npmCalls = [];
+    const out = run(audit(exact.root), {
+      gitFn: gitWithEnv(), npmFn: fakeNpmByCwd({ [a]: PKG_FILES, [c]: PKG_FILES }, npmCalls),
+    });
+    assertEq(out.matches.map((m) => m.file), ['packages/a/README.md'], 'exact directory entries are enumerated');
+    assertEq(npmCalls.map((call) => call.cwd), [a, c], 'a leading ./ and a trailing / are normalized away');
+    assertEq(out.skipped, [], 'exact entries are fully supported');
+  } finally { clean(exact.root); }
+
+  const open = makeMonorepo({ rootPrivate: false });
+  try {
+    const a = pkgDir(open.dir, 'a');
+    const c = pkgDir(open.dir, 'c');
+    const npmCalls = [];
+    const out = run(audit(open.root), {
+      gitFn: gitWithEnv(),
+      npmFn: fakeNpmByCwd({ [open.dir]: ['README.md', 'package.json'], [a]: PKG_FILES, [c]: PKG_FILES }, npmCalls),
+    });
+    assertEq(npmCalls.map((call) => call.cwd), [open.dir, a, c], 'a public root is packed first, then its packages');
+    assertEq(out.matches.map((m) => m.file), ['packages/a/README.md'], 'root paths stay unprefixed, package paths are prefixed');
+  } finally { clean(open.root); }
+}
+
+console.log('# monorepo: unsupported workspaces patterns are reported, never silently missed');
+{
+  const { root, dir } = makeMonorepo({
+    workspaces: ['packages/*', 'tools/**', '!packages/b', 'apps/{x,y}', '../outside', 42],
+  });
+  try {
+    const a = pkgDir(dir, 'a');
+    const c = pkgDir(dir, 'c');
+    const out = run(audit(root), {
+      gitFn: gitWithEnv(), npmFn: fakeNpmByCwd({ [a]: PKG_FILES, [c]: PKG_FILES }),
+    });
+    assertEq(out.skipped, [
+      { file: 'tools/**', reason: UNSUPPORTED },
+      { file: '!packages/b', reason: UNSUPPORTED },
+      { file: 'apps/{x,y}', reason: UNSUPPORTED },
+      { file: '../outside', reason: UNSUPPORTED },
+      { file: '42', reason: UNSUPPORTED },
+    ], 'every unsupported entry is listed with the reason, in declaration order');
+    assertEq(out.matches.map((m) => m.file), ['packages/a/README.md'],
+      'the supported pattern beside them is still enumerated and scanned');
+  } finally { clean(root); }
+}
+
+console.log('# monorepo: one failing package pack is reported and the others are still scanned');
+{
+  const { root, dir } = makeMonorepo({ patterns: ['MONO-LEAK-1', 'MONO-LEAK-2'] });
+  try {
+    const a = pkgDir(dir, 'a');
+    const c = pkgDir(dir, 'c');
+    const out = run(audit(root), {
+      gitFn: gitWithEnv(),
+      npmFn: fakeNpmByCwd({ [a]: { status: 1, stderr: 'boom: registry unreachable' }, [c]: PKG_FILES }),
+    });
+    assertEq(out.skipped.length, 1, 'exactly the failing package is reported');
+    assertEq(out.skipped[0].file, 'packages/a/', 'the skip names the package directory');
+    assert(out.skipped[0].reason.startsWith('npm pack failed: ') && out.skipped[0].reason.includes('boom: registry unreachable'),
+      'the skip carries npm\'s own explanation');
+    assertEq(out.matches.map((m) => m.file), ['packages/c/README.md'],
+      'the surviving package is scanned; the failed one contributes nothing from the pack list');
+  } finally { clean(root); }
+
+  // The root package keeps its loud failure: it is the release itself.
+  const open = makeMonorepo({ rootPrivate: false });
+  try {
+    rejects(() => run(audit(open.root), {
+      gitFn: gitWithEnv(), npmFn: fakeNpmByCwd({ [open.dir]: { status: 1, stderr: 'root boom' } }),
+    }), 'a failing root pack still throws', 'npm pack --dry-run failed');
+  } finally { clean(open.root); }
+}
+
+console.log('# release.consumerFacing: configured paths join the surface even when unchanged');
+{
+  const { root, dir } = makeLauncher({
+    repoPatterns: ['docs-leak-9'],
+    baseFiles: {
+      'docs/guide.md': '# guide\nsee DOCS-LEAK-9 here\n',
+      'docs/deep/more.md': 'DOCS-LEAK-9 again\n',
+      'openapi.yaml': 'info: DOCS-LEAK-9\n',
+      'unlisted.md': 'DOCS-LEAK-9 but not configured\n',
+    },
+    repoRelease: { consumerFacing: ['docs/', 'openapi.yaml', 'missing/', 'ABSENT.md'] },
+  });
+  try {
+    const calls = [];
+    const recordingGit = (cmd, args, opts) => { calls.push(args); return gitWithEnv()(cmd, args, opts); };
+    const out = run(audit(root), { gitFn: recordingGit, npmFn: fakeNpm(['README.md']) });
+    assertEq(out.matches, [
+      { file: 'docs/deep/more.md', line: 1, pattern: 'docs-leak-9', excerpt: '[match:11 chars] again' },
+      { file: 'docs/guide.md', line: 2, pattern: 'docs-leak-9', excerpt: 'see [match:11 chars] here' },
+      { file: 'openapi.yaml', line: 1, pattern: 'docs-leak-9', excerpt: 'info: [match:11 chars]' },
+    ], 'a directory prefix and an exact path both reach the scan; an unconfigured unchanged file does not');
+    assertEq(out.skipped, [], 'configured entries that match nothing are quiet, not errors');
+    const lsDocs = calls.find((a) => a.includes('ls-tree') && a.includes('docs/'));
+    assertEq(lsDocs?.slice(2), ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', 'docs/'],
+      'entries expand through a read-only, NUL-delimited git ls-tree argv at the range end');
+
+    // The end ref is the range end, not the worktree: a file added after it is not listed.
+    writeFileSync(join(dir, 'docs', 'late.md'), 'DOCS-LEAK-9 added after the range\n');
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-q', '-m', 'chore: late docs']);
+    const early = run(audit(root, ['--tag-range', 'v1.0.0..HEAD~1']), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) });
+    assert(!early.matches.some((m) => m.file === 'docs/late.md'), 'configured entries expand at the range end commit');
+    assertEq(early.matches.length, 3, 'the three configured hits are still found at the earlier end');
+  } finally { clean(root); }
+
+  const ws = makeLauncher({
+    repoPatterns: ['docs-leak-9'],
+    baseFiles: { 'docs/guide.md': 'DOCS-LEAK-9\n', 'faq.md': 'DOCS-LEAK-9\n' },
+    repoRelease: { consumerFacing: ['docs/'] },
+    wsRelease: { consumerFacing: ['faq.md', 'docs/'] },
+  });
+  try {
+    const out = run(audit(ws.root), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) });
+    assertEq(out.matches.map((m) => m.file), ['docs/guide.md', 'faq.md'],
+      'workspace-wide entries add to the repo-level ones and a path configured twice is scanned once');
+  } finally { clean(ws.root); }
+}
+
+console.log('# release.consumerFacing: invalid entries fail loudly');
+{
+  for (const [label, bad] of [
+    ['an absolute path', ['/abs/path']],
+    ['a parent segment', ['../x']],
+    ['a nested parent segment', ['docs/../../x']],
+    ['an empty entry', ['']],
+    ['a non-string entry', [7]],
+    ['a bare string instead of an array', 'docs/'],
+  ]) {
+    const { root } = makeLauncher({ repoPatterns: ['sk-live-abcdef'], repoRelease: { consumerFacing: bad } });
+    try {
+      rejects(() => run(audit(root), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) }),
+        `${label} is rejected`, 'repos.app.release.consumerFacing');
+    } finally { clean(root); }
+  }
+  // Validated even when no patterns are configured: a typo must not wait for the first audit that needs it.
+  const { root } = makeLauncher({ repoRelease: { consumerFacing: ['../x'] } });
+  try {
+    rejects(() => run(audit(root), { gitFn: neverGit(), npmFn: fakeNpm([]) }),
+      'bad config is rejected before the no-patterns fast path', 'repos.app.release.consumerFacing');
+  } finally { clean(root); }
+  const { root: root2 } = makeLauncher({ wsRelease: { consumerFacing: '/abs' } });
+  try {
+    rejects(() => run(audit(root2), { gitFn: neverGit(), npmFn: fakeNpm([]) }),
+      'the workspace-wide setting is validated too', 'workspace.release.consumerFacing');
+  } finally { clean(root2); }
+}
+
+console.log('# --list-consumer-facing: prose and package.json on the surface, with no patterns configured');
+{
+  const { root, dir } = makeLauncher({
+    pkg: { name: 'app', version: '1.0.0' },
+    baseFiles: {
+      'docs/guide.md': '# guide\n',
+      'openapi.yaml': 'info: {}\n',
+      'CONTRIBUTING.md': '# contributing\n',
+    },
+    repoRelease: { consumerFacing: ['docs/', 'openapi.yaml'] },
+  });
+  try {
+    appendFileSync(join(dir, 'README.md'), 'a new section\n');
+    writeFileSync(join(dir, 'CHANGELOG.md'), '# changes\n');
+    writeFileSync(join(dir, 'lib', 'x.js'), 'export const x = 1;\n');
+    git(dir, ['rm', '-q', 'CONTRIBUTING.md']);
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-q', '-m', 'docs: update the prose']);
+    const gitCalls = [];
+    const recordingGit = (cmd, args, opts) => { gitCalls.push(args); return gitWithEnv()(cmd, args, opts); };
+    const out = run(audit(root, ['--list-consumer-facing']), {
+      gitFn: recordingGit,
+      npmFn: fakeNpm(['README.md', 'package.json', 'CHANGELOG.md', 'CONTRIBUTING.md', 'lib/config.js']),
+    });
+    assertEq(out, {
+      mode: 'consumer-facing',
+      range: { from: 'v1.0.0', to: 'HEAD' },
+      files: [
+        { path: 'CHANGELOG.md', changed: true },
+        { path: 'README.md', changed: true },
+        { path: 'docs/guide.md', changed: false },
+        { path: 'openapi.yaml', changed: false },
+        { path: 'package.json', changed: false },
+      ],
+      skipped: [],
+    }, 'prose basenames, package.json, and configured entries are listed with their changed flag — '
+      + 'code files, deleted files, and a deleted-but-packed CONTRIBUTING.md are not');
+    assert(gitCalls.every((a) => !a.includes('log')), 'listing never reads commit messages');
+  } finally { clean(root); }
+
+  // Patterns configured as well: listing mode never scans, it only lists.
+  const both = makeLauncher({ repoPatterns: ['sk-live-abcdef'] });
+  try {
+    const out = run(audit(both.root, ['--list-consumer-facing']), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) });
+    assertEq(out.mode, 'consumer-facing', 'configured patterns do not switch listing mode off');
+    assert(!('matches' in out), 'the listing carries no scan result');
+  } finally { clean(both.root); }
+}
+
+console.log('# --list-consumer-facing: monorepo package files, binaries dropped, unreadable files reported');
+{
+  const { root, dir } = makeMonorepo({ patterns: [] });
+  try {
+    const a = pkgDir(dir, 'a');
+    const c = pkgDir(dir, 'c');
+    const out = run(audit(root, ['--list-consumer-facing']), {
+      gitFn: gitWithEnv(),
+      npmFn: fakeNpmByCwd({ [a]: [...PKG_FILES, 'README.png'], [c]: { status: 1, stderr: 'no pack' } }),
+    });
+    assertEq(out.files.map((f) => f.path), ['packages/a/README.md', 'packages/a/package.json'],
+      'the package README and package.json are listed; code is not');
+    assertEq(out.skipped.map((f) => f.file), ['packages/c/'], 'a package that failed to pack is reported, not lost');
+  } finally { clean(root); }
+}
+
+console.log('# --list-consumer-facing: a dirty tree is refused unless --allow-dirty');
+{
+  const { root, dir } = makeLauncher();
+  try {
+    appendFileSync(join(dir, 'README.md'), 'uncommitted\n');
+    rejects(() => run(audit(root, ['--list-consumer-facing']), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) }),
+      'uncommitted changes refuse the listing', '--allow-dirty');
+    const out = run(audit(root, ['--list-consumer-facing', '--allow-dirty']), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) });
+    assertEq(out.mode, 'consumer-facing', '--allow-dirty lists the dirty disk as it stands');
+  } finally { clean(root); }
+}
+
+console.log('# --list-consumer-facing: a first release marks every listed file changed');
+{
+  const { root } = makeLauncher({
+    pkg: { name: 'app', version: '1.0.0' }, tag: false,
+    baseFiles: { 'docs/guide.md': '# guide\n' },
+    repoRelease: { consumerFacing: ['docs/'] },
+  });
+  try {
+    const out = run(audit(root, ['--list-consumer-facing']), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md', 'package.json']) });
+    assertEq(out.range, { from: null, to: 'HEAD' }, 'a first release has no from-end');
+    assertEq(out.files, [
+      { path: 'README.md', changed: true },
+      { path: 'docs/guide.md', changed: true },
+      { path: 'package.json', changed: true },
+    ], 'with no previous tag everything is new');
+  } finally { clean(root); }
+}
+
+console.log('# no patterns: the default mode still never consults git or npm, configured paths or not');
+{
+  const { root } = makeLauncher({ repoRelease: { consumerFacing: ['docs/'] } });
+  try {
+    const gitCalls = [];
+    const npmCalls = [];
+    const out = run(audit(root), { gitFn: neverGit(gitCalls), npmFn: fakeNpm(['README.md'], npmCalls) });
+    assertEq(out.note, 'no leak patterns configured', 'the fast path is unchanged');
+    assertEq([gitCalls.length, npmCalls.length], [0, 0], 'valid consumerFacing config costs the fast path nothing');
+  } finally { clean(root); }
+}
+
+console.log('# real npm pack in a workspace package directory');
+{
+  const probe = process.platform === 'win32'
+    ? spawnSync('npm.cmd', ['--version'], { encoding: 'utf-8', shell: true })
+    : spawnSync('npm', ['--version'], { encoding: 'utf-8' });
+  if (probe.status !== 0) {
+    console.log('  (skipped — npm is not available)');
+  } else {
+    const { root } = makeMonorepo({ patterns: ['MONO-LEAK-1'] });
+    try {
+      // Only gitFn is injected: npmFn stays the script's own, so this runs a
+      // real `npm pack --dry-run --ignore-scripts --json` in packages/a and
+      // packages/c — with no node_modules installed, as in a release worktree.
+      const out = run(audit(root), { gitFn: gitWithEnv() });
+      assertEq(out.matches.map((m) => `${m.file}:${m.line}`), ['packages/a/README.md:2'],
+        'the real pack list of the public package carries its README, prefixed repo-relative');
+      assertEq(out.skipped, [], 'both real packs succeeded');
+    } finally { clean(root); }
+  }
+}
+
 console.log('# CLI: exit 1 on matches, 0 unconfigured, 2 on error');
 {
   const script = join(dirname(fileURLToPath(import.meta.url)), 'release-leak-audit.mjs');
@@ -537,6 +943,15 @@ console.log('# CLI: exit 1 on matches, 0 unconfigured, 2 on error');
     const err = spawnSync(process.execPath, [script, '--root', none.root], { encoding: 'utf-8', env: ENV });
     assertEq(err.status, 2, 'a missing --repo exits 2');
     assert(String(err.stderr || '').startsWith('release-leak-audit:'), 'stderr names the script');
+
+    // Listing mode reports, it does not judge: exit 0 even where the scan would exit 1 or note nothing.
+    const listed = spawnSync(process.execPath, [script, '--root', hit.root, '--repo', 'app', '--list-consumer-facing'],
+      { encoding: 'utf-8', env: ENV });
+    assertEq(listed.status, 0, '--list-consumer-facing exits 0 on success');
+    assertEq(JSON.parse(listed.stdout).mode, 'consumer-facing', 'the listing prints on stdout');
+    const listedNone = spawnSync(process.execPath, [script, '--root', none.root, '--repo', 'app', '--list-consumer-facing'],
+      { encoding: 'utf-8', env: ENV });
+    assertEq(listedNone.status, 0, 'the listing works with no patterns configured');
   } finally { clean(hit.root); clean(none.root); }
 }
 
