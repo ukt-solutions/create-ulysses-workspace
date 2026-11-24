@@ -6,30 +6,69 @@ import { fileURLToPath } from 'url';
 import { readSessionFile } from '../lib/session-frontmatter.mjs';
 import { createTracker } from './trackers/interface.mjs';
 
+// Words ending in "ing" that are not gerunds, so they still take a suffix.
+const VERBS_ENDING_ING = new Set([
+  'bring', 'sing', 'ring', 'sting', 'swing', 'fling', 'cling', 'spring', 'string', 'wring',
+  'ding', 'ping',
+]);
+
+// Gerunds the suffix rules in toActiveForm cannot derive, keyed by lowercase verb:
+// verbs that change shape (die → dying), take a "k" (panic → panicking), or double
+// the final consonant of a multi-syllable word (commit → committing). Add an entry
+// when a verb comes out wrong.
 const IRREGULARS = {
-  // Pre-built map for verbs whose gerund isn't a clean suffix transform.
-  // Add entries as needed; the rule of thumb is "if the test catches it, fix here".
+  be: 'being',
+  die: 'dying', lie: 'lying', tie: 'tying',
+  panic: 'panicking', mimic: 'mimicking', picnic: 'picnicking', traffic: 'trafficking',
+  commit: 'committing', submit: 'submitting', admit: 'admitting', omit: 'omitting',
+  permit: 'permitting', debug: 'debugging', begin: 'beginning', forget: 'forgetting',
+  regret: 'regretting', refer: 'referring', prefer: 'preferring', occur: 'occurring',
+  control: 'controlling', patrol: 'patrolling', compel: 'compelling', expel: 'expelling',
+  propel: 'propelling', equip: 'equipping', upset: 'upsetting', unzip: 'unzipping',
+  format: 'formatting', reset: 'resetting', rerun: 'rerunning', quit: 'quitting',
 };
 
+// Derives the TodoWrite activeForm for a task from its content, which is all the
+// ## Tasks format keeps. The label is cosmetic, so anything that is not clearly a
+// verb comes back verbatim rather than mangled. Rules, in order:
+//   1. first token not a plain word (Phase:, v0.24, gh:115) → content as-is
+//   2. first token already a gerund (Running, Testing) → content as-is
+//   3. IRREGULARS lookup, keeping the first letter's case
+//   4. trailing "e" → drop it (write → writing), except ee/oe/ye (see → seeing)
+//   5. one-syllable consonant-vowel-consonant → double it (run → running);
+//      w, x and y never double (show → showing)
+//   6. otherwise append "ing" (open → opening, identify → identifying)
 export function toActiveForm(content) {
   const trimmed = content.trim();
-  const firstSpace = trimmed.indexOf(' ');
+  if (!trimmed) return '';
+  const firstSpace = trimmed.search(/\s/);
   const verb = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
   const rest = firstSpace === -1 ? '' : trimmed.slice(firstSpace);
 
+  if (!/^[A-Za-z]+$/.test(verb)) return trimmed;
+
   const lower = verb.toLowerCase();
-  if (IRREGULARS[lower]) return IRREGULARS[lower] + rest;
+  if (lower.length >= 5 && lower.endsWith('ing') && !VERBS_ENDING_ING.has(lower)) {
+    return trimmed;
+  }
+
+  if (Object.hasOwn(IRREGULARS, lower)) {
+    const gerund = IRREGULARS[lower];
+    const cased = verb[0] === verb[0].toUpperCase()
+      ? gerund[0].toUpperCase() + gerund.slice(1)
+      : gerund;
+    return cased + rest;
+  }
 
   let gerund;
-  if (verb.endsWith('e') && !verb.endsWith('ee')) {
+  if (/(?:ee|oe|ye)$/.test(lower)) {
+    gerund = verb + 'ing';
+  } else if (lower.endsWith('e')) {
     gerund = verb.slice(0, -1) + 'ing';
   } else if (
-    verb.length >= 3 &&
-    /[aeiou]/.test(verb[verb.length - 2]) &&
-    !/[aeiouwxy]/.test(verb[verb.length - 1])
+    (lower.match(/[aeiou]+/g) || []).length === 1 &&
+    /[^aeiou][aeiou][^aeiouwxy]$/.test(lower)
   ) {
-    // CVC pattern → double the final consonant (Run → Running)
-    // Skip when ending in w/x/y (Show → Showing, Fix → Fixing).
     gerund = verb + verb[verb.length - 1] + 'ing';
   } else {
     gerund = verb + 'ing';
