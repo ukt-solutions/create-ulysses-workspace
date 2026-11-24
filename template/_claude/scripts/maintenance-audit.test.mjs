@@ -9,6 +9,7 @@
 
 import { runAudit, renderReport, parseArgs } from './maintenance-audit.mjs';
 import { regenerateAll } from './build-workspace-context.mjs';
+import { run as runRoster } from './team-roster.mjs';
 import { createHash } from 'node:crypto';
 import {
   mkdtempSync,
@@ -1328,6 +1329,111 @@ function teamWorkspace(team = TEAM) {
   const result = await audit(wtPath);
   assertTrue(bySection(result, 'team').some((f) => /--set-user alex\b/.test(f.message)),
     'the launcher’s settings.local.json is checked from a worktree');
+  cleanup(root);
+}
+
+// 8f. the split from gh:133, built synthetically and repaired end to end.
+// One person's context is spread over their own folder (alex/) and an alias
+// folder (alexw/, the OS username their machine offered), with tracked files
+// in both, `author: alexw` frontmatter in moved and owner-folder files, a
+// local-only draft, and a machine still set to the alias. The audit must
+// flag it; --merge-alias must plan without touching anything, refuse a
+// path present in both folders, then move with history; and once the
+// machine is repointed the audit must read clean.
+{
+  const TM = 'workspace-context/team-member';
+  const put = (root, rel, text) => {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), text);
+  };
+  const doc = (author, what) =>
+    `---\ndescription: ${what}.\nauthor: ${author}\n---\n# ${what}\n\n`
+    + 'Several lines of real content, so that git still sees the moved file as a rename\n'
+    + 'after its author line changes in the same commit: one line of five is not\n'
+    + 'enough of a difference to break the similarity check.\n';
+  const root = makeWorkspace({}, (r) => {
+    const cfg = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    cfg.workspace.team = {
+      alex: { name: 'Alex Example', forge: 'alex-example', gitEmails: ['alex@example.com'], aliases: ['alexw'] },
+      sam: { name: 'Sam Example', forge: 'sam-example', gitEmails: ['fixture@example.com'] },
+    };
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(cfg, null, 2) + '\n');
+    writeFileSync(join(r, '.gitignore'), 'local-only-*\n.claude/settings.local.json\nCLAUDE.local.md\n');
+    put(r, `${TM}/alex/research_owner.md`, doc('alex', 'Owner research'));
+    put(r, `${TM}/sam/braindump_sam.md`, doc('sam', 'Sam braindump'));
+  });
+  // Later work from the alias machine, committed: into the alias folder, and
+  // one file that landed in the owner's folder but still names the alias.
+  git(root, ['config', 'user.email', 'alex@example.com']);
+  put(root, `${TM}/alexw/braindump_split.md`, doc('alexw', 'Written from the alias machine'));
+  put(root, `${TM}/alexw/sub/handoff_deep.md`, doc('"alexw"', 'Nested handoff'));
+  put(root, `${TM}/alex/design_misfiled.md`, doc('alexw', 'Right folder, alias author'));
+  git(root, ['add', '-A']);
+  git(root, ['commit', '-q', '-m', 'work from the alias machine']);
+  const splitCommit = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+  put(root, `${TM}/alexw/local-only-draft.md`, 'an unfinished draft\n');
+  writeFileSync(join(root, '.claude', 'settings.local.json'), JSON.stringify({ workspace: { user: 'alexw' } }));
+  const cli = (...args) => runRoster([...args, '--root', root, '--offline'], { spawnFn: spawnSync });
+  const status = () => git(root, ['status', '--porcelain', '--ignored']).stdout;
+
+  // Before: the split is flagged, with the commands that repair it.
+  const before = bySection(await audit(root), 'team');
+  assertEq(before.map((f) => `${f.severity} ${f.file}`).sort(), [
+    'warning .claude/settings.local.json',
+    `warning ${TM}/alexw/`,
+  ], '8f: the audit flags the alias folder and the alias user');
+  assertTrue(before.some((f) => f.message.includes('--merge-alias alexw')), '8f: the folder finding names the merge');
+
+  // Dry run by default: a plan, and nothing on disk or in the index changes.
+  const statusBefore = status();
+  const dry = cli('--merge-alias', 'alexw');
+  assertEq([dry.code, dry.out.dryRun, dry.out.owner], [0, true, 'alex'], '8f: --merge-alias is a dry run by default');
+  assertEq(dry.out.moves.map((m) => [m.to, m.tracked]), [
+    [`${TM}/alex/braindump_split.md`, true],
+    [`${TM}/alex/local-only-draft.md`, false],
+    [`${TM}/alex/sub/handoff_deep.md`, true],
+  ], '8f: tracked files and the local-only draft are planned');
+  assertEq(dry.out.retag, [`${TM}/alex/design_misfiled.md`], '8f: the owner-folder file naming the alias is planned');
+  assertEq(status(), statusBefore, '8f: the dry run changed nothing');
+
+  // A path in both folders stops the merge before anything moves.
+  put(root, `${TM}/alex/sub/handoff_deep.md`, 'a second copy\n');
+  const clash = cli('--merge-alias', 'alexw');
+  assertEq([clash.code, clash.out.conflicts.map((c) => c.to)], [1, [`${TM}/alex/sub/handoff_deep.md`]],
+    '8f: the dry run reports the conflict and exits 1');
+  const statusClash = status();
+  let refused = null;
+  try { cli('--merge-alias', 'alexw', '--apply'); } catch (err) { refused = err; }
+  assertTrue(refused && /already exist/.test(refused.message), '8f: --apply refuses on a conflict');
+  assertEq(status(), statusClash, '8f: the refusal moved nothing');
+  assertTrue(existsSync(join(root, TM, 'alexw', 'braindump_split.md')), '8f: the alias folder is untouched');
+  rmSync(join(root, TM, 'alex', 'sub'), { recursive: true });
+
+  // --apply: git renames, history followable, authors fixed, folder gone.
+  const applied = cli('--merge-alias', 'alexw', '--apply').out.result;
+  assertEq([applied.moved, applied.tracked, applied.authorsRewritten, applied.folderRemoved], [3, 2, 3, true],
+    '8f: three moves (two tracked), three authors fixed, alias folder removed');
+  const staged = git(root, ['diff', '--cached', '--name-status', '-M']).stdout;
+  assertTrue(/^R\d+\t.*alexw\/braindump_split\.md\t.*alex\/braindump_split\.md$/m.test(staged)
+    && /^R\d+\t.*alexw\/sub\/handoff_deep\.md\t.*alex\/sub\/handoff_deep\.md$/m.test(staged),
+    '8f: git stages the tracked moves as renames');
+  git(root, ['commit', '-q', '-m', 'chore: merge alexw into alex']);
+  for (const rel of ['braindump_split.md', 'sub/handoff_deep.md']) {
+    const log = git(root, ['log', '--follow', '--format=%H', '--', `${TM}/alex/${rel}`]).stdout.split('\n');
+    assertTrue(log.includes(splitCommit), `8f: git log --follow on alex/${rel} reaches the original commit`);
+  }
+  for (const rel of ['braindump_split.md', 'sub/handoff_deep.md', 'design_misfiled.md']) {
+    const text = readFileSync(join(root, TM, 'alex', rel), 'utf8');
+    assertTrue(/^author: "?alex"?$/m.test(text) && !text.includes('alexw'), `8f: alex/${rel} is authored by alex`);
+  }
+  assertTrue(!existsSync(join(root, TM, 'alexw')), '8f: the alias folder is gone');
+  assertTrue(existsSync(join(root, TM, 'alex', 'local-only-draft.md')), '8f: the local-only draft moved with it');
+
+  // After: repoint the machine, and the team section reads clean.
+  assertEq(cli('--set-user', 'alex').out.user, 'alex', '8f: the machine is repointed at the owner');
+  const after = await audit(root);
+  assertEq(bySection(after, 'team'), [], '8f: after the merge the team section is clean');
+  assertEq(after.summary.team.present, true, '8f: with the roster still on');
   cleanup(root);
 }
 
