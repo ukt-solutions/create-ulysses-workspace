@@ -11,7 +11,7 @@
 
 > Rules, skills, and hooks that steer Claude Code through real work. Sessions you can pause and resume, multi-repo with versioning, shared context that survives chat boundaries.
 
-> **Beta.** Currently shipping as `0.13.0-beta.x` under the `@beta` dist-tag. Conventions and CLI flags are stable; the `latest` tag will appear when `0.13.0` cuts. Beta testers welcome — please [open an issue](https://github.com/ukt-solutions/create-ulysses-workspace/issues) if anything's confusing.
+> **Beta.** Pre-1.0 releases ship under the `@beta` dist-tag — install with `@beta`, as every command below does. Release candidates for 1.0.0 will ship under `@rc`. `latest` is not maintained until 1.0.0 and may point to an older beta, so use `@beta` for now. Conventions and CLI flags are stable. Beta testers welcome — please [open an issue](https://github.com/ukt-solutions/create-ulysses-workspace/issues) if anything's confusing.
 
 Requires Node 20.9 or later.
 
