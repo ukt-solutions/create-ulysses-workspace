@@ -60,14 +60,17 @@ const SAFE_PERMISSIONS = new Set(['Bash(git:*)', 'Bash(ls:*)']);
 // 265 kB (gh:183 fix round: 267,497 bytes) → 295 kB (v0.23: 300,774 bytes,
 // smallest passing multiple) → 310 kB (v0.23.1: 306,874 bytes, gh:190/gh:191
 // fix rounds) → 360 kB (v0.24: epics, template-modifications registry,
-// leak audit, prChecks/merge approval — with lib/ tests excluded).
+// leak audit, prChecks/merge approval — with lib/ tests excluded) →
+// 400 kB (v0.25: team roster, consumer-facing leak review, no-shell exec
+// and skill quoting; 373,945 bytes. Raised with headroom at the
+// maintainer's request — the 5 kB steps were forcing a bump per release).
 //
 // No test file ships. The CLI's own tests (lib/**/*.test.mjs) are excluded
 // through a "files" negation in package.json, and checkForbiddenFiles asserts
 // they stay out. The template's tests (template/**/*.test.mjs) are excluded by
 // template/.npmignore, so installed workspaces never receive them. Further
 // trimming is gh:189.
-const SIZE_LIMIT_BYTES = 360 * 1024;
+const SIZE_LIMIT_BYTES = 400 * 1024;
 
 function runDryRun() {
   const raw = execSync('npm pack --dry-run --json', {
