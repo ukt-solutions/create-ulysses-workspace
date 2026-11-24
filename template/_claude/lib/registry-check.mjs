@@ -112,6 +112,9 @@ export function pickComparisonVersion(current, tags) {
     for (const tag of OFFERED_PRERELEASES.get(channel) ?? []) {
       const candidate = tags[tag];
       if (typeof candidate !== 'string' || compareVersions(candidate, version) <= 0) continue;
+      // Never offer what the install has already passed: with lagging tags
+      // `version` can sit below the install, and --upgrade refuses a downgrade.
+      if (channelOf(current) && compareVersions(candidate, current) <= 0) continue;
       if (prerelease === null || compareVersions(candidate, prerelease) > 0) prerelease = candidate;
     }
   }

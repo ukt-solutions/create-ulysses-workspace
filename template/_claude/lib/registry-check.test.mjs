@@ -150,6 +150,14 @@ console.log('\n# pickComparisonVersion — the rc tag');
   assertEq(picked, { version: '0.26.0-beta.0', channel: 'constructor', prerelease: null }, 'a channel named after an object property is offered nothing');
 }
 
+// Lagging tags: a pre-release below the install itself is never offered
+assertEq(pickComparisonVersion('0.26.0-beta.0', { latest: '0.24.0', beta: '0.24.0-beta.0', rc: '0.25.0-rc.0' }).prerelease,
+  null, 'an rc older than the install is not offered, even when it outruns the tags');
+assertEq(pickComparisonVersion('0.26.0-beta.0', { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: 7 }).prerelease,
+  null, 'a non-string rc tag is ignored');
+assertEq(pickComparisonVersion('0.26.0-beta.0', undefined),
+  { version: null, channel: 'beta', prerelease: null }, 'undefined tags offer nothing');
+
 // No `rc` tag: every install behaves as it did before the tag existed
 assertEq(pickComparisonVersion('0.26.0-beta.0', { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0' }),
   { version: '0.26.0-beta.0', channel: 'beta', prerelease: null }, 'beta install without an rc tag');
