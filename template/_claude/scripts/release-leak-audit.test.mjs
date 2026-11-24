@@ -9,7 +9,7 @@
 // array, never a shell string.
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, chmodSync, rmSync, symlinkSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -739,7 +739,10 @@ console.log('# release.consumerFacing: configured paths join the surface even wh
       { file: 'docs/guide.md', line: 2, pattern: 'docs-leak-9', excerpt: 'see [match:11 chars] here' },
       { file: 'openapi.yaml', line: 1, pattern: 'docs-leak-9', excerpt: 'info: [match:11 chars]' },
     ], 'a directory prefix and an exact path both reach the scan; an unconfigured unchanged file does not');
-    assertEq(out.skipped, [], 'configured entries that match nothing are quiet, not errors');
+    assertEq(out.skipped, [
+      { file: 'missing/', reason: 'release.consumerFacing entry matched no tracked file at HEAD' },
+      { file: 'ABSENT.md', reason: 'release.consumerFacing entry matched no tracked file at HEAD' },
+    ], 'configured entries that match nothing are reported — a typo must not read as a clean audit');
     const lsDocs = calls.find((a) => a.includes('ls-tree') && a.includes('docs/'));
     assertEq(lsDocs?.slice(2), ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', 'docs/'],
       'entries expand through a read-only, NUL-delimited git ls-tree argv at the range end');
@@ -773,6 +776,8 @@ console.log('# release.consumerFacing: invalid entries fail loudly');
     ['a parent segment', ['../x']],
     ['a nested parent segment', ['docs/../../x']],
     ['an empty entry', ['']],
+    ['a bare ./ that normalizes to nothing', ['./']],
+    ['a bare . naming the whole repository', ['.']],
     ['a non-string entry', [7]],
     ['a bare string instead of an array', 'docs/'],
   ]) {
@@ -921,6 +926,200 @@ console.log('# real npm pack in a workspace package directory');
       assertEq(out.skipped, [], 'both real packs succeeded');
     } finally { clean(root); }
   }
+}
+
+console.log('# --list-consumer-facing: a version-only package.json bump is not a prose change');
+{
+  const pkg = { name: 'app', version: '1.0.0', description: 'The app' };
+  const { root, dir } = makeLauncher({ pkg });
+  try {
+    const commitPkg = (text, message) => {
+      writeFileSync(join(dir, 'package.json'), text);
+      git(dir, ['add', '-A']);
+      git(dir, ['commit', '-q', '-m', message]);
+    };
+    const asJson = (next) => `${JSON.stringify(next, null, 2)}\n`;
+    const listing = () => run(audit(root, ['--list-consumer-facing']),
+      { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md', 'package.json']) });
+    const changedOf = (out) => out.files.find((f) => f.path === 'package.json')?.changed;
+
+    commitPkg(asJson({ ...pkg, version: '1.1.0' }), 'chore: release v1.1.0');
+    assertEq(listing().files, [
+      { path: 'README.md', changed: false },
+      { path: 'package.json', changed: false },
+    ], '/release\'s own version bump leaves every consumer-facing file unchanged, so the review is skipped');
+
+    commitPkg(`﻿${asJson({ ...pkg, version: '1.1.1' })}`, 'chore: bump again');
+    assertEq(changedOf(listing()), false, 'a BOM on the current file does not make a version-only bump look like a change');
+
+    commitPkg(asJson({ ...pkg, version: '1.2.0', description: 'A different app' }), 'docs: reword');
+    assertEq(changedOf(listing()), true, 'a description change alongside the bump is a consumer-facing change');
+
+    commitPkg('{ "name": "app", "version": \n', 'chore: broken json');
+    assertEq(changedOf(listing()), true, 'a package.json that does not parse counts as changed');
+  } finally { clean(root); }
+
+  // No package.json at the previous tag: it is new, so it is changed.
+  const fresh = makeLauncher();
+  try {
+    writeFileSync(join(fresh.dir, 'package.json'), `${JSON.stringify({ name: 'app', version: '1.0.0' }, null, 2)}\n`);
+    git(fresh.dir, ['add', '-A']);
+    git(fresh.dir, ['commit', '-q', '-m', 'feat: add a package manifest']);
+    const out = run(audit(fresh.root, ['--list-consumer-facing']), { gitFn: gitWithEnv(), npmFn: fakeNpm(['package.json']) });
+    assertEq(out.files.find((f) => f.path === 'package.json')?.changed, true, 'a package.json absent at the previous tag counts as changed');
+  } finally { clean(fresh.root); }
+
+  // The same rule holds for every workspace package and the root, bumped together.
+  const mono = makeMonorepo({ patterns: [] });
+  try {
+    const bump = (rel, version) => {
+      const file = join(mono.dir, rel);
+      const next = JSON.parse(readFileSync(file, 'utf8'));
+      next.version = version;
+      writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
+    };
+    bump('package.json', '1.1.0');
+    bump('packages/a/package.json', '1.1.0');
+    bump('packages/c/package.json', '1.1.0');
+    git(mono.dir, ['add', '-A']);
+    git(mono.dir, ['commit', '-q', '-m', 'chore: release v1.1.0']);
+    const out = run(audit(mono.root, ['--list-consumer-facing']), {
+      gitFn: gitWithEnv(),
+      npmFn: fakeNpmByCwd({ [pkgDir(mono.dir, 'a')]: PKG_FILES, [pkgDir(mono.dir, 'c')]: PKG_FILES }),
+    });
+    assert(out.files.length > 0 && out.files.every((f) => f.changed === false),
+      'a monorepo release bump leaves root and package manifests unchanged');
+    assertEq(out.files.map((f) => f.path), [
+      'package.json', 'packages/a/README.md', 'packages/a/package.json', 'packages/c/README.md', 'packages/c/package.json',
+    ], 'the bumped manifests are still listed, just not as changed');
+  } finally { clean(mono.root); }
+}
+
+console.log('# monorepo: a symlinked package directory is followed');
+if (process.platform === 'win32') {
+  console.log('  (skipped on win32 — creating a symlink needs privileges there)');
+} else {
+  const { root, dir } = makeMonorepo({ patterns: ['MONO-LEAK-1'] });
+  try {
+    symlinkSync('a', join(dir, 'packages', 'linked'), 'dir');
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-q', '-m', 'chore: link a package']);
+    // The link belongs to the base, not the release range: a symlink that
+    // changed in the range would be listed by the diff as a file and read
+    // through to its directory (EISDIR), which is a different question.
+    git(dir, ['tag', '-f', 'v1.0.0']);
+    const [a, c, linked] = ['a', 'c', 'linked'].map((n) => pkgDir(dir, n));
+    const npmCalls = [];
+    const out = run(audit(root), {
+      gitFn: gitWithEnv(),
+      npmFn: fakeNpmByCwd({ [a]: PKG_FILES, [c]: PKG_FILES, [linked]: PKG_FILES }, npmCalls),
+    });
+    assertEq(npmCalls.map((call) => call.cwd), [a, c, linked], 'the symlinked directory is packed like any other package');
+    assert(out.matches.some((m) => m.file === 'packages/linked/README.md'), 'its files are on the surface');
+    assertEq(out.skipped, [], 'nothing was dropped');
+  } finally { clean(root); }
+}
+
+console.log('# monorepo: a UTF-8 BOM on a package.json does not hide the package');
+{
+  const BOM = '﻿';
+  const rewriteWithBom = (dir, rel) => {
+    const file = join(dir, rel);
+    writeFileSync(file, `${BOM}${readFileSync(file, 'utf8')}`);
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-q', '-m', `chore: bom ${rel}`]);
+  };
+
+  const pkgBom = makeMonorepo({ patterns: ['MONO-LEAK-2'] });
+  try {
+    rewriteWithBom(pkgBom.dir, 'packages/c/package.json');
+    const [a, c] = ['a', 'c'].map((n) => pkgDir(pkgBom.dir, n));
+    const npmCalls = [];
+    const out = run(audit(pkgBom.root), {
+      gitFn: gitWithEnv(), npmFn: fakeNpmByCwd({ [a]: PKG_FILES, [c]: PKG_FILES }, npmCalls),
+    });
+    assertEq(npmCalls.map((call) => call.cwd), [a, c], 'a package whose manifest starts with a BOM is still enumerated');
+    assertEq(out.matches.map((m) => m.file), ['packages/c/README.md'], 'and scanned');
+    assertEq(out.skipped, [], 'it was not reported as unreadable either');
+  } finally { clean(pkgBom.root); }
+
+  // A BOM'd root: a public one is still packed, and either kind still names its workspaces.
+  for (const rootPrivate of [false, true]) {
+    const rootBom = makeMonorepo({ rootPrivate, patterns: ['MONO-LEAK-1'] });
+    try {
+      rewriteWithBom(rootBom.dir, 'package.json');
+      const [a, c] = ['a', 'c'].map((n) => pkgDir(rootBom.dir, n));
+      const npmCalls = [];
+      run(audit(rootBom.root), {
+        gitFn: gitWithEnv(),
+        npmFn: fakeNpmByCwd({ [rootBom.dir]: ['README.md'], [a]: PKG_FILES, [c]: PKG_FILES }, npmCalls),
+      });
+      assertEq(npmCalls.map((call) => call.cwd), rootPrivate ? [a, c] : [rootBom.dir, a, c],
+        `a BOM'd ${rootPrivate ? 'private' : 'public'} root is read correctly: ${rootPrivate ? 'not packed' : 'packed'}, packages enumerated`);
+    } finally { clean(rootBom.root); }
+  }
+}
+
+console.log('# monorepo: a workspace that cannot be read as a package is reported, not dropped');
+{
+  const { root, dir } = makeMonorepo({
+    workspaces: ['packages/*', 'packages/tools', 'packages/nope', 'apps/*'],
+  });
+  try {
+    writeTree(dir, { 'packages/broken/package.json': '{ not json\n' });
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-q', '-m', 'chore: broken manifest']);
+    const [a, c] = ['a', 'c'].map((n) => pkgDir(dir, n));
+    const npmCalls = [];
+    const out = run(audit(root), {
+      gitFn: gitWithEnv(), npmFn: fakeNpmByCwd({ [a]: PKG_FILES, [c]: PKG_FILES }, npmCalls),
+    });
+    assertEq(out.skipped, [
+      { file: 'packages/broken/', reason: 'package.json is not valid JSON' },
+      { file: 'packages/tools/', reason: 'no package.json found' },
+      { file: 'packages/nope/', reason: 'no package.json found' },
+      { file: 'apps/', reason: 'workspaces directory not found' },
+    ], 'an unparseable manifest, exact entries with no manifest, and a missing /* base are each reported; '
+      + 'a plain directory under a /* entry (packages/tools there) is not a package and stays quiet');
+    assertEq(npmCalls.map((call) => call.cwd), [a, c], 'none of them was packed');
+  } finally { clean(root); }
+}
+
+console.log('# release.consumerFacing: an entry that matches nothing is reported and never fails the audit');
+{
+  const { root } = makeLauncher({
+    repoPatterns: ['no-such-pattern-anywhere'],
+    repoRelease: { consumerFacing: ['nothing-here/'] },
+  });
+  try {
+    const out = run(audit(root), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) });
+    assertEq(out.skipped, [
+      { file: 'nothing-here/', reason: 'release.consumerFacing entry matched no tracked file at HEAD' },
+    ], 'the entry is reported with the ref it was looked up at');
+    assertEq(out.matches, [], 'and it is informational: nothing matched');
+    const listed = run(audit(root, ['--list-consumer-facing']), { gitFn: gitWithEnv(), npmFn: fakeNpm(['README.md']) });
+    assertEq(listed.skipped.map((f) => f.file), ['nothing-here/'], 'the listing reports it too');
+    const script = join(dirname(fileURLToPath(import.meta.url)), 'release-leak-audit.mjs');
+    const cli = spawnSync(process.execPath, [script, '--root', root, '--repo', 'app'], { encoding: 'utf-8', env: ENV });
+    assertEq(cli.status, 0, 'a skipped entry never changes the exit code');
+  } finally { clean(root); }
+}
+
+console.log('# --tag-range ends that look like options are refused before git sees them');
+{
+  const { root } = makeLauncher({ repoPatterns: ['sk-live-abcdef'] });
+  try {
+    for (const [side, range] of [['from', '-U5..HEAD'], ['to', 'v1.0.0..-U5']]) {
+      for (const extra of [[], ['--list-consumer-facing']]) {
+        const calls = [];
+        const recordingGit = (cmd, args, opts) => { calls.push(args); return gitWithEnv()(cmd, args, opts); };
+        rejects(() => run(audit(root, ['--tag-range', range, ...extra]), { gitFn: recordingGit, npmFn: fakeNpm(['README.md']) }),
+          `a ${side} side that starts with - is rejected`, 'must name commits, not options');
+        assert(!calls.some((a) => a.includes('diff') || a.includes('log')),
+          `no diff or log ran with the ${side} side — git never saw it as an option`);
+      }
+    }
+  } finally { clean(root); }
 }
 
 console.log('# CLI: exit 1 on matches, 0 unconfigured, 2 on error');
