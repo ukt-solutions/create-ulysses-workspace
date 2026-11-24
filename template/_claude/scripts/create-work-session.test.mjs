@@ -184,29 +184,28 @@ withFixture((fx) => {
   assertEq(findPwned(fx.base), [], '@{-1} branch: no payload ran');
 });
 
-// === Malicious session names ===
-for (const name of ['../escape', 'a/b', 'a\\b', '.hidden']) {
+// === Session names ===
+// Separators, a leading dot or dash, shell syntax, spaces, non-ASCII and
+// over-long names are all refused before anything is created.
+for (const name of ['../escape', 'a/b', 'a\\b', '.hidden', '-x', 'a$(touch PWNED)', 'a`touch PWNED`', 'a;b', 'a b', "a'b", 'héllo', 'x'.repeat(65)]) {
   withFixture((fx) => {
     const r = create(fx, { 'session-name': name });
     assert(r.status !== 0, `session name ${JSON.stringify(name)} exits non-zero`);
     assertEq(r.json?.success, false, `session name ${JSON.stringify(name)} reports success:false`);
     assert(!existsSync(join(fx.ws, 'escape')), `session name ${JSON.stringify(name)}: nothing created outside work-sessions/`);
+    assertEq(findPwned(fx.base), [], `session name ${JSON.stringify(name)}: no payload ran`);
     assertUntouched(fx, `session name ${JSON.stringify(name)}`);
   });
 }
 
-// A shell-metacharacter session name is a valid single path segment. It must
-// reach git as literal text: no payload runs, and the commit message carries
-// the name verbatim.
-withFixture((fx) => {
-  const name = 'a$(touch PWNED)';
-  const r = create(fx, { 'session-name': name, branch: 'feature/dollar' });
-  assertEq(r.json?.success, true, `metacharacter session name succeeds (error: ${r.json?.error})`);
-  assertEq(findPwned(fx.base), [], 'metacharacter session name: no payload ran');
-  const wt = join(fx.ws, 'work-sessions', name, 'workspace');
-  assertEq(fx.git(wt, 'log', '-1', '--format=%s').trim(), `chore: initialize session tracker for ${name}`,
-    'commit message carries the session name literally');
-});
+// Ordinary names, including the longest allowed, are accepted.
+for (const [name, branch] of [['fix-auth', 'feature/fix-auth'], ['v0.25_rc.1', 'feature/rc'], ['A'.repeat(64), 'feature/long']]) {
+  withFixture((fx) => {
+    const r = create(fx, { 'session-name': name, branch });
+    assertEq(r.json?.success, true, `session name ${JSON.stringify(name)} succeeds (error: ${r.json?.error})`);
+    assert(existsSync(join(fx.ws, 'work-sessions', name, 'workspace')), `session name ${JSON.stringify(name)}: worktree created`);
+  });
+}
 
 // === Malicious repo entries ===
 for (const repo of ['../app', 'a/b', 'app,../app']) {

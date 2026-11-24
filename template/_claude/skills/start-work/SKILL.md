@@ -191,7 +191,7 @@ If no gap is found, skip silently.
      }
      ```
    - If it came from the assigned-to-me list, skip the claim call (already mine).
-   - Generate the session name from the issue title (kebab-case slug, max ~40 chars).
+   - Generate the session name from the issue title: a kebab-case slug of about 40 characters, using only letters, digits, `.`, `_` and `-` and starting with a letter or digit. `create-work-session.mjs` rejects anything else.
    - Remember `workItem: {issue.id}` for the session tracker.
 
 6. **User picked "Something new" (or fell through from step 2 with no tracker).**

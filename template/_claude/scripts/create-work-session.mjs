@@ -42,14 +42,17 @@ const reposDir = join(root, 'repos');
 // these checks run before anything is created, so a crafted value is
 // rejected with no branch, worktree or folder left behind.
 
-// A session name becomes a path segment under work-sessions/: one segment,
-// no separators or absolute paths, no leading dot (the same rule as
-// migrate-sessions.mjs).
-function isSessionSegment(name) {
-  if (typeof name !== 'string' || name === '' || isAbsolute(name)) return false;
-  const segs = name.split(/[\\/]/);
-  if (segs.length !== 1) return false;
-  return !segs[0].startsWith('.');
+// A new session's name becomes a path segment under work-sessions/ and
+// appears in commands Claude types while running the session skills. It is
+// limited to letters, digits, '.', '_' and '-', starting with a letter or
+// digit, at most 64 characters: nothing in it can be read as a path
+// separator, an option or shell syntax, even when a command is quoted
+// wrongly. This applies only at creation. The scripts that act on an existing
+// session (add-repo-to-session, session-end) accept any single path segment,
+// so a session created before this rule can still be finished.
+const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+function isSessionName(name) {
+  return typeof name === 'string' && SESSION_NAME_RE.test(name);
 }
 
 // A project repo name: one path segment under repos/, not dots.
@@ -69,8 +72,8 @@ function validBranch(cwd, name) {
 }
 
 function validationError() {
-  if (!isSessionSegment(sessionName)) {
-    return `Invalid session name "${sessionName}": it must be a single path segment that does not start with a dot`;
+  if (!isSessionName(sessionName)) {
+    return `Invalid session name "${sessionName}": use 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit`;
   }
   if (!validBranch(root, branch)) {
     return `Invalid branch "${branch}": git check-ref-format rejected it`;
