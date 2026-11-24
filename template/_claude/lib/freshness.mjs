@@ -9,7 +9,10 @@ const CACHE_FILENAME = '.version-check.json';
 /**
  * Refresh the version cache if stale, then write or delete the banner file
  * based on a comparison of workspace.templateVersion to the npm dist-tag
- * matching its release channel (see pickComparisonVersion).
+ * matching its release channel (see pickComparisonVersion). The banner an
+ * `outdated` result writes names that version in its command as well: a
+ * bare `npx @ulysses-ai/create-workspace` installs `latest`, which is not
+ * maintained before 1.0.0 and can be older than the version just named.
  *
  * The cache stores the raw dist-tags rather than the chosen version, so a
  * channel switch between cache write and read (e.g. an upgrade from a beta
@@ -78,7 +81,7 @@ export async function refreshIfStale({
   if (cmp < 0) {
     writeFileSync(
       bannerPath,
-      `## Template update available\n\nYour workspace is on template v${current}; latest on npm is v${latest}.\nRun \`/maintenance\` for details or \`npx @ulysses-ai/create-workspace --upgrade\` to apply.\n`,
+      `## Template update available\n\nYour workspace is on template v${current}; latest on npm is v${latest}.\nRun \`/maintenance\` for details or \`npx @ulysses-ai/create-workspace@${latest} --upgrade\` to apply.\n`,
     );
     return { status: 'outdated', current, latest, checkedAt: cache.checkedAt };
   } else {

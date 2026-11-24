@@ -95,13 +95,14 @@ Two keys are left over from earlier versions: `localFiles` and `templateModifica
 
 ### CLI
 
-Three forms are the contract:
+Three forms, and one flag, are the contract:
 
 | Form | What it does |
 |---|---|
 | No flag, as in `npm create @ulysses-ai/workspace@<tag>` | Scaffolds a workspace by prompt. It asks for the name, the directory, the repos to register, a user name and which optional rules to activate, then initialises the git repo and clones the repos. |
 | `--init [dir]` | Scaffolds a new workspace without prompts. With no `dir`, the current directory becomes the workspace. |
-| `--upgrade [dir]` | Stages a template update for an existing workspace. With no `dir`, the current directory is used. |
+| `--upgrade [dir]` | Stages a template update for an existing workspace. With no `dir`, the current directory is used. It refuses to stage a template older than the workspace's `templateVersion`. |
+| `--upgrade --allow-downgrade` | Stages the older template anyway. |
 
 `--migrate` is not part of the contract. It is deprecated, and the CLI exits with an error that points to `--init` or `--upgrade`.
 

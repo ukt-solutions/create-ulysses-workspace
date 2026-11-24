@@ -25,8 +25,8 @@ async function main() {
   if (migrateFlag) {
     console.error('  --migrate is deprecated. Use --init (fresh install) or --upgrade (template update).');
     console.error('');
-    console.error('  Fresh install:    npx @ulysses-ai/create-workspace --init [target-dir]');
-    console.error('  Template update:  npx @ulysses-ai/create-workspace --upgrade [target-dir]');
+    console.error('  Fresh install:    npx @ulysses-ai/create-workspace@beta --init [target-dir]');
+    console.error('  Template update:  npx @ulysses-ai/create-workspace@beta --upgrade [target-dir]');
     console.error('');
     process.exit(1);
   }
@@ -43,7 +43,7 @@ async function main() {
     const { upgradeWorkspace } = await import('../lib/upgrade.mjs');
     const args = process.argv.slice(process.argv.indexOf('--upgrade') + 1);
     const targetDir = resolve(args.find(a => !a.startsWith('--')) || '.');
-    await upgradeWorkspace(targetDir);
+    await upgradeWorkspace(targetDir, { allowDowngrade: process.argv.includes('--allow-downgrade') });
     return;
   }
 

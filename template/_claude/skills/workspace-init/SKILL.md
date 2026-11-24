@@ -14,15 +14,15 @@ Initialization runs once per workspace and ends by setting `workspace.initialize
 
 ## Choose the mode
 
-`workspace.json` must exist; if it does not, report "No workspace.json found — this is not a workspace. Scaffold one with `npx @ulysses-ai/create-workspace --init`." and stop.
+`workspace.json` must exist; if it does not, report "No workspace.json found — this is not a workspace. Scaffold one with `npx @ulysses-ai/create-workspace@beta --init`." and stop.
 
 Then decide from `workspace.initialized` and the `.workspace-update/` payload. `/workspace-init join` forces the join flow on an initialized workspace and skips the question below.
 
 | `initialized` | `.workspace-update/` payload | Mode |
 |---|---|---|
 | not `true` | `"action": "init"` in `.manifest.json` | **Init** — the full flow below |
-| not `true` | absent | Report "No update payload found. Run `npx @ulysses-ai/create-workspace --init` to stage the template." and stop |
-| `true` | `"action": "init"` | Warn "Workspace is already initialized. Did you mean to run `npx @ulysses-ai/create-workspace --upgrade` instead?" Proceed with init only if the user explicitly confirms a re-initialization |
+| not `true` | absent | Report "No update payload found. Run `npx @ulysses-ai/create-workspace@beta --init` to stage the template." and stop |
+| `true` | `"action": "init"` | Warn "Workspace is already initialized. Did you mean to run `npx @ulysses-ai/create-workspace@beta --upgrade` instead?" Proceed with init only if the user explicitly confirms a re-initialization |
 | `true` | any other payload | Report "A template update is staged — run /workspace-update." and stop |
 | `true` | absent | **Join check** — see below |
 

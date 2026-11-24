@@ -381,7 +381,11 @@ console.log('# maintenance-audit');
   });
   assertTrue(bySection(result, 'freshness').some((f) => f.severity === 'warning' && f.message.includes('0.9.0')),
     'outdated template is a warning naming the version');
+  assertTrue(bySection(result, 'freshness').some((f) => f.severity === 'warning' && f.message.includes('npx @ulysses-ai/create-workspace@0.9.0 --upgrade')),
+    'outdated warning pins the command to the version it named');
   assertTrue(existsSync(join(root, 'local-only-template-freshness.md')), 'outdated result writes the banner, as /maintenance always has');
+  assertTrue(readFileSync(join(root, 'local-only-template-freshness.md'), 'utf8').includes('npx @ulysses-ai/create-workspace@0.9.0 --upgrade'),
+    'the banner the audit writes carries the same pinned command');
   cleanup(root);
 }
 {

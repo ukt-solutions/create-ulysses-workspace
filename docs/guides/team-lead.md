@@ -9,7 +9,7 @@ You are setting up a workspace for your team. Maybe it is two developers, maybe 
 Create the workspace and initialize git:
 
 ```bash
-npx @ulysses-ai/create-workspace --init team-workspace
+npx @ulysses-ai/create-workspace@beta --init team-workspace
 cd team-workspace
 git remote add origin git@github.com:team/team-workspace.git
 ```
