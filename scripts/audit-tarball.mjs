@@ -3,7 +3,8 @@
 // package.json `prepublishOnly` so `npm publish` cannot ship a tarball that
 // leaks personal references, omits required structural files, includes
 // forbidden ones, exceeds a sane size, drifts from the README's claimed
-// counts, or carries a non-minimal permissions allowlist.
+// counts, carries a non-minimal permissions allowlist, or ships code that
+// builds a shell command line.
 //
 // On any violation: prints `Audit failed:` to stderr followed by one line per
 // violation, then exits 1. On success: one line `Audit OK — N files, X.X kB.`
@@ -187,6 +188,55 @@ function checkForbiddenFiles(files) {
           details: `${file.path} [${name}]`,
         });
       }
+    }
+  }
+  return violations;
+}
+
+// Shipped code never builds a command line for a shell (gh:129). execSync
+// and exec run their string through a shell, so any interpolated value — a
+// branch name, session name, path, remote — becomes shell text. Shipped
+// scripts call execFileSync/spawnSync with an argument array instead. The
+// one reviewed exception is npm on Windows, where spawnSync cannot run
+// npm.cmd without a shell: its `shell: true` line carries an
+// `audit:allow-shell` comment naming why the arguments are safe. Scans the
+// non-test .mjs files under template/, lib/ and bin/ that the tarball ships.
+function checkShellExec(files) {
+  const violations = [];
+  for (const file of files) {
+    if (!/^(template|lib|bin)\//.test(file.path)) continue;
+    if (!file.path.endsWith('.mjs') || file.path.endsWith('.test.mjs')) continue;
+    let content;
+    try {
+      content = readFileSync(join(REPO_ROOT, file.path), 'utf8');
+    } catch {
+      continue; // Symlink, missing, or unreadable — skip rather than crash.
+    }
+    const flag = (index, message) =>
+      violations.push({ kind: 'shell-exec', details: `${file.path}:${lineNumberAt(content, index)}: ${message}` });
+    const useArgv = 'use execFileSync/spawnSync with an argument array';
+
+    const calls = /\bexecSync\s*\(/g;
+    let match;
+    while ((match = calls.exec(content)) !== null) {
+      flag(match.index, `execSync builds a shell command — ${useArgv}`);
+    }
+
+    const imports = /import\s*\{([^}]*)\}\s*from\s*['"](?:node:)?child_process['"]/g;
+    while ((match = imports.exec(content)) !== null) {
+      const names = match[1].split(',').map((n) => n.trim().split(/\s+as\s+/)[0]);
+      for (const name of ['execSync', 'exec']) {
+        if (names.includes(name)) flag(match.index, `imports ${name}, which runs a shell command — ${useArgv}`);
+      }
+    }
+
+    const shellOn = /shell\s*:\s*true/g;
+    while ((match = shellOn.exec(content)) !== null) {
+      const lineStart = content.lastIndexOf('\n', match.index) + 1;
+      let lineEnd = content.indexOf('\n', match.index);
+      if (lineEnd === -1) lineEnd = content.length;
+      if (content.slice(lineStart, lineEnd).includes('audit:allow-shell')) continue;
+      flag(match.index, `shell: true runs the command through a shell — ${useArgv}, or mark a reviewed exception with // audit:allow-shell`);
     }
   }
   return violations;
@@ -458,6 +508,7 @@ function main() {
   const violations = [
     ...scanContentDenylist(files),
     ...checkForbiddenFiles(files),
+    ...checkShellExec(files),
     ...checkRequiredFiles(files),
     ...checkSettingsSanity(),
     ...checkSizeBound(result.size),

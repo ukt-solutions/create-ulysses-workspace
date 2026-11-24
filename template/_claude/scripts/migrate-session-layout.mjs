@@ -14,7 +14,7 @@
 //   node migrate-session-layout.mjs --all --main     (runs all sessions then main)
 //   Optional: --root PATH to override auto-detection
 import '../lib/require-node.mjs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import {
   readFileSync,
   writeFileSync,
@@ -55,7 +55,7 @@ export function migrateSession(root, sessionName) {
 
   // Quick idempotency check: if the tracker is already in-worktree AND no
   // ghosts remain in the branch tree, we're done.
-  if (existsSync(inWorktreeTracker) && listGhostsInBranch(worktree).length === 0) {
+  if (existsSync(inWorktreeTracker) && listTrackedSessionContent(worktree).length === 0) {
     return { status: 'already-migrated', sessionName };
   }
 
@@ -88,26 +88,23 @@ export function migrateSession(root, sessionName) {
     if (/^(design|plan)-.*\.md$/.test(entry)) toAdd.push(entry);
   }
   if (toAdd.length > 0) {
-    execSync(`git add ${toAdd.map((f) => `"${f}"`).join(' ')}`, {
-      cwd: worktree,
-      stdio: 'pipe',
-    });
+    execFileSync('git', ['add', '--', ...toAdd], { cwd: worktree, stdio: 'pipe' });
   }
 
   // Remove cross-contamination ghosts that this branch inherited from main
-  const ghosts = listGhostsInBranch(worktree);
+  const ghosts = listTrackedSessionContent(worktree);
   for (const ghost of ghosts) {
-    execSync(`git rm "${ghost}"`, { cwd: worktree, stdio: 'pipe' });
+    execFileSync('git', ['rm', '--', ghost], { cwd: worktree, stdio: 'pipe' });
   }
 
   // Only commit if there are staged changes
-  const staged = execSync('git diff --cached --name-only', { cwd: worktree })
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: worktree })
     .toString()
     .trim();
   if (staged.length === 0) {
     return { status: 'no-changes', sessionName };
   }
-  execSync('git commit -m "chore: migrate session content into worktree"', {
+  execFileSync('git', ['commit', '-m', 'chore: migrate session content into worktree'], {
     cwd: worktree,
     stdio: 'pipe',
   });
@@ -120,12 +117,17 @@ export function migrateSession(root, sessionName) {
   };
 }
 
-function listGhostsInBranch(worktree) {
-  const out = execSync(
-    'git ls-files "work-sessions/*/session.md" "work-sessions/*/design-*.md" "work-sessions/*/plan-*.md"',
-    { cwd: worktree }
+// Every tracked session tracker, spec and plan under work-sessions/ in the
+// checkout at `cwd`. Filenames are untrusted: git expands the pathspec globs
+// itself (no shell), and -z returns names verbatim, so a name holding a
+// newline or a quoted character cannot be split or misread.
+function listTrackedSessionContent(cwd) {
+  const out = execFileSync(
+    'git',
+    ['ls-files', '-z', '--', 'work-sessions/*/session.md', 'work-sessions/*/design-*.md', 'work-sessions/*/plan-*.md'],
+    { cwd }
   ).toString();
-  return out.split('\n').filter(Boolean);
+  return out.split('\0').filter(Boolean);
 }
 
 /**
@@ -170,15 +172,9 @@ export function migrateMain(root) {
   writeFileSync(gitignorePath, collapsed);
 
   // git rm --cached every launcher-tracked tracker/spec/plan file
-  const listed = execSync(
-    'git ls-files "work-sessions/*/session.md" "work-sessions/*/design-*.md" "work-sessions/*/plan-*.md"',
-    { cwd: root }
-  )
-    .toString()
-    .split('\n')
-    .filter(Boolean);
+  const listed = listTrackedSessionContent(root);
   for (const path of listed) {
-    execSync(`git rm --cached "${path}"`, { cwd: root, stdio: 'pipe' });
+    execFileSync('git', ['rm', '--cached', '--', path], { cwd: root, stdio: 'pipe' });
   }
 
   // Bump templateVersion in workspace.json
@@ -190,9 +186,10 @@ export function migrateMain(root) {
   }
 
   // Stage and commit
-  execSync('git add .gitignore workspace.json', { cwd: root, stdio: 'pipe' });
-  execSync(
-    'git commit -m "chore: migrate workspace to in-worktree session layout"',
+  execFileSync('git', ['add', '--', '.gitignore', 'workspace.json'], { cwd: root, stdio: 'pipe' });
+  execFileSync(
+    'git',
+    ['commit', '-m', 'chore: migrate workspace to in-worktree session layout'],
     { cwd: root, stdio: 'pipe' }
   );
 

@@ -5,7 +5,7 @@
 // section contains heuristic correction-pattern sentences.
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import {
   getWorkspaceRoot,
   readStdin,
@@ -33,7 +33,7 @@ const user = settings?.workspace?.user || 'unknown';
 
 let branch = 'unknown';
 try {
-  branch = execSync('git branch --show-current', { cwd: root, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  branch = execFileSync('git', ['branch', '--show-current'], { cwd: root, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 } catch {}
 
 // Update session tracker: mark this chat as ended, append safety note
@@ -65,9 +65,11 @@ if (pointer && sessionId) {
       // the commit fails (hook blocked, nothing to commit, etc.).
       try {
         const worktreeCwd = sessionWorktreePath(mainRoot, pointer.name);
-        execSync('git add session.md', { cwd: worktreeCwd, stdio: 'pipe' });
-        execSync(
-          `git commit -m "chore: session-end safety capture for ${pointer.name}"`,
+        // The session name is data, not shell text: both calls take argv arrays.
+        execFileSync('git', ['add', '--', 'session.md'], { cwd: worktreeCwd, stdio: 'pipe' });
+        execFileSync(
+          'git',
+          ['commit', '-m', `chore: session-end safety capture for ${pointer.name}`],
           { cwd: worktreeCwd, stdio: 'pipe' }
         );
       } catch {
