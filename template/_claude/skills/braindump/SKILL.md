@@ -44,14 +44,39 @@ The flows below apply when NOT in an active work session, or when the user expli
 
 ## Flow: Named
 
-Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to:
+A braindump is tracked only when it is written into a worktree of the workspace repo, because only a worktree is on a branch of its own. Everywhere else it is local-only: the workspace root is the launcher, it stays on the repo's default branch, only `local-only-*` files are written there, and none of them is committed.
+
+Two worktrees count as **the worktree**:
+
+- a task's workspace-repo worktree — `{launcher-root}/.claude/worktrees/{slug}/`, where `{slug}` is the task's branch with `/` replaced by `-`. It is this chat's when the chat's record holds that task with `repo: "."`.
+- a session's workspace worktree — `work-sessions/{session-name}/workspace/`, for a chat running inside it.
+
+`{launcher-root}` is the workspace root: the absolute path on the `Workspace root:` line the SessionStart hook injects when the chat runs there. A chat running inside either worktree is already in it; there the same line names the worktree, and inside a session's worktree the hook adds `Working in workspace worktree. Main root: …` with the launcher's path. A chat at the workspace root has a worktree only through its own task: `node .claude/scripts/task-worktree.mjs --root . --detect --chat '{chat}'` lists the chat's tasks with their `branch` and `repo`, and an entry with `repo: "."` names one — ask which when several do. `{chat}` is the name on the `Chat record:` line the hook injects. With no worktree, the capture stays local-only.
+
+Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to. `--root` decides where the capture goes, so there are two forms. Without a worktree the capture is local-only at the root — the root form:
 
 ```bash
 node .claude/scripts/capture-context.mjs \
+  --root . \
   --type braindump \
   --topic '{kebab-case-name}' \
   --scope team-member \
-  --user {workspace.user} \
+  --user '{workspace.user}' \
+  --description '{one-line summary}' \
+  --local-only <<'BODY'
+{body}
+BODY
+```
+
+With a worktree it is tracked, written into the worktree — the tracked form:
+
+```bash
+node .claude/scripts/capture-context.mjs \
+  --root '{worktree}' \
+  --type braindump \
+  --topic '{kebab-case-name}' \
+  --scope team-member \
+  --user '{workspace.user}' \
   --description '{one-line summary}' <<'BODY'
 {body}
 BODY
@@ -59,7 +84,7 @@ BODY
 
 The body goes in on stdin through the quoted heredoc (`<<'BODY'`), so backticks and `$` in it stay literal — never `echo "…" |`. Use another delimiter if `BODY` occurs on a line of its own in the body.
 
-Add `--scope shared` (and drop `--user`) to put the file in `workspace-context/shared/` for team visibility. Add `--local-only` to keep it gitignored. Add `--update` to overwrite an existing file with the same name; without it, the helper appends `-2`, `-3`, etc. on collision.
+Per-user is the default scope: `--scope team-member --user '{workspace.user}'`. In a worktree, `--scope shared` (dropping `--user`) makes the capture team-visible, and the root form with `--root '{worktree}'` in place of `--root .` keeps it gitignored. At the workspace root no scope is team-visible, because the file is gitignored wherever it lands: keep the default there, and leave team visibility to `/promote`. Add `--update` to overwrite an existing file with the same name; without it, the helper appends `-2`, `-3`, etc. on collision.
 
 The body content sent on stdin should follow this template:
 
@@ -77,7 +102,7 @@ The body content sent on stdin should follow this template:
 {What this decision means for future work}
 ```
 
-The helper writes the frontmatter (`state: ephemeral`, `lifecycle: active`, `type: braindump`, `topic`, `author`, `updated`) and prints the absolute path on stdout so the skill can `git add` and commit it.
+The helper writes the frontmatter (`state: ephemeral`, `lifecycle: active`, `type: braindump`, `topic`, `author`, `updated`) and prints the absolute path on stdout — the path a tracked braindump is committed by.
 
 ## Flow: Side Braindump (deprecated)
 
@@ -111,6 +136,8 @@ Use the same GFM checkbox format as `session.md`'s `## Tasks` section (just `con
 
 When updating, rewrite as a fresh snapshot (coherent-revisions rule) and pass `--update` to `capture-context.mjs`. The updated braindump should read as if written in one pass.
 
+Pass the same flags as the original write — `--root`, and `--local-only` unless the braindump is tracked. The helper finds the existing file by the path those flags produce, so a root capture updated without `--local-only` would look for the tracked name instead and miss the file.
+
 ## Key Differences from /handoff
 - `/handoff` is structured around work state (branch, status, next steps)
 - `/braindump` is structured around reasoning (context, exploration, decisions, implications)
@@ -118,14 +145,18 @@ When updating, rewrite as a fresh snapshot (coherent-revisions rule) and pass `-
 - Use `/braindump` when you're capturing a discussion or decision
 
 ## Auto-commit
-Use the path that `capture-context.mjs` printed:
+
+A tracked braindump — one written into the worktree — is committed from inside it. The commands run against the worktree with `-C` because from the workspace root `git add` cannot reach a path under `.claude/worktrees/` or `work-sessions/`: the launcher's `.gitignore` covers both.
+
 ```bash
-git add '{printed-path}'
-git commit -m 'braindump: {name}'
+git -C '{worktree}' add '{printed-path}'
+git -C '{worktree}' commit -m 'braindump: {name}'
 ```
+
+A local-only capture is never committed — it is gitignored, so there is nothing to add at the workspace root.
 
 ## Notes
 - Per-user (`team-member/{user}/`) is the default scope
 - One topic, one file — don't mix unrelated ideas in one braindump
 - Drive-by ideas now use `/aside` instead of `/braindump side`
-- Auto-committing context files without user request is a workflow artifact — this intentionally bypasses the "do not commit unless asked" convention
+- Auto-committing a tracked capture without user request is a workflow artifact — this intentionally bypasses the "do not commit unless asked" convention, and never applies at the workspace root

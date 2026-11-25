@@ -5,7 +5,7 @@ description: Move personal auto-memory or local-only files into workspace-contex
 
 # Promote
 
-Promote personal knowledge into workspace-context. Assess all candidates, recommend actions, let the user decide with coded references.
+Promote personal knowledge into workspace-context. Assess all candidates, recommend actions, let the user decide with coded references. A promotion lands through a task worktree of the workspace repo and a PR of its own, never through a commit at the workspace root, which stays on its default branch.
 
 ## Sources
 
@@ -48,21 +48,7 @@ The user responds using codes:
 
 Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
 
-For each **promote** action:
-- Ask: "Team-visible (`workspace-context/shared/`), user-scoped (default, `workspace-context/team-member/{user}/`), or locked (`workspace-context/shared/locked/`)?"
-- Use `capture-context.mjs --update` to write to the destination with the right frontmatter:
-  ```bash
-  cat '{source-file}' | node .claude/scripts/capture-context.mjs \
-    --type {braindump|handoff|research} \
-    --topic '{kebab-name}' \
-    --scope {team-member|shared} \
-    [--user {workspace.user}] \
-    --update
-  ```
-  When promoting *to locked*, write directly to `workspace-context/shared/locked/{bare-name}.md` instead — locked files use bare names (location signals the type) and don't take a prefix. Strip the `braindump_/handoff_/research_` prefix when locking.
-- Set `type: promoted` in the destination frontmatter (the helper writes the standard fields; edit `type` afterward, or have the body's frontmatter override).
-- Remove the `local-only-` original.
-- Commit individually: `git commit -m 'promote: {name}'`
+Every command in this step is anchored at the workspace root with `{launcher-root}`. That is the absolute path on the `Workspace root:` line the SessionStart hook injects when the chat runs at the root. A chat inside a session's worktree gets that line as well, naming the worktree, and with it `Working in workspace worktree. Main root: …`, whose path is the launcher. A chat inside a task worktree of the workspace repo gets no `Main root:` line: there derive the launcher with `git rev-parse --git-common-dir`, resolving a relative result against the cwd, and take that directory's parent — from inside a project's worktree that lands on the source clone `repos/{repo}/`, and the launcher is two levels up. Sources and scratch files live at the launcher wherever the chat runs, and the worktree is always created from the launcher: never from inside another worktree, which would nest one worktree in another.
 
 For each **drop** action:
 - Delete the file (auto-memory from `~/.claude/projects/*/memory/`, local-only from workspace)
@@ -71,9 +57,61 @@ For each **drop** action:
 For each **keep** action:
 - No changes
 
+For the **promote** actions, all of them together: the workspace root is the launcher and stays on the repo's default branch, so a promoted file is never written or committed there. It goes into one task worktree of the workspace repo and lands through one PR.
+
+1. **Create the worktree.** `{name}` is the promoted file's topic, or one kebab-case name when several files are promoted together. The `path` in the output is `{worktree}`:
+   ```bash
+   node '{launcher-root}/.claude/scripts/task-worktree.mjs' --root '{launcher-root}' --create --repo . --branch 'chore/promote-{name}'
+   ```
+2. **Ask the level** of each file: team-visible (`workspace-context/shared/`), user-scoped (default, `workspace-context/team-member/{user}/`), or locked (`workspace-context/shared/locked/`).
+3. **Write each destination inside the worktree.** Read each source where it is: a gitignored `local-only-*` file exists only at the launcher, never inside the worktree, and auto-memory is outside the workspace.
+   ```bash
+   cat '{source-file}' | node '{launcher-root}/.claude/scripts/capture-context.mjs' \
+     --root '{worktree}' \
+     --type {braindump|handoff|research} \
+     --topic '{kebab-name}' \
+     --scope {team-member|shared} \
+     [--user '{workspace.user}'] \
+     --update
+   ```
+   For locked the helper is not involved: write the file to `{worktree}/workspace-context/shared/locked/{bare-name}.md`. Locked files use bare names, because location signals the type, and take no prefix, so strip the `braindump_`, `handoff_` or `research_` prefix.
+4. **Mark each destination `type: promoted`.** The helper writes the standard frontmatter; edit `type` afterward, in the worktree.
+5. **Regenerate the catalogs, then commit inside the worktree.** The commit runs against the worktree with `-C`: from the workspace root, `git add` cannot reach a path under `.claude/worktrees/`, which the launcher's `.gitignore` covers.
+   ```bash
+   node '{launcher-root}/.claude/scripts/build-workspace-context.mjs' --write --root '{worktree}'
+   git -C '{worktree}' add workspace-context/
+   git -C '{worktree}' commit -m 'promote: {name}'
+   ```
+6. **Open the PR.** Write its body first to `{launcher-root}/workspace-scratchpad/promote-pr-{name}.md`: one line per promoted file, naming its source and where it landed, with why it was promoted. The scratchpad is gitignored, so the body never touches a branch.
+   ```bash
+   node '{launcher-root}/.claude/scripts/task-pr.mjs' --create --root '{launcher-root}' --branch 'chore/promote-{name}' \
+     --repo . --body-file '.={launcher-root}/workspace-scratchpad/promote-pr-{name}.md' \
+     --out '{launcher-root}/workspace-scratchpad/promote-prs-{name}.json'
+   ```
+   The PR's title is the commit's subject. A workspace repo with no origin, or with `merge: "local"` in `workspace.json`, gets no PR: nothing is pushed, and the entry is only recorded for the merge in step 7. If the output lists `.` under `empty`, nothing was committed and there is nothing to promote: go to step 9. If `--create` refuses, nothing was pushed, and the worktree, the branch and its commit stay in place. Say so plainly, with the script's message, and say how to finish: push the branch and open the PR by hand, then continue with step 8 once it is merged and the workspace root is pulled; or set `workspace.merge` to `"local"` in `workspace.json` and re-run this command, which then records a local entry. It refuses when forge operations are disabled (`workspace.forge: false`), or when the origin is neither forge-hosted nor opted out as local, and re-running alone changes neither. After any other failure, fix the cause and re-run the same command: it reuses what already landed and never duplicates a PR.
+7. **Read the checks, then ask before merging, as the workspace's `mergeApproval` says.** The `--create` output carries it on the entry: `workspace.mergeApproval` in `workspace.json`, `ask` when unset.
+   ```bash
+   node '{launcher-root}/.claude/scripts/task-pr.mjs' --checks --root '{launcher-root}' --prs '{launcher-root}/workspace-scratchpad/promote-prs-{name}.json'
+   ```
+   Show the PR's link and check state; a local entry reports `none`.
+   - `ask` (the default): ask once: "Merge `promote: {name}` into the workspace's default branch? [Y/n]", or "Merge it locally?" when the entry is local. Only an explicit yes merges.
+   - `operator`: do not ask and do not merge. Report the link and check state and stop; the PR waits until the operator says merge in a later turn, or merges it in the forge UI.
+
+   On yes, or on the operator's later go (add `--approved`), merge:
+   ```bash
+   node '{launcher-root}/.claude/scripts/task-pr.mjs' --merge --root '{launcher-root}' --prs '{launcher-root}/workspace-scratchpad/promote-prs-{name}.json'
+   ```
+   `--merge` reads every check before the first merge and stops if one is failing or still pending; pass `--wait` to poll. It merges the PR and pulls the workspace root `--ff-only`, so the promoted files arrive there. A local entry is fast-forwarded into the root instead, which must sit clean on its default branch for that. If the output reports `pullFailed`, or a `pullSkipped` other than `workspace merged locally`, the root does not have the files yet: pull it by hand before step 8.
+8. **After the merge, offer to delete each `local-only-*` source**: "Remove the local-only originals now that they are tracked? [Y/n]". Delete them only on a yes.
+9. **Tear down the worktree and its branch**, once the merge has succeeded:
+   ```bash
+   node '{launcher-root}/.claude/scripts/task-worktree.mjs' --remove --root '{launcher-root}' --repo . --branch 'chore/promote-{name}' --delete-branch
+   ```
+   Then delete the two scratch files. If the merge did not happen (the user said no, a check failed, or `operator` holds the PR), leave the worktree, the branch, the PR and every source exactly as they are, and say so. Step 7's merge command and this one finish the job later. `--delete-branch` is passed only here, after a merge. Never pass `--force` without asking.
+
 **Step 4: Report**
 
-"Promoted {N} files. Dropped {M} files. {K} files unchanged."
+"Promoted {N} files. Dropped {M} files. {K} files unchanged." Then say where the promotion stands: merged and in the workspace root, merged but awaiting a pull, PR open with its link and check state, or waiting for the operator.
 
 ## Rewrite on Promote
 

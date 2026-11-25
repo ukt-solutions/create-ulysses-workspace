@@ -148,6 +148,106 @@ console.log('# refreshIfStale');
   rmSync(root, { recursive: true, force: true });
 }
 
+// Beta workspace on the newest beta, a release candidate is out: current, the
+// rc offered as prerelease, no banner
+{
+  const root = setupWorkspace({ templateVersion: '0.26.0-beta.0' });
+  writeFileSync(join(root, 'local-only-template-freshness.md'), '## stale banner');
+  const result = await refreshIfStale({
+    workspaceRoot: root,
+    ttlMs: 86400000,
+    fetchFn: fakeFetchTags({ latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }),
+    nowFn: () => new Date('2026-04-24T21:00:00Z'),
+  });
+  assertEq(result.status, 'current', 'a release candidate does not make a beta workspace look outdated');
+  assertEq(result.latest, '0.26.0-beta.0', 'beta install still compares against the beta tag');
+  assertEq(result.prerelease, '1.0.0-rc.0', 'release candidate reported as prerelease');
+  assertEq(existsSync(join(root, 'local-only-template-freshness.md')), false, 'stale banner removed, none written, for a prerelease-only lead');
+  const cacheFile = JSON.parse(readFileSync(join(root, 'workspace-scratchpad', '.version-check.json'), 'utf-8'));
+  assertEq(cacheFile.tags, { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }, 'cache keeps the rc tag beside the others');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// The same workspace inside the cache TTL: the cached rc tag is offered
+// without a fetch
+{
+  const root = setupWorkspace({
+    templateVersion: '0.26.0-beta.0',
+    cache: { tags: { latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }, checkedAt: '2026-04-24T20:00:00Z' },
+  });
+  const result = await refreshIfStale({
+    workspaceRoot: root,
+    ttlMs: 86400000,
+    fetchFn: fakeFetchErr,
+    nowFn: () => new Date('2026-04-24T21:00:00Z'),
+  });
+  assertEq(result.status, 'current', 'cached rc does not make the workspace outdated');
+  assertEq(result.prerelease, '1.0.0-rc.0', 'cached rc tag surfaced as prerelease');
+  assertEq(existsSync(join(root, 'local-only-template-freshness.md')), false, 'no banner from the cached rc');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// Beta workspace, stale rc tag (below beta): current, nothing offered
+{
+  const root = setupWorkspace({ templateVersion: '0.26.0-beta.0' });
+  const result = await refreshIfStale({
+    workspaceRoot: root,
+    ttlMs: 86400000,
+    fetchFn: fakeFetchTags({ latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '0.25.0-rc.0' }),
+    nowFn: () => new Date('2026-04-24T21:00:00Z'),
+  });
+  assertEq(result.status, 'current', 'stale rc tag leaves the workspace current');
+  assertEq(result.prerelease, null, 'an rc below the beta tag is not offered');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// Beta workspace behind the beta tag while an rc is out: outdated against beta
+{
+  const root = setupWorkspace({ templateVersion: '0.25.0-beta.0' });
+  const result = await refreshIfStale({
+    workspaceRoot: root,
+    ttlMs: 86400000,
+    fetchFn: fakeFetchTags({ latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }),
+    nowFn: () => new Date('2026-04-24T21:00:00Z'),
+  });
+  assertEq(result.status, 'outdated', 'beta workspace behind the beta tag is outdated against it');
+  assertEq(result.latest, '0.26.0-beta.0', 'the beta tag is the upgrade; the rc does not displace it');
+  const banner = readFileSync(join(root, 'local-only-template-freshness.md'), 'utf-8');
+  assertEq(banner.includes('npx @ulysses-ai/create-workspace@0.26.0-beta.0 --upgrade'), true, 'banner command is pinned to the beta tag');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// Stable workspace with an rc above both latest and beta: the rc is the prerelease
+{
+  const root = setupWorkspace({ templateVersion: '1.0.0' });
+  const result = await refreshIfStale({
+    workspaceRoot: root,
+    ttlMs: 86400000,
+    fetchFn: fakeFetchTags({ latest: '1.0.0', beta: '1.0.1-beta.0', rc: '1.1.0-rc.0' }),
+    nowFn: () => new Date('2026-04-24T21:00:00Z'),
+  });
+  assertEq(result.status, 'current', 'rc does not make a stable workspace stale');
+  assertEq(result.latest, '1.0.0', 'stable install compares against latest');
+  assertEq(result.prerelease, '1.1.0-rc.0', 'the higher of beta and rc is reported as prerelease');
+  assertEq(existsSync(join(root, 'local-only-template-freshness.md')), false, 'no banner for a stable workspace with a release candidate');
+  rmSync(root, { recursive: true, force: true });
+}
+
+// rc workspace on the rc tag: current, offered nothing
+{
+  const root = setupWorkspace({ templateVersion: '1.0.0-rc.0' });
+  const result = await refreshIfStale({
+    workspaceRoot: root,
+    ttlMs: 86400000,
+    fetchFn: fakeFetchTags({ latest: '0.26.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }),
+    nowFn: () => new Date('2026-04-24T21:00:00Z'),
+  });
+  assertEq(result.status, 'current', 'rc workspace compares against the rc tag');
+  assertEq(result.latest, '1.0.0-rc.0', 'rc tag used for comparison');
+  assertEq(result.prerelease, null, 'rc workspace is offered nothing');
+  rmSync(root, { recursive: true, force: true });
+}
+
 // Fresh cache, no fetch happens
 {
   const root = setupWorkspace({

@@ -24,8 +24,13 @@ const CACHE_FILENAME = '.version-check.json';
  *   { status: 'unknown',  current, latest: null, checkedAt: null }
  *   { skipped: 'uninitialized' }
  *
- * `prerelease` on a current workspace is a newer `beta` dist-tag, offered
- * as information only — it never marks the install stale.
+ * `prerelease` on a current workspace is a pre-release dist-tag that
+ * outruns the `latest` reported beside it, the version the workspace
+ * compared against: the `rc` build for a workspace on the newest beta, the
+ * newer of `beta` and `rc` for one on a stable release. It is information
+ * only: it never marks the install stale, and it never reaches the banner,
+ * which exists to tell an outdated workspace to upgrade. /maintenance is
+ * where a pre-release is reported.
  *
  * Pure I/O is parameterized via fetchFn / nowFn for testability.
  */

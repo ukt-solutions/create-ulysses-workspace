@@ -11,9 +11,10 @@ Open a terminal and scaffold a new workspace:
 ```bash
 npx @ulysses-ai/create-workspace@beta --init my-workspace
 cd my-workspace
+git init
 ```
 
-You now have a workspace with all the conventions, skills, and hooks ready to go. The directory has a CLAUDE.md, a workspace.json, and a `.claude/` directory with everything Claude needs.
+You now have a workspace. The directory has a CLAUDE.md, a workspace.json, and a `.claude/` directory holding the hooks and the two skills the next steps need; the rest of the template is staged beside them, for `/workspace-init` to install. The `git init` is there because `--init` does not do it, and `/workspace-init` works on a branch.
 
 ## Step 2: Add Your Repo
 
@@ -45,7 +46,7 @@ claude
 /workspace-init
 ```
 
-The setup skill confirms your repos are cloned, lets you activate any optional rules you want (you can skip these for now), and configures your user identity.
+The setup skill offers to clone any repo that is not on disk yet, asks which lifecycle new work should use, lets you activate any optional rules you want (you can skip these for now), and configures your user identity.
 
 ## Step 4: Start Your First Work Session
 
@@ -53,7 +54,9 @@ The setup skill confirms your repos are cloned, lets you activate any optional r
 /start-work
 ```
 
-Since there are no active sessions, Claude asks what you are working on. Describe it — "Add user authentication" or "Fix the broken search endpoint." Claude generates a session name, proposes a branch, and asks you to confirm.
+What happens next depends on the lifecycle you chose in the previous step. This walkthrough follows the session lifecycle. Under the task lifecycle, `/start-work` files or picks an issue and creates one worktree per repo instead; the [New Team Member Guide](new-team-member.md) shows both shapes.
+
+With no issue tracker configured, Claude first offers to set one up. Skip that for now and start a blank session. Claude asks what you are working on. Describe it — "Add user authentication" or "Fix the broken search endpoint." Claude generates a session name, proposes a branch, and asks you to confirm.
 
 Once you confirm, the workspace creates:
 - A self-contained session folder at `work-sessions/add-auth/`

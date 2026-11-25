@@ -17,7 +17,10 @@
 //                         directory) and closed-out lifecycles are skipped
 //   3. structure        — workspace.json and CLAUDE.md present and parseable,
 //                         manifest repos cloned, expected directories there,
-//                         and the template-modification registry sane:
+//                         no stale workspace-context/locked/ directory (older
+//                         scaffolds created it there; only shared/locked/ is
+//                         read — empty it is safe to delete, files in it never
+//                         load), and the template-modification registry sane:
 //                         legacy workspace.json keys, keys that escape
 //                         .claude/, and registrations the workspace abandoned
 //                         are info, a registry that doesn't parse is a
@@ -48,7 +51,10 @@
 //                         semantics as build-workspace-context.mjs --check)
 //   6. budget           — always-loaded context within
 //                         workspace.alwaysLoadedBudgetBytes
-//   7. freshness        — template version vs the npm registry
+//   7. freshness        — template version vs the npm registry: an outdated
+//                         template is a warning; a pre-release the install
+//                         does not compare against (a release candidate,
+//                         for a workspace on the newest beta) is info
 //   8. team             — the team roster (workspace.team, gh:133): the
 //                         roster itself is consistent, every team-member/
 //                         folder belongs to a member (an alias's folder is
@@ -62,7 +68,7 @@
 //   warning — state drift a human should look at (uncommitted changes,
 //             stale context, over budget) that breaks nothing.
 //   info    — expected or ambient conditions (machine-local files absent,
-//             optional stubs, untracked paths).
+//             optional stubs, untracked paths, a pre-release on offer).
 //
 // Rather than re-implementing, the checks reuse the shipped helpers:
 // context-footprint.mjs (measure/readBudget/resolveImports) for sections 1
@@ -99,7 +105,7 @@
 // Exit codes: 0 — no issue-severity findings; 1 — at least one; 2 — argument
 // or filesystem error before any check ran.
 
-import { existsSync, readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, lstatSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -114,6 +120,7 @@ import {
 import { hashBytes, readBaseline } from './template-baseline.mjs';
 import { readTemplateModifications } from './template-modifications.mjs';
 import { refreshIfStale } from '../lib/freshness.mjs';
+import { channelOf } from '../lib/registry-check.mjs';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
 import {
   normalizeRoster,
@@ -144,6 +151,9 @@ const SECTIONS = [
 
 const STALE_DAYS = 7;
 const KB = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
+// What section 7 calls a pre-release it offers: the `rc` tag is a release
+// candidate, any other pre-release goes by the generic name.
+const prereleaseNoun = (version) => (channelOf(version) === 'rc' ? 'release candidate' : 'pre-release');
 
 function toPosix(p) {
   return p.split(sep).join('/');
@@ -293,6 +303,9 @@ export async function runAudit({
 
   // ---------- 3. structure ----------
 
+  // Names that hold no content when found in a directory the audit judges empty.
+  const HOUSEKEEPING_FILES = new Set(['.gitkeep', '.keep', '.DS_Store', 'Thumbs.db']);
+
   if (!existsSync(wsJsonPath)) add('structure', 'issue', 'workspace.json', 'workspace.json is missing');
   if (!existsSync(join(absRoot, 'CLAUDE.md'))) {
     add('structure', 'issue', 'CLAUDE.md', 'CLAUDE.md is missing — cross-reference checks skipped');
@@ -303,6 +316,51 @@ export async function runAudit({
   for (const dir of ['rules', 'skills', 'scripts']) {
     if (!existsSync(join(absRoot, '.claude', dir))) {
       add('structure', 'warning', `.claude/${dir}`, `.claude/${dir}/ does not exist — the workspace structure expects it`);
+    }
+  }
+
+  // A locked/ directory directly under workspace-context/ is a leftover from
+  // older scaffolds, which created it there. canonical.md, the index,
+  // /promote and the subagent hook all go through shared/locked/, so nothing
+  // loads from it: empty, it is safe to delete; holding files, they never
+  // load and belong in shared/locked/. Two are left alone, so those claims
+  // stay true — a symlink, which may be a deliberate alias of shared/locked/,
+  // and a directory CLAUDE.md's import graph reaches, as in a workspace moved
+  // to workspace-context/ by hand before canonical.md existed. Judged in the
+  // audited tree only. Nothing is deleted or moved here; that is cleanup's
+  // call.
+  {
+    const staleLocked = join(absRoot, wcDir, 'locked');
+    const files = [];
+    const walk = (dir, prefix) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        // Dirents do not follow links, so a symlinked subdirectory cannot loop.
+        if (entry.isDirectory()) walk(join(dir, entry.name), `${prefix}${entry.name}/`);
+        // Housekeeping files hold no content, so a directory of only these
+        // still reads as empty and safe to delete.
+        else if (!HOUSEKEEPING_FILES.has(entry.name)) files.push(`${prefix}${entry.name}`);
+      }
+    };
+    let present = false;
+    try {
+      if (lstatSync(staleLocked).isDirectory()) {
+        walk(staleLocked, '');
+        present = true;
+      }
+    } catch { /* absent or unreadable — nothing to judge */ }
+    // CLAUDE.local.md counts too: a file one user imports does load for them.
+    const imported = present && ['CLAUDE.md', 'CLAUDE.local.md']
+      .map((name) => join(absRoot, name))
+      .filter((file) => existsSync(file))
+      .some((file) => resolveImports(file, new Set([file]), [])
+        .some((p) => p === staleLocked || p.startsWith(staleLocked + sep)));
+    if (present && !imported) {
+      files.sort();
+      const shown = files.slice(0, 5).join(', ') + (files.length > 5 ? ', …' : '');
+      add('structure', 'warning', `${wcDir}/locked`, files.length === 0
+        ? 'is empty — a leftover from an old scaffold that created it at the wrong path; nothing reads it, so it is safe to delete'
+        : `holds ${files.length} file(s) that never load (${shown}) — canonical.md is built from ${wcDir}/shared/locked/ only; `
+          + 'move the ones that belong in canonical there, then remove the directory');
     }
   }
   // Cloned repos live at the launcher. From a task worktree the audit root's
@@ -958,6 +1016,14 @@ export async function runAudit({
       add('freshness', 'warning', 'workspace.json', 'could not reach the npm registry — template freshness unknown');
     } else if (r.skipped === 'uninitialized') {
       add('freshness', 'info', 'workspace.json', 'workspace not initialized — freshness check unavailable');
+    } else if (r.prerelease) {
+      // Offered as info, and only here: the banner tells an outdated
+      // workspace to upgrade, and this one is current. No update causes a
+      // pre-release, so it is never "(from this update)". The line says the
+      // template is current because a finding replaces the ✓ line.
+      add('freshness', 'info', 'workspace.json',
+        `template v${r.current} is up to date; ${prereleaseNoun(r.prerelease)} v${r.prerelease} is available — run npx @ulysses-ai/create-workspace@${r.prerelease} --upgrade`,
+        { noFromUpdate: true });
     }
     freshness = r.skipped ? { status: 'skipped', reason: r.skipped } : r;
   }

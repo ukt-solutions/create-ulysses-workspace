@@ -45,7 +45,7 @@ work-sessions/fix-auth/
     ├── session.md                     # Session tracker — on the session branch
     ├── design-auth-redesign.md        # Spec — on the session branch
     ├── plan-auth-redesign.md          # Plan — on the session branch
-    ├── shared-context/                # Workspace shared-context, on this branch
+    ├── workspace-context/              # Workspace context, on this branch
     └── repos/                         # Real directory (not symlink)
         ├── my-app/                    # Project worktree on bugfix/fix-auth
         └── my-api/                    # Project worktree on bugfix/fix-auth

@@ -67,6 +67,16 @@ export function channelOf(version) {
   return match[4] ? match[4].split('.')[0] : 'stable';
 }
 
+// The pre-release dist-tags an install is offered without comparing against
+// them, by the channel it rides. A stable install compares against `latest`
+// alone, so both pre-release tags are news to it. A beta install compares
+// against `beta` itself, which leaves `rc` as the one tag ahead of it. An rc
+// install is on the last stop before `latest` and is offered nothing.
+const OFFERED_PRERELEASES = new Map([
+  ['stable', ['beta', 'rc']],
+  ['beta', ['rc']],
+]);
+
 /**
  * Pick the registry version an installed version should compare against,
  * given the package's dist-tags.
@@ -75,12 +85,18 @@ export function channelOf(version) {
  * own channel's tag, so a lagging `latest` (which has sat behind `beta`
  * for whole release cycles) never masks a newer build on the channel the
  * workspace actually rides. A stable install compares against `latest`
- * alone; when the `beta` tag outruns `latest`, that version is returned
- * separately as an available pre-release, so callers can surface it
- * without calling the install stale.
+ * alone.
+ *
+ * On top of that version, the highest pre-release tag the install does not
+ * compare against is returned separately when it outruns it: `beta` or
+ * `rc` for a stable install, `rc` for a beta one. That is how a workspace on
+ * the newest beta hears about `1.0.0-rc.0` without being told it is
+ * outdated — `version`, and so the outdated-or-current decision, never
+ * moves on account of a pre-release.
  *
  * Returns { version, channel, prerelease } — `version` is null when no
- * usable tag is present.
+ * usable tag is present, and `prerelease` is null whenever `version` is:
+ * with nothing to compare a pre-release against, there is nothing to offer.
  */
 export function pickComparisonVersion(current, tags) {
   const channel = channelOf(current) || 'stable';
@@ -92,13 +108,15 @@ export function pickComparisonVersion(current, tags) {
     if (version === null || compareVersions(candidate, version) > 0) version = candidate;
   }
   let prerelease = null;
-  if (
-    channel === 'stable' &&
-    typeof tags?.latest === 'string' &&
-    typeof tags?.beta === 'string' &&
-    compareVersions(tags.beta, tags.latest) > 0
-  ) {
-    prerelease = tags.beta;
+  if (version !== null) {
+    for (const tag of OFFERED_PRERELEASES.get(channel) ?? []) {
+      const candidate = tags[tag];
+      if (typeof candidate !== 'string' || compareVersions(candidate, version) <= 0) continue;
+      // Never offer what the install has already passed: with lagging tags
+      // `version` can sit below the install, and --upgrade refuses a downgrade.
+      if (channelOf(current) && compareVersions(candidate, current) <= 0) continue;
+      if (prerelease === null || compareVersions(candidate, prerelease) > 0) prerelease = candidate;
+    }
   }
   return { version, channel, prerelease };
 }
@@ -109,8 +127,9 @@ export function pickComparisonVersion(current, tags) {
  * Returns { version, channel, tags, prerelease, error } — `error` is null
  * exactly when `version` is non-null, and the other fields are null on
  * failure. `tags` is the dist-tag map as published, `channel` is the
- * installed version's channel, and `prerelease` is the `beta` build when
- * one outruns `latest` from a stable install.
+ * installed version's channel, and `prerelease` is the pre-release build
+ * offered on top of `version` when one outruns it (see
+ * pickComparisonVersion).
  *
  * Caller injects fetchFn for testing. Default uses global fetch (Node 18+).
  */

@@ -44,6 +44,8 @@ For each non-gitignored workspace-context `.md` and each `work-sessions/*/worksp
 ### 3. Workspace structure
 The script checks that workspace.json and CLAUDE.md are present and parseable, that `workspace-context/` and `.claude/rules`, `skills`, `scripts` directories exist, and that every manifest repo is cloned under `repos/`.
 
+A `workspace-context/locked/` directory is a warning. Older scaffolds created it at that path, but canonical truths load only from `workspace-context/shared/locked/`. When it is empty, offer to delete it. When it holds files, show them and ask which belong in `shared/locked/` before moving anything. Never delete or move without the operator's yes.
+
 It also checks the template-modification registry (`.claude/template-modifications.json`, the workspace's record of files it owns outright or deliberately edits): legacy keys still in workspace.json (`workspace.localFiles`, `workspace.templateModifications`), keys that escape `.claude/` (the registry covers `.claude/` paths only — root files are handled by their own merge paths), and registrations whose file has gone back to the template's baseline content are info — `/workspace-update` offers the cleanups. A registry that doesn't parse is a warning: its localFiles exclusions and reasons are being ignored, and the update flow stops on it.
 
 ### 4. Git state
@@ -80,9 +82,12 @@ Within budget → an OK line (`✓ Always-loaded context: 43 KB / 64 KB`). Over 
 ### 7. Template freshness
 The script invokes `refreshIfStale` with a 24h TTL regardless of `workspace.versionCheck.ambient` — the user explicitly ran `/maintenance` — and reports:
 - `outdated` → warning: `Template v{current} → v{latest} available. Run npx @ulysses-ai/create-workspace@{latest} --upgrade.`
+- `current` with a `prerelease` → info, in place of the ✓ line: `Template v{current} is up to date; release candidate v{prerelease} is available. Run npx @ulysses-ai/create-workspace@{prerelease} --upgrade.` — "release candidate" for an `rc` build, "pre-release" for a `beta` one.
 - `current` → ✓ Template is up to date (v{latest})
 - `unknown` → warning: could not reach the npm registry
 - `skipped: 'uninitialized'` → info: workspace not initialized, freshness check unavailable
+
+The comparison follows the workspace's channel: a stable release against `latest`, a pre-release against the higher of `latest` and its channel's dist-tag. A `prerelease` is a pre-release the workspace does not compare against — `rc` for a workspace on the newest beta, the higher of `beta` and `rc` for one on a stable release — so it is offered, never urged. It does not make the workspace outdated, the audit is the only place that reports it, and the session-start banner stays silent about it.
 
 An `outdated` result also rewrites the `local-only-template-freshness.md` banner and the version cache, as this check always has.
 

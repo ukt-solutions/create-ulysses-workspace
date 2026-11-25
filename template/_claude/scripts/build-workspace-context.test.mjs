@@ -2,11 +2,12 @@
 // Unit tests for build-workspace-context.mjs
 // Run: node template/_claude/scripts/build-workspace-context.test.mjs
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { measure } from './context-footprint.mjs';
 import {
   buildSharedIndex,
   renderSharedIndex,
@@ -1458,6 +1459,42 @@ priority: critical
   spawnSync('node', [scriptPath, '--write', '--root', root], { encoding: 'utf-8' });
   const r = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
   assert(/no priority:reference files exist/.test(r.stderr), 'warning when over-budget with all-critical');
+  cleanup(root);
+}
+
+console.log('# the local-dev-environment rule describes how its file loads');
+{
+  // The optional local-dev-environment rule keeps a local-only file under
+  // shared/locked/ and used to say Claude "sees it every turn" because of
+  // where it sits. Nothing loads it there: this builder leaves gitignored
+  // files out of both catalogs, by design. It loads only through a named
+  // @-import, so that is what the rule has to say — and the import has to
+  // do what the rule promises.
+  const rule = readFileSync(
+    fileURLToPath(new URL('../rules/local-dev-environment.md.skip', import.meta.url)),
+    'utf8',
+  );
+  const rel = 'workspace-context/shared/locked/local-only-dev-environment.md';
+  assert(rule.includes(`@${rel}`), 'the rule names the @-import that loads the file');
+  assert(!rule.includes('positioned in locked for maximum visibility'),
+    'the rule no longer claims the file loads because of where it sits');
+
+  const root = setupFixture();
+  writeFileSync(join(root, '.gitignore'), 'local-only-*\n');
+  writeFileSync(join(root, rel), '---\ntype: reference\n---\nDEV_ENV_BODY\n');
+  writeFileSync(join(root, 'CLAUDE.md'), '## Workspace: demo\n');
+
+  const catalogs = regenerateAll(root);
+  assert(catalogs.every((a) => !a.content.includes('DEV_ENV_BODY')),
+    'on its own, the file reaches no catalog');
+  assert(!measure({ root }).files.some((f) => f.path === rel),
+    'on its own, the file is not always-loaded');
+
+  writeFileSync(join(root, 'CLAUDE.md'), `## Workspace: demo\n\n@${rel}\n`);
+  assert(measure({ root }).files.some((f) => f.path === rel && f.kind === 'import'),
+    'the @-import the rule names makes the file always-loaded');
+  assert(regenerateAll(root).every((a) => !a.content.includes('DEV_ENV_BODY')),
+    'the import loads the file for this machine without publishing it to a catalog');
   cleanup(root);
 }
 

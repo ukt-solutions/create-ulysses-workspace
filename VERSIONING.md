@@ -99,7 +99,7 @@ Three forms, and one flag, are the contract:
 
 | Form | What it does |
 |---|---|
-| No flag, as in `npm create @ulysses-ai/workspace@<tag>` | Scaffolds a workspace by prompt. It asks for the name, the directory, the repos to register, a user name and which optional rules to activate, then initialises the git repo and clones the repos. |
+| No flag, as in `npm create @ulysses-ai/workspace@<tag>` | Scaffolds a workspace by prompt. It asks for the name, the directory, the repos to register, a user name and which optional rules to activate, then initialises the git repo and clones the repos. It writes into an empty directory only, one that does not exist yet or holds nothing but `.git`, `.DS_Store` or `Thumbs.db`, and refuses any other before writing anything, naming `--init` as the form for a directory that already has files. |
 | `--init [dir]` | Scaffolds a new workspace without prompts. With no `dir`, the current directory becomes the workspace. |
 | `--upgrade [dir]` | Stages a template update for an existing workspace. With no `dir`, the current directory is used. It refuses to stage a template older than the workspace's `templateVersion`. |
 | `--upgrade --allow-downgrade` | Stages the older template anyway. |
