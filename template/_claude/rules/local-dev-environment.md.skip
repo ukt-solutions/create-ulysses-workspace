@@ -1,6 +1,18 @@
 # Local Dev Environment
 
-Maintain a local-only document at `workspace-context/shared/locked/local-only-dev-environment.md` that captures machine-specific development context. This file is gitignored (local-only prefix) but positioned in locked for maximum visibility — Claude sees it every turn.
+Maintain a local-only document at `workspace-context/shared/locked/local-only-dev-environment.md` that captures machine-specific development context. The `local-only-` prefix keeps it gitignored, so it is never shared.
+
+## How Claude Sees It
+
+Where the file sits does not load it. `build-workspace-context.mjs` leaves gitignored files out of `canonical.md` and the indexes, and the session-start and subagent-start hooks skip them too, so a `local-only-` file under `shared/locked/` reaches neither the session nor its subagents on its own. The filter is deliberate: it is what keeps a private note out of the committed catalogs.
+
+To have Claude read it in every session, import it by name. Add this line to `CLAUDE.md`, as the template does for its own machine-local banner (`@local-only-template-freshness.md`):
+
+```
+@workspace-context/shared/locked/local-only-dev-environment.md
+```
+
+The import makes the file part of this machine's always-loaded context — `node .claude/scripts/context-footprint.mjs --root .` lists it — so keep the document short. Subagents still do not see it: they do not load `CLAUDE.md`. The import line is tracked while the file is not, so on a machine without the file it is expected to dangle; the maintenance audit reports that as info.
 
 ## What to Record
 
@@ -18,10 +30,9 @@ When you discover any of the following during work, add it to the local dev envi
 When you encounter a local development detail worth preserving:
 
 1. Check if `workspace-context/shared/locked/local-only-dev-environment.md` exists
-2. If not, create it with this structure:
+2. If not, create it with this structure, and import it from `CLAUDE.md` as described above:
    ```markdown
    ---
-   state: locked
    type: reference
    topic: local-dev-environment
    updated: {today}
@@ -48,7 +59,7 @@ When you encounter a local development detail worth preserving:
 
 ## When to Ask
 
-- **Credentials:** Always ask before recording: "Save this credential to your local dev doc? (gitignored, never shared)" — even though it's local-only, confirm the user wants it persisted.
+- **Credentials:** Always ask before recording: "Save this credential to your local dev doc? (gitignored, never shared)" — even though it's local-only, confirm the user wants it persisted. Once the doc is imported, say so: what it holds is read into every session on this machine.
 - **Everything else:** Record proactively when discovered. No need to ask — if you see the dev server is on port 3000, just add it.
 
 ## When This Applies
