@@ -76,13 +76,13 @@ Rules say what's safe. Skills say how to do the recurring things. Hooks notice w
 
 Four things, in the order you'll touch them:
 
-1. **A workflow lifecycle that survives chat boundaries.** `/start-work` provisions a session — branch, worktree, tracker — atomically. `/pause-work` and `/sync-work` checkpoint mid-stream. `/complete-work` rebases, opens PRs, merges, and tears down. The same session resumes cleanly in a fresh chat.
+1. **A workflow lifecycle that survives chat boundaries.** `/start-work` provisions the work — branch, worktree, tracker issue — and `/complete-work` rebases, opens PRs, merges, and tears down. Two lifecycles share those verbs. A **session** (the default) wraps a long effort in a self-contained folder with a tracker file, so `/pause-work` and `/sync-work` can checkpoint it and the same session resumes cleanly in a fresh chat. A **task** is one issue, one branch and one worktree per repo it touches, with the chat staying at the workspace root — it is the forward path for new work.
 
-2. **Parallel work sessions you can run from separate terminals.** Each session lives in its own folder under `work-sessions/{name}/` with its own workspace worktree and nested project worktrees. Two sessions can't collide on a branch or a working directory.
+2. **Parallel work you can run from separate terminals.** Each unit of work gets its own branch and its own git worktrees, so two can't collide on a branch or a working directory. A session lives in its own folder under `work-sessions/{name}/` with a workspace worktree and nested project worktrees; a task's worktrees live under each repo's `.claude/worktrees/{slug}/`.
 
 3. **Multi-repo support with versioning across repos.** A workspace wraps your project repos rather than replacing them. Each session can span one repo or many. `/release` cuts a versioned release per repo — bump, tag, forge release with notes generated from merged PRs.
 
-4. **Shared context with a locked layer that stays in the window.** `shared-context/locked/` is loaded every turn and injected into subagents. Team truths arrive in the model's context window without anyone remembering to paste them.
+4. **Shared context with a locked layer that stays in the window.** `workspace-context/shared/locked/` is loaded every turn and injected into subagents. Team truths arrive in the model's context window without anyone remembering to paste them.
 
 > Everything Claude needs is in the file system. Everything a team shares is in git.
 
@@ -93,7 +93,7 @@ A scaffolded workspace with:
 - **17 skills** covering the workflow lifecycle, releases, handoffs, and maintenance
 - **9 active rules** + **9 optional `.skip` rules** for behaviors you can opt into
 - **9 hooks** for SessionStart, SubagentStart, PreCompact, and the rest of the small set the conventions rely on
-- A **`shared-context/`** memory system with three visibility levels: locked (team truths), root (team-visible ephemerals), user-scoped (personal)
+- A **`workspace-context/`** memory system with three visibility levels: `shared/locked/` (team truths), `shared/` (team-visible ephemerals), `team-member/{user}/` (personal)
 - Conventions for **multi-repo work sessions** with isolated git worktrees, parallelizable from separate terminals
 
 (Counts are static prose, but a `prepublishOnly` audit script verifies them against the template at publish time — they don't drift.)
@@ -123,7 +123,7 @@ The eleven [chapters](https://github.com/ukt-solutions/create-ulysses-workspace/
 |------|---------|-------|
 | Concepts | [01](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/01-what-is-a-workspace.md) | What Is a Workspace |
 | | [02](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/02-work-sessions.md) | Work Sessions |
-| | [03](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/03-shared-context.md) | Shared Context |
+| | [03](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/03-workspace-context.md) | Workspace Context |
 | The Toolkit | [04](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/04-claude-md.md) | CLAUDE.md |
 | | [05](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/05-rules.md) | Rules |
 | | [06](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/06-skills.md) | Skills |

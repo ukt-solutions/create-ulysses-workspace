@@ -13,7 +13,7 @@ git clone git@github.com:team/team-workspace.git
 cd team-workspace
 ```
 
-You will see `CLAUDE.md`, `workspace.json`, `workspace-context/` and a `.claude/` directory. This is the workspace — it wraps your project repos with shared conventions. The project repos themselves are not in the clone yet; `repos/` is empty on purpose, because each person keeps their own clones.
+You will see `CLAUDE.md`, `workspace.json`, `workspace-context/` and a `.claude/` directory. This is the workspace — it wraps your project repos with shared conventions. The project repos themselves are not in the clone; `repos/` is gitignored, because each person keeps their own clones. The join in the next step creates it.
 
 ## Step 2: Join
 
@@ -78,7 +78,7 @@ Take a minute to look around. You do not need to memorize everything — it will
 
 **`workspace-context/shared/`** (the rest) holds working documents — braindumps, research, designs. Browse when you are curious; you do not need to read them all on day one.
 
-**`workspace-context/team-member/{you}/`** is yours. Personal braindumps and handoffs land here and load only into your sessions.
+**`workspace-context/team-member/{you}/`** is yours. Personal braindumps and handoffs land here. Once they are tracked, they load only into your sessions.
 
 **`.claude/rules/`** contains the behavioural rules Claude follows — git conventions, how to revise documents, when to push back. They apply automatically.
 
@@ -117,7 +117,7 @@ When the work is done:
 
 Claude rebases, opens pull requests with a description of the change, merges once you approve, and closes the linked issue.
 
-If you need to stop but are not finished:
+In the session lifecycle, if you need to stop but are not finished:
 
 ```
 /pause-work
@@ -132,5 +132,5 @@ The workspace handles the rest — hooks surface context when a session starts, 
 ## Where to Go Next
 
 - [Chapter 1: What Is a Workspace](../chapters/01-what-is-a-workspace.md) — the workspace model, its layers, and why the root stays on main
-- [Chapter 3: Shared Context](../chapters/03-shared-context.md) — how team knowledge is organized and where your work lands
+- [Chapter 3: Workspace Context](../chapters/03-workspace-context.md) — how team knowledge is organized and where your work lands
 - [Chapter 11: Behavioral Patterns](../chapters/11-behavioral-patterns.md) — the habits that make the workspace work well

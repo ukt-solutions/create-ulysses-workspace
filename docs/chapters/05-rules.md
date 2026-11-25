@@ -2,7 +2,7 @@
 
 Rules are behavioral constraints that Claude follows on every turn. They are markdown files in `.claude/rules/` that define how Claude should approach work — how to handle git, how to write revisions, how to push back on bad ideas, how to manage memory. Rules are loaded automatically alongside CLAUDE.md, making them part of the always-on context.
 
-This chapter covers the mandatory and optional rules, the .skip activation pattern, and how to write your own.
+This chapter covers the active and optional rules, the .skip activation pattern, and how to write your own.
 
 ---
 
@@ -12,41 +12,49 @@ A rule is a markdown file that gives Claude standing instructions. Unlike skills
 
 Rules live in `.claude/rules/` and are tracked in git. Every `.md` file in this directory is loaded on every turn — unless it declares `paths:` frontmatter, which defers loading until a matching file is touched (see "Path-Scoped Rules" below). This means the team shares the same behavioral constraints, and changes to rules are versioned and reviewable like any other code change.
 
-## Mandatory Rules
+The template ships eighteen rules: nine active, two of which are path-scoped, and nine optional.
 
-Six rules ship as active by default. These encode the core conventions that make the workspace function correctly:
+## Active Rules
+
+Seven rules ship active and load on every turn. These encode the core conventions that make the workspace function correctly:
 
 **coherent-revisions.md** — When revising any document or code, rewrite the affected section from start to finish so the result reads as a single coherent piece. Never patch or inject content between existing blocks. This applies to everything: docs, specs, code, context files, release notes, commit messages. The rule exists because injected revisions create fragmented output where the seams between old and new content are visible.
 
-**git-conventions.md** — Branch naming (`feature/`, `bugfix/`, `chore/` prefixes, kebab-case), worktree layout (each session lives at `work-sessions/{session}/workspace/` with nested project worktrees underneath), conventional commit format (`feat:`, `fix:`, `refactor:`, `chore:`, `docs:`), and branch maintenance (rebase before PR, never auto-resolve conflicts). These conventions keep git history clean and session state predictable.
+**git-conventions.md** — Branch naming (`feature/`, `bugfix/`, `chore/` prefixes, kebab-case), the worktree layout of both lifecycles (a session's under `work-sessions/{name}/workspace/`, a task's under `.claude/worktrees/`), conventional commit format (`feat:`, `fix:`, `refactor:`, `chore:`, `docs:`), and commit discipline: fetch and rebase before a pull request, never auto-resolve a conflict, and never amend or force-push unless asked. These conventions keep git history clean and work state predictable.
 
 **honest-pushback.md** — Three sections that enforce intellectual honesty. First, Claude must challenge assumptions and push back when something seems wrong — no sycophantic agreement. Second, "No Retry Loops" — if a fix fails twice with the same result, stop and research before trying again. Third, "Verify, Don't Assume" — when evidence is available (logs, database, UI, API responses), check it instead of guessing. Claude asks once whether to verify proactively, then remembers the preference for the session.
 
-**memory-guidance.md** — Controls Claude's auto-memory system. Defines what to remember (architecture decisions, patterns that caused bugs, user corrections) and what not to remember (temporary state, file contents, anything already in shared context). During active work sessions, session-specific information goes in the session tracker body at `work-sessions/{name}/workspace/session.md`, while cross-session insights go in auto-memory.
+**memory-guidance.md** — Decides where durable content goes, and what each destination costs. It orders the eight destinations from cheapest to most expensive — from nowhere, through a path-scoped rule, a skill, auto-memory and personal and shared context, up to canonical context and an unconditional rule — and has the always-loaded cost stated before anything is written to one of the two that tax every session. It carries the test for what qualifies as canonical, and what belongs in auto-memory. While work is in flight, its decisions and progress belong to the lifecycle's own state — the session tracker, or the task's chat drawer — not to auto-memory.
 
-**work-item-tracking.md** — Defines the workspace's stance on issue tracking: when a tracker is configured in `workspace.json`, all work items live in the tracker (not in a local mirror), and skills read and write through a pluggable adapter at `.claude/scripts/trackers/{type}.mjs`. The default `github-issues` adapter ships in the template; others can be added by dropping in a new module. The rule also describes when to create issues, how sessions link to them via `workItem:` frontmatter, and what state belongs in the tracker versus the session.
+**work-item-tracking.md** — Defines the workspace's stance on issue tracking: when a tracker is configured in `workspace.json`, all work items live in the tracker (not in a local mirror), and skills read and write through a pluggable adapter at `.claude/scripts/trackers/{type}.mjs`. The template ships `github-issues` and `gitlab-issues` adapters; others can be added by dropping in a new module. The rule also describes when to create issues, how sessions link to them via `workItem:` frontmatter, and what state belongs in the tracker versus the session.
 
-**workspace-structure.md** — Documents the directory layout, shared context levels, naming conventions, and structural rules (root stays on main, only local-only and scratchpad are writable from root). Includes a mandatory override for spec/plan locations — specs go at the top of the active session worktree as `work-sessions/{name}/workspace/design-{topic}.md` and plans as `work-sessions/{name}/workspace/plan-{topic}.md`, explicitly overriding any default paths from external skills.
+**workspace-structure.md** — Documents the directory layout of both lifecycles, the three levels of `workspace-context/`, the file-naming conventions, and the structural rules (the root stays on its default branch, and only `local-only-*` files and the scratchpad are writable from it). It also settles where specs and plans go: in the work area of the lifecycle in play — the top of a session's worktree, or a task's chat drawer — overriding any default path an external skill might use.
+
+**goal-driven-work.md** — Decides when Claude Code's built-in `/goal` command is the right shape for work: when it is multi-phase, has an end state you can verify, and will span more than a turn or two. The rule is the convention layer that keeps phase state durable across turns and resumes. Everything after that decision is the `/goal-driven-work` skill.
+
+Two more rules ship active but load only on matching paths. They are described under [Path-Scoped Rules](#path-scoped-rules).
 
 ## Optional Rules
 
-Eight additional rules ship in a deactivated state. These are available for teams that want them but not enforced by default:
+Nine rules ship in a deactivated state. These are available for teams that want them but not enforced by default:
 
 **superpowers-workflow.md.skip** — Enforces a research-before-implementation workflow. Requires reviewing existing codebase patterns, searching documentation, and researching best practices before writing code. Designed for teams using the Superpowers plugin.
 
 **scope-guard.md.skip** — Pushes back on scope creep during implementation. Flags when work expands beyond what was specified.
 
-**documentation.md.skip** — Enforces documentation standards for code changes.
+**documentation.md.skip** — Keeps documentation in step with code. A change that fixes a bug, corrects an API, or replaces a deprecated pattern must correct any documentation of the old behavior in the same session.
 
-**token-economics.md.skip** — Awareness of token costs. Encourages efficient context usage and appropriate subagent model selection.
+**token-economics.md.skip** — Token-aware behavior: cost-conscious model selection, context efficiency, command discipline, and waste detection.
 
 **agent-rules.md.skip** — Conventions for subagent dispatch and coordination.
 
-**cloud-infrastructure.md.skip** — Cloud-specific conventions for infrastructure work.
+**cloud-infrastructure.md.skip** — Cloud-specific conventions for infrastructure work. All changes to cloud resources go through code and CI/CD — never the console, and never a CLI command against live resources.
 
-**local-dev-environment.md.skip** — Maintains a `local-only-dev-environment.md` file inside `shared-context/locked/` that captures machine-specific context (services, ports, credentials, CLI commands, env vars, paths, infrastructure). The file is gitignored but front-of-mind in locked, so Claude sees the local setup on every turn without it ever being shared.
+**local-dev-environment.md.skip** — Keeps a `local-only-dev-environment.md` file at `workspace-context/shared/locked/` that captures machine-specific context (services, ports, credentials, CLI commands, env vars, paths, infrastructure). The file is gitignored, so it is never shared.
 
 **product-integrity.md.skip** — Guards against personal biases being baked into product decisions. When a proposed feature directly mirrors a personal struggle, or when "I need this" is the primary justification, the rule prompts Claude to flag it and suggest keeping the change local-only or user-scoped until external feedback confirms general value. Useful for tools built by their own users.
+
+**config-review.md.skip** — A reminder to review the workspace's own `.claude` components — rules, skills, agents and hooks — after each major model release and at least every 180 days. Conventions written for an older model generation can silently mis-steer a newer one, while the file still runs without error.
 
 ## The .skip Pattern
 
@@ -58,7 +66,7 @@ The workspace uses a three-state file convention for activation control:
 | `.md.skip` | Available | Present in the workspace but not loaded. Drop `.skip` to activate |
 | `local-only-*.md` | Personal | Active on your machine, gitignored, not shared |
 
-To activate an optional rule, rename it: `scope-guard.md.skip` becomes `scope-guard.md`. To deactivate a mandatory rule for your local environment without affecting the team, rename it to add `.skip`. To add a personal rule that only you use, create a `local-only-` prefixed file.
+To activate an optional rule, rename it: `scope-guard.md.skip` becomes `scope-guard.md`. To deactivate an active rule for your local environment without affecting the team, rename it to add `.skip`. To add a personal rule that only you use, create a `local-only-` prefixed file.
 
 This convention applies universally across the workspace — not just to rules but also to shared context files. It is the same mechanism everywhere: the file extension controls visibility, the `local-only-` prefix controls sharing.
 
@@ -113,14 +121,14 @@ Ship new rules as `.md.skip` if they are optional for the team. Ship them as `.m
 
 ```
 .claude/rules/
-├── coherent-revisions.md          # Mandatory — active
-├── git-conventions.md             # Mandatory — active
-├── honest-pushback.md             # Mandatory — active
-├── workspace-structure.md         # Mandatory — active
-├── memory-guidance.md             # Mandatory — active
+├── coherent-revisions.md          # Active — loaded every turn
+├── git-conventions.md             # Active — loaded every turn
+├── …                              # the rest of the active rules
+├── task-list-mirroring.md         # Active, path-scoped — loads when a session tracker (`session.md`) is touched
 ├── scope-guard.md.skip            # Optional — available
-├── token-economics.md.skip        # Optional — available
-└── local-only-my-experiment.md    # Personal — active locally
+├── config-review.md.skip          # Optional — available
+├── …                              # the rest of the optional rules
+└── local-only-my-experiment.md    # Personal — active on your machine only
 ```
 
 ---
@@ -128,7 +136,6 @@ Ship new rules as `.md.skip` if they are optional for the team. Ship them as `.m
 ## Key Takeaways
 
 - Rules are always-loaded behavioral constraints. Every `.md` file in `.claude/rules/` is read on every turn — except rules with `paths:` frontmatter (task-list-mirroring, forge-operations), which load only when a matching file is touched.
-- Five mandatory rules ship active: coherent-revisions, git-conventions, honest-pushback, workspace-structure, memory-guidance.
-- Six optional rules ship as `.md.skip` — rename to activate.
+- The template ships eighteen rules: nine active, seven unconditional and two path-scoped, and nine optional `.skip` rules, which you activate by renaming.
 - The .skip pattern is a universal three-state convention: `.md` (active), `.md.skip` (available), `local-only-` (personal).
 - User instructions in CLAUDE.md take priority over rules. Skills can declare exceptions to rules.
