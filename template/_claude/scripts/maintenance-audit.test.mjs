@@ -49,9 +49,13 @@ function git(root, args) {
   return spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
 }
 
-// mkdtemp paths live behind the macOS /var -> /private/var symlink; git
-// reports the resolved spelling, so expected absolute paths must resolve too.
-const real = (p) => realpathSync(p);
+// git and the audit spell a path the way the filesystem does — a resolved
+// /private/var on macOS where tmpdir says /var, the long name of a Windows
+// 8.3 short path — so an expected path is resolved the same way (the native
+// realpath, which expands short names) before it is compared. The fixture
+// root itself keeps the spelling tmpdir gave it, so the audit has to do
+// that resolving itself.
+const real = (p) => realpathSync.native(p);
 
 /**
  * A mostly-clean fixture workspace. `mutate(root)` applies the per-test
