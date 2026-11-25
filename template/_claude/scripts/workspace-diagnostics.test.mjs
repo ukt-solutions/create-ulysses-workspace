@@ -9,7 +9,7 @@
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import {
   deriveProjectsSlug,
   resolveProjectsDir,
@@ -80,11 +80,44 @@ console.log('# deriveProjectsSlug / resolveProjectsDir');
   assertEq(deriveProjectsSlug('/foo/bar.baz/qux'), '-foo-bar-baz-qux', 'slashes and dots replaced with dashes');
 }
 
+// A Windows root carries a drive colon and backslash separators, and a folder
+// name may hold neither. The platform is injected, so both spellings run on
+// every system.
+{
+  const win = { platform: 'win32' };
+  assertEq(deriveProjectsSlug('D:\\some\\fixture\\root', win), 'D--some-fixture-root', 'Windows: the drive colon and every backslash become dashes');
+  assertEq(deriveProjectsSlug('D:/some/fixture/root', win), 'D--some-fixture-root', 'Windows: forward slashes spell the same slug');
+  assertEq(deriveProjectsSlug('C:\\Users\\me\\my.repo', win), 'C--Users-me-my-repo', 'Windows: dots become dashes too');
+  const shortName = deriveProjectsSlug('C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wd-e2e-ch-9d7EEb', win);
+  assertEq(shortName, 'C--Users-RUNNER-1-AppData-Local-Temp-wd-e2e-ch-9d7EEb', 'Windows: an 8.3 short name loses its tilde');
+  assert(!/[^A-Za-z0-9-]/.test(shortName), 'Windows: nothing a folder name cannot hold survives');
+
+  assertEq(deriveProjectsSlug('/foo/bar.baz/qux', { platform: 'darwin' }), '-foo-bar-baz-qux', 'other platforms keep the two-character rule');
+  assertEq(deriveProjectsSlug('/w/my_repo', { platform: 'linux' }), '-w-my_repo', 'other platforms: an underscore is left alone');
+}
+
 {
   const claudeHome = tmpRoot('wd-claudehome-');
   const dir = resolveProjectsDir('/some/fixture/root', claudeHome);
-  assertEq(dir, join(claudeHome, 'projects', '-some-fixture-root'), 'resolveProjectsDir composes claudeHome + slug');
+  // `/some/fixture/root` is drive-relative on Windows, so the slug is the
+  // resolved root's: what is asserted is the composition, and that the slug
+  // part is a name a directory can have on this system.
+  assertEq(dirname(dir), join(claudeHome, 'projects'), 'resolveProjectsDir sits under claudeHome/projects');
+  assertEq(basename(dir), deriveProjectsSlug(resolve('/some/fixture/root')), 'and is named by the slug of the resolved root');
+  assert(!/[/\\:]/.test(basename(dir)), 'the slug holds no separator or drive colon');
   cleanup(claudeHome);
+}
+
+{
+  // A real root on this machine: the directory the script resolves to must
+  // be one the filesystem lets a transcript be written under.
+  const root = tmpRoot('wd-real-root-');
+  const claudeHome = tmpRoot('wd-real-ch-');
+  const dir = resolveProjectsDir(root, claudeHome);
+  writeTranscript(dir, 'sess-real', [assistantRecord({ content: [skillToolUse('start-work')] })]);
+  const agg = await buildReport({ root, claudeHome });
+  assertEq(agg.transcripts.transcriptCount, 1, 'a real root resolves to a projects directory that exists on disk');
+  cleanup(root, claudeHome);
 }
 
 // ============================================================
