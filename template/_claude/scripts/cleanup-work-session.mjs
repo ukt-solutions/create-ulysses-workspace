@@ -45,7 +45,7 @@
 import '../lib/require-node.mjs';
 import { execFileSync } from 'child_process';
 import { existsSync, readdirSync, statSync, lstatSync, realpathSync } from 'fs';
-import { join, resolve, isAbsolute, sep } from 'path';
+import { join, resolve, isAbsolute, sep, dirname, basename } from 'path';
 import {
   getWorkspaceRoot,
   readSessionTracker,
@@ -75,6 +75,26 @@ function realOf(p) {
   try { return realpathSync.native(p); } catch { /* fall through */ }
   try { return realpathSync(p); } catch { /* fall through */ }
   return resolve(p);
+}
+
+// The real path of something that may no longer exist — a worktree record
+// whose directory is gone. realOf() can only resolve what is there; for the
+// rest it returns the caller's own spelling, and root reaches this script
+// through import.meta.url, spelled the way Node was invoked. Reached
+// through an alias (a Windows 8.3 short path is the common one), that
+// spelling is not the one git recorded when it created the worktree, and
+// the two stop matching. Resolving the deepest existing ancestor and
+// re-attaching the missing tail gives git's spelling again.
+function realOfMaybeMissing(p) {
+  let cur = resolve(p);
+  const tail = [];
+  for (;;) {
+    if (existsSync(cur)) return tail.length === 0 ? realOf(cur) : join(realOf(cur), ...tail);
+    const parent = dirname(cur);
+    if (parent === cur) return cur;
+    tail.unshift(basename(cur));
+    cur = parent;
+  }
 }
 
 // One path segment, not dots, not absolute — the shape of a repo name
@@ -138,8 +158,10 @@ const skipped = [];
 const errors = [];
 
 // The real path of root/repos/ — the hard boundary every repos entry
-// must resolve inside (computed once; root itself is trusted).
-const reposRootReal = realOf(reposDir);
+// must resolve inside (computed once; root itself is trusted). Resolved
+// through its own ancestor when no repos/ exists yet, so it and the entries
+// are spelled the same way whichever of them is missing.
+const reposRootReal = realOfMaybeMissing(reposDir);
 
 // === Discovery: where session.md is silent or missing, fall back to disk ===
 //
@@ -222,7 +244,10 @@ for (const repo of repos) {
     }
     continue;
   }
-  const dirReal = realOf(dir);
+  // An entry whose source clone is simply absent resolves through the
+  // repos/ directory around it, so it reads as inside the boundary — and
+  // missing — rather than, through an alias-spelled root, as outside it.
+  const dirReal = realOfMaybeMissing(dir);
   if (dirReal !== reposRootReal && !dirReal.startsWith(reposRootReal + sep)) {
     errors.push(`Invalid repos entry "${repo}" ${source}: resolves outside ${reposDir}`);
   }
@@ -262,8 +287,12 @@ if (!branch && existsSync(wsWorktree)) {
       errors.push(`${nestedReposDir} holds file(s) [${strayFiles.join(', ')}] that removing the workspace worktree would delete — move or delete them first`);
     }
   }
-  const handled = new Set([realOf(wsWorktree), ...repos.map((r) => realOf(join(wsWorktree, 'repos', r)))]);
-  const wsReal = realOf(wsWorktree);
+  // Both sides in git's spelling, a gone directory included: a prunable
+  // record of a nested worktree this teardown handles (its directory was
+  // removed by hand) must still match its entry here, or it reads as a
+  // worktree the teardown does not remove.
+  const handled = new Set([wsWorktree, ...repos.map((r) => join(wsWorktree, 'repos', r))].map(realOfMaybeMissing));
+  const wsReal = realOfMaybeMissing(wsWorktree);
   const ownedRepoDirs = [root];
   if (existsSync(reposDir)) {
     try {
@@ -277,7 +306,7 @@ if (!branch && existsSync(wsWorktree)) {
     if (!res.ok) continue;
     for (const line of res.out.split(/\r?\n/)) {
       if (!line.startsWith('worktree ')) continue;
-      const p = realOf(line.slice(9));
+      const p = realOfMaybeMissing(line.slice(9));
       if ((p === wsReal || p.startsWith(wsReal + sep)) && !handled.has(p)) {
         errors.push(`${repoDir} has a worktree at ${p}, inside the workspace worktree but not one this teardown removes — removing the workspace worktree would delete it; move or remove it first`);
       }
@@ -471,7 +500,10 @@ for (const repo of repos) {
   if (leftover.length > 0) {
     errors.push(`Prunable worktree record(s) remain in ${repo} after cleanup (${leftover.join(', ')}) — the gh:119 symptom; inspect them, then run git -C ${repoDir} worktree prune yourself`);
   }
-  if (wtList.includes(wsPath)) {
+  // Compared as real paths, not as the literal string: git spells the path
+  // the way the filesystem does, and through an alias that differs from the
+  // one this script derived from its own location.
+  if (worktreeStanzas(wtList).some((s) => realOfMaybeMissing(s.path) === realOfMaybeMissing(wsPath))) {
     errors.push(`${repo} still has a worktree record referencing the session path`);
   }
   if (branch) {
