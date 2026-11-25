@@ -86,7 +86,7 @@ All commits go on this branch. Step 18 merges the branch back into the default b
 
 Scan the workspace for existing content that needs organizing:
 - CLAUDE.md.bak — pre-existing CLAUDE.md (old config, rules, preferences)
-- .mcp.json or .mcp.json.bak — external service configs
+- .mcp.json.bak, or a .mcp.json that differs from the payload's — external service configs
 - Non-standard directories and files at root — anything not part of the template structure
 - Existing auto-memory files in `~/.claude/projects/` for this project path
 - Existing git worktrees (branches checked out in separate directories)
@@ -346,8 +346,8 @@ MCP (Model Context Protocol) servers extend what Claude can do inside the worksp
 
 ### Step 13: Configure user identity and start the team roster
 
-Run `node .claude/scripts/team-roster.mjs --suggest --root .` for the default. On a fresh workspace this is usually the OS username. If `workspace.json` arrived with a roster, it is whichever member's forge login or git email matches this machine. Ask: "What name should be used for your user-scoped context? [{suggestion}]".
-Save to `.claude/settings.local.json`:
+If `.claude/settings.local.json` already holds a `workspace.user`, it is the default. The interactive `npm create` scaffold asks for it and writes it. Otherwise run `node .claude/scripts/team-roster.mjs --suggest --root .` for the default. On a fresh workspace this is usually the OS username. If `workspace.json` arrived with a roster, it is whichever member's forge login or git email matches this machine. Ask: "What name should be used for your user-scoped context? [{default}]".
+Save it to `.claude/settings.local.json`, keeping any other keys the file already has:
 ```json
 {
   "workspace": {
@@ -410,6 +410,20 @@ Check for:
 Fix ALL issues found. This step must not be rushed.
 
 **Commit:** `git commit -m "fix: resolve self-contradictions from init"`
+
+### Step 16.5: Build the context catalogs and CLAUDE.local.md
+
+The root `CLAUDE.md` imports `workspace-context/canonical.md` and `workspace-context/index.md`, and `CLAUDE.local.md` imports this user's index. Nothing earlier in the flow writes them. Without them, the locked knowledge from Step 10 never reaches the main session, and the next session start reports "Setup incomplete". Create this user's folder if it is missing (`workspace-context/team-member/{user}/`), then run:
+
+```bash
+node .claude/scripts/generate-claude-local.mjs --root .
+node .claude/scripts/build-workspace-context.mjs --write --root .
+node .claude/scripts/build-workspace-context.mjs --check --root .
+```
+
+The first writes `CLAUDE.local.md` from `workspace.user` and regenerates the indexes, including the per-user one. The second writes the shared catalogs, and `--check` must then report them current. `CLAUDE.local.md` and the per-user index are gitignored. `canonical.md` and `index.md` are tracked.
+
+**Commit:** `git commit -m "chore: build the workspace-context catalogs" -- workspace-context/canonical.md workspace-context/index.md`
 
 ### Step 17: Set up workspace remote
 
