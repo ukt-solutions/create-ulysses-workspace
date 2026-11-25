@@ -1,6 +1,6 @@
 ---
 name: workspace-init
-description: First-time workspace initialization, or joining a workspace a teammate already initialized. Init clones repos, installs template components, extracts team knowledge from documentation sources and Claude chat history, activates rules, configures user identity — run once after scaffolding with --init. Join (an initialized workspace you just cloned) sets up only this machine's per-user pieces — repos, user identity, CLAUDE.local.md.
+description: First-time workspace initialization, or joining a workspace a teammate already initialized. Init clones repos, installs template components, extracts team knowledge from documentation sources and Claude chat history, activates rules, configures user identity — run once after scaffolding, whether by `npm create` or `--init`. Join (an initialized workspace you just cloned) sets up only this machine's per-user pieces — repos, user identity, CLAUDE.local.md.
 
 # scope example (remove # to activate path-scoped loading):
 # scope: repos/my-api/
@@ -158,6 +158,8 @@ Adapt the plan to what was actually found. Only include relevant steps. Wait for
 
 Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 18 after the payload is deleted.
 
+How much this step has to do depends on how the workspace was scaffolded. `--init` installs only the bootstrap pieces and leaves the rest of the template to this step. `npm create` installs the whole template up front, so by the time you get here every payload file is already present and matches: nothing is asked and nothing is installed. Walk the payload either way — it is the same payload.
+
 Install components from `.workspace-update/.claude/` to `.claude/`. For each component directory — skills, hooks, agents, rules, scripts:
 
 1. List files in `.workspace-update/.claude/{component}/`
@@ -165,6 +167,7 @@ Install components from `.workspace-update/.claude/` to `.claude/`. For each com
    - If the file does not exist locally: "Install {file}? [Y/n]"
    - If the file exists locally and differs: "Template has {file} but you have a local version. Show diff? [y/N]" — let the user decide
    - If the file exists locally and matches: skip silently
+3. Skip an optional rule that is already active. `{name}.md` is installed and the payload ships `{name}.md.skip`: the `npm create` prompts, or Step 6 of an earlier run of this skill, activated it. Do not install the `.skip` file beside it — Step 6 lists the rules that are still optional.
 
 Also install these top-level files from the payload:
 - **`.claude/settings.json`** — Merge payload settings into existing file. Preserve user-added settings, add missing entries.
@@ -180,7 +183,7 @@ node .claude/scripts/classify-update.mjs --root . --write-baseline --payload .wo
 ```
 It hashes the payload's verbatim files — run it before Step 15 deletes the payload.
 
-**Commit:** `git commit -m "feat: install template components from payload"`
+**Commit (if this step installed or changed anything):** `git commit -m "feat: install template components from payload"`. On a workspace made with `npm create` there is usually nothing to commit here.
 
 ### Step 6: Activate optional rules
 
