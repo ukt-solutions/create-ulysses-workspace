@@ -53,7 +53,18 @@ function runIn(root, ...args) {
 const fileLines = (r) => r.lines
   .filter((line) => /^(ok|FAIL) /.test(line))
   .map((line) => line.replace(/ \(\d+\.\d+s\)$/, ''));
+// Why the runner reported one file: the line under its own.
+const reasonFor = (r, file) => {
+  const i = r.lines.findIndex((line) => line.startsWith(`FAIL ${file} (`));
+  return i === -1 ? null : r.lines[i + 1].trim();
+};
 const shown = (r) => `status ${r.status}\n${r.stdout}${r.stderr}`;
+
+// The file that kills itself ends by TerminateProcess on Windows, which
+// gives it exit status 1: there is no signal there, and none to report.
+// Everywhere else it dies without an exit status and the runner names the
+// signal.
+const KILLED = process.platform === 'win32' ? 'exited with status 1' : 'killed by SIGKILL';
 
 const E_RAN = join(TMP, 'full', 'e-ran');
 const full = fixture('full', {
@@ -90,8 +101,10 @@ try {
     r.lines.at(-2) === '  lib/a-failing.test.mjs' && r.lines.at(-1) === '  lib/b-killed.test.mjs', shown(r));
   check('a file that exits non-zero is reported with its status',
     r.stdout.includes('\n      exited with status 1\n'), shown(r));
-  check('a file that dies without an exit status is reported as killed',
-    r.stdout.includes('\n      killed by SIGKILL\n'), shown(r));
+  check(process.platform === 'win32'
+    ? 'a file that kills itself is reported with the exit status Windows gives it'
+    : 'a file that dies without an exit status is reported as killed',
+    reasonFor(r, 'lib/b-killed.test.mjs') === KILLED, shown(r));
   check('the last lines of a failing file\'s stdout are printed',
     r.stdout.includes('[stdout] out line 11\n') && r.stdout.includes('[stdout] out line 40\n'), shown(r));
   check('the earlier lines are left out, and the cut is marked',
