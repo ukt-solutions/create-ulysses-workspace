@@ -82,7 +82,7 @@ Each section has a purpose:
 
 **Workspace Config** once imported `workspace.json` here; the import is gone. Most of that file exists for scripts (repo remotes, budgets, directory locations), and paying for all of it on every turn buys nothing. Instead, the SessionStart hook injects a one-line summary at the start of every chat — session model, tracker, forge, and the repo names — and skills read `workspace.json` itself when they need the details (the section keeps a plain pointer line, because ACP clients don't surface hook output). Beside the pointer, the section imports the machine-local template-freshness banner, `@local-only-template-freshness.md`, which the version-freshness-check hook keeps up to date.
 
-**Team Knowledge** imports three files. `@workspace-context/canonical.md` carries the canonical truths verbatim: every file in `workspace-context/shared/locked/`, read on every turn. `@workspace-context/index.md` lists the team-visible working documents under `workspace-context/shared/`, one line each, so Claude knows they exist without paying for their content. `@CODEBASE.md` is an optional file-tree map that `/workspace-init` offers to generate, to help Claude navigate the code without exhaustive exploration. The two catalogs are generated from the files on disk — [Chapter 3](03-workspace-context.md) explains how.
+**Team Knowledge** imports three files. `@workspace-context/canonical.md` carries the canonical truths verbatim: every file in `workspace-context/shared/locked/`, read on every turn. `@workspace-context/index.md` lists every file under `workspace-context/shared/`, one line each — the canonical files first, then the team-visible working documents — so Claude knows what exists. The working documents are never loaded as content; they are read on demand. `@CODEBASE.md` is an optional file-tree map that `/workspace-init` offers to generate, to help Claude navigate the code without exhaustive exploration. The two catalogs are generated from the files on disk — [Chapter 3](03-workspace-context.md) explains how.
 
 **Skills** lists the available workflow commands — all seventeen the template ships, each with a one-line summary. This serves as both documentation for you and a reference for Claude to know what skills exist.
 
@@ -104,9 +104,11 @@ Measure it rather than estimating it. `.claude/scripts/context-footprint.mjs --r
 
 Canonical context is one line item in that total, and the one a team controls. That is why `/workspace-init` targets under 10KB for it. At the script's estimate of four bytes to a token, 10KB is another 2,500 tokens on every turn, on top of what the template itself costs.
 
-The whole always-loaded set has a ceiling in `workspace.json`: `workspace.alwaysLoadedBudgetBytes` (64KB from the template). `/maintenance` surfaces an over-budget total as a warning.
+`workspace.json` carries two budgets for the always-loaded set. Neither is enforced: both are measured and reported.
 
-`workspace.json` also carries `workspace.canonicalBudgetBytes`, a ceiling on `canonical.md` alone. It is off by default — absent or `null` means every locked file ships in full. Setting a byte count opts in: when the canonical body exceeds it, the builder trims and then stubs `priority: reference` locked files (guided by their `<!-- canonical:trim -->` markers) to fit, and `/maintenance` reports the budget while it is set and offers triage when it is exceeded.
+`workspace.alwaysLoadedBudgetBytes` covers everything read at launch — CLAUDE.md, its imports and the active rules — and the template ships 64KB. `context-footprint.mjs` compares the total against it, and `/maintenance` surfaces an over-budget total as a warning. Nothing stops a session from starting over budget.
+
+`workspace.canonicalBudgetBytes` covers `canonical.md` alone. It is off unless you set it: absent or `null` means every locked file ships in full, and the template ships none. Setting a byte count opts in: when the canonical body exceeds it, the builder trims and then stubs `priority: reference` locked files (guided by their `<!-- canonical:trim -->` markers) to fit, and `/maintenance` reports the budget while it is set and offers triage when it is exceeded.
 
 The practical implication: do not put large documents in canonical context. A 5,000-word design document does not belong in `workspace-context/shared/locked/` — it belongs in `shared/` or in your personal context, where it is read on demand. Locked is for concise, current team truths that Claude needs on every turn.
 

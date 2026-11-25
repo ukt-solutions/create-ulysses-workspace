@@ -67,7 +67,7 @@ my-workspace/
 │   ├── team-member/            # One folder per person
 │   │   └── alice/              # That person's working context
 │   ├── canonical.md            # Generated: the contents of shared/locked/
-│   └── index.md                # Generated: one line per file in shared/
+│   └── index.md                # Generated: one line per file under shared/, canonical first
 ├── workspace-scratchpad/       # Machine-local files — session log, chat records (gitignored)
 └── .claude/                    # Configuration (tracked in git)
     ├── rules/                  # Behavioral constraints
@@ -101,7 +101,7 @@ The workspace configuration file declares which repos belong to the workspace an
 {
   "workspace": {
     "name": "my-workspace",
-    "templateVersion": "0.26.0",
+    "templateVersion": "0.26.0-beta.0",
     "versionCheck": { "ambient": true },
     "scratchpadDir": "workspace-scratchpad",
     "workSessionsDir": "work-sessions",
@@ -109,7 +109,6 @@ The workspace configuration file declares which repos belong to the workspace an
     "alwaysLoadedBudgetBytes": 65536,
     "subagentContextMaxBytes": 32768,
     "subagentInlineMaxBytes": 8192,
-    "greeting": "Welcome back to my-workspace.",
     "sessionModel": "session",
     "tracker": null,
     "forge": { "type": "github" },
