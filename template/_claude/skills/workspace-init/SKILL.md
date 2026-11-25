@@ -160,9 +160,9 @@ Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"`
 
 How much this step has to do depends on how the workspace was scaffolded. `--init` installs only the bootstrap pieces and leaves the rest of the template to this step. `npm create` installs the whole template up front, so by the time you get here every file in the walk below is already present and matches — the walk asks nothing and installs nothing. Walk the payload either way: it is the same payload.
 
-Install components from `.workspace-update/.claude/` to `.claude/`. For each component directory — skills, hooks, agents, rules, scripts:
+Install components from `.workspace-update/.claude/` to `.claude/`. For each directory under the payload's `.claude/` — skills, hooks, agents, rules, scripts, lib, recipes:
 
-1. List files in `.workspace-update/.claude/{component}/`
+1. List files in `.workspace-update/.claude/{directory}/`
 2. For each file:
    - If the file does not exist locally: "Install {file}? [Y/n]"
    - If the file exists locally and differs: "Template has {file} but you have a local version. Show diff? [y/N]" — let the user decide
