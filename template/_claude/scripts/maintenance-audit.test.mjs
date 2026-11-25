@@ -567,6 +567,111 @@ console.log('# maintenance-audit');
     'uninitialized workspace freshness is info');
   cleanup(root);
 }
+// A workspace on the newest beta with 1.0.0 in release candidate: current, the
+// rc offered as info, the banner left alone
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.workspace.templateVersion = '0.26.0-beta.0';
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  const result = await audit(root, {
+    offline: false,
+    fetchFn: async () => ({ ok: true, json: async () => ({ latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }) }),
+  });
+  const found = bySection(result, 'freshness');
+  assertEq(found.length, 1, 'a release candidate is the section\'s one finding');
+  assertTrue(found[0].severity === 'info', 'a release candidate is info, not a warning');
+  assertTrue(found[0].message.includes('is up to date'), 'the finding says the template is current, standing in for the ✓ line');
+  assertTrue(found[0].message.includes('release candidate v1.0.0-rc.0 is available'), 'the finding calls the rc a release candidate');
+  assertTrue(found[0].message.includes('npx @ulysses-ai/create-workspace@1.0.0-rc.0 --upgrade'),
+    'the command is pinned to the release candidate');
+  assertTrue(!found[0].message.includes('create-workspace --upgrade'), 'the command is not the bare npx that installs latest');
+  assertEq(result.summary.warnings, 0, 'a current workspace raises no warning');
+  assertEq(result.summary.exitCode, 0, 'info alone exits 0');
+  assertEq(result.summary.freshness.status, 'current', 'summary records the workspace as current');
+  assertEq(result.summary.freshness.prerelease, '1.0.0-rc.0', 'summary carries the release candidate');
+  assertTrue(!existsSync(join(root, 'local-only-template-freshness.md')), 'no banner for a current workspace');
+  const report = renderReport(result);
+  assertTrue(report.includes('release candidate v1.0.0-rc.0 is available'), 'the report carries the offer');
+  assertTrue(!report.includes('Template is up to date (v'), 'the info line takes the place of the ✓ line');
+  cleanup(root);
+}
+// The same current workspace: the offer is never "(from this update)", which
+// workspace.json lands on the changed list of every update
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.workspace.templateVersion = '0.26.0-beta.0';
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  const result = await audit(root, {
+    offline: false,
+    changed: ['workspace.json'],
+    fetchFn: async () => ({ ok: true, json: async () => ({ latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }) }),
+  });
+  const found = bySection(result, 'freshness');
+  assertEq(found.length, 1, 'still the section\'s one finding');
+  assertTrue(found[0].fromUpdate === undefined, 'a release candidate is not attributed to the update');
+  assertTrue(!renderReport(result).includes('(from this update)'), 'the report does not tag the offer with the update');
+  cleanup(root);
+}
+// A stable workspace with a newer beta: the beta is offered the same way, as a
+// pre-release
+{
+  const root = makeWorkspace();
+  const result = await audit(root, {
+    offline: false,
+    fetchFn: async () => ({ ok: true, json: async () => ({ latest: '0.1.0', beta: '0.2.0-beta.1' }) }),
+  });
+  const found = bySection(result, 'freshness');
+  assertEq(found.length, 1, 'a newer beta is the section\'s one finding');
+  assertTrue(found[0].severity === 'info', 'a newer beta is info, not a warning');
+  assertTrue(found[0].message.includes('pre-release v0.2.0-beta.1 is available'), 'the finding calls the beta a pre-release');
+  assertTrue(found[0].message.includes('npx @ulysses-ai/create-workspace@0.2.0-beta.1 --upgrade'),
+    'the command is pinned to the beta');
+  assertEq(result.summary.freshness.status, 'current', 'a newer beta leaves a stable workspace current');
+  cleanup(root);
+}
+// A stale rc tag, below the beta tag the workspace is on: nothing offered
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.workspace.templateVersion = '0.26.0-beta.0';
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  const result = await audit(root, {
+    offline: false,
+    fetchFn: async () => ({ ok: true, json: async () => ({ latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '0.25.0-rc.0' }) }),
+  });
+  assertEq(bySection(result, 'freshness'), [], 'an rc below the beta tag raises no finding');
+  assertEq(result.summary.freshness.prerelease, null, 'summary records no prerelease');
+  assertTrue(renderReport(result).includes('Template is up to date (v0.26.0-beta.0)'), 'the ✓ line stands as before');
+  cleanup(root);
+}
+// A workspace behind the beta tag while an rc is out: the warning names the
+// beta tag, and the rc is not offered beside it
+{
+  const root = makeWorkspace({}, (r) => {
+    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
+    config.workspace.templateVersion = '0.25.0-beta.0';
+    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+    writeCatalogs(r);
+  });
+  const result = await audit(root, {
+    offline: false,
+    fetchFn: async () => ({ ok: true, json: async () => ({ latest: '0.25.0-beta.0', beta: '0.26.0-beta.0', rc: '1.0.0-rc.0' }) }),
+  });
+  const found = bySection(result, 'freshness');
+  assertEq(found.length, 1, 'the outdated warning is the section\'s one finding');
+  assertTrue(found[0].severity === 'warning' && found[0].message.includes('npx @ulysses-ai/create-workspace@0.26.0-beta.0 --upgrade'),
+    'the warning is pinned to the beta tag, not to the rc');
+  assertEq(result.summary.freshness.status, 'outdated', 'summary records the workspace as outdated against beta');
+  cleanup(root);
+}
 
 // 9. --changed marking (unit level)
 {
