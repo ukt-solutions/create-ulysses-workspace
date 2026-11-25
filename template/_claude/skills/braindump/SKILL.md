@@ -44,7 +44,9 @@ The flows below apply when NOT in an active work session, or when the user expli
 
 ## Flow: Named
 
-Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to:
+Whether a braindump is tracked depends on where it is captured. The workspace root is the launcher — it stays on the repo's default branch, so only `local-only-*` files are written there and none of them is committed. A task or session worktree is on its own branch, and a tracked braindump belongs there.
+
+Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to. This is the root form; inside a worktree, drop `--local-only`:
 
 ```bash
 node .claude/scripts/capture-context.mjs \
@@ -52,14 +54,15 @@ node .claude/scripts/capture-context.mjs \
   --topic '{kebab-case-name}' \
   --scope team-member \
   --user {workspace.user} \
-  --description '{one-line summary}' <<'BODY'
+  --description '{one-line summary}' \
+  --local-only <<'BODY'
 {body}
 BODY
 ```
 
 The body goes in on stdin through the quoted heredoc (`<<'BODY'`), so backticks and `$` in it stay literal — never `echo "…" |`. Use another delimiter if `BODY` occurs on a line of its own in the body.
 
-Add `--scope shared` (and drop `--user`) to put the file in `workspace-context/shared/` for team visibility. Add `--local-only` to keep it gitignored. Add `--update` to overwrite an existing file with the same name; without it, the helper appends `-2`, `-3`, etc. on collision.
+Per-user is the default scope. Add `--scope shared` (and drop `--user`) to put the file in `workspace-context/shared/` for team visibility instead. Add `--update` to overwrite an existing file with the same name; without it, the helper appends `-2`, `-3`, etc. on collision. Inside a worktree `--local-only` remains the way to keep a capture gitignored; to make a root capture tracked, capture it from a worktree or promote it (`/promote`).
 
 The body content sent on stdin should follow this template:
 
@@ -77,7 +80,7 @@ The body content sent on stdin should follow this template:
 {What this decision means for future work}
 ```
 
-The helper writes the frontmatter (`state: ephemeral`, `lifecycle: active`, `type: braindump`, `topic`, `author`, `updated`) and prints the absolute path on stdout so the skill can `git add` and commit it.
+The helper writes the frontmatter (`state: ephemeral`, `lifecycle: active`, `type: braindump`, `topic`, `author`, `updated`) and prints the absolute path on stdout — the path a tracked braindump is committed by.
 
 ## Flow: Side Braindump (deprecated)
 
@@ -111,6 +114,8 @@ Use the same GFM checkbox format as `session.md`'s `## Tasks` section (just `con
 
 When updating, rewrite as a fresh snapshot (coherent-revisions rule) and pass `--update` to `capture-context.mjs`. The updated braindump should read as if written in one pass.
 
+Pass the same flags as the original write, `--local-only` included. The helper finds the existing file by the path those flags produce, so without `--local-only` it would look for the tracked name instead and miss the file.
+
 ## Key Differences from /handoff
 - `/handoff` is structured around work state (branch, status, next steps)
 - `/braindump` is structured around reasoning (context, exploration, decisions, implications)
@@ -118,14 +123,18 @@ When updating, rewrite as a fresh snapshot (coherent-revisions rule) and pass `-
 - Use `/braindump` when you're capturing a discussion or decision
 
 ## Auto-commit
-Use the path that `capture-context.mjs` printed:
+
+A tracked braindump — one captured inside a worktree — is committed alone, by the path `capture-context.mjs` printed:
+
 ```bash
 git add '{printed-path}'
 git commit -m 'braindump: {name}'
 ```
 
+At the workspace root there is nothing to commit — the `local-only-` file is gitignored, so never `git add` it.
+
 ## Notes
 - Per-user (`team-member/{user}/`) is the default scope
 - One topic, one file — don't mix unrelated ideas in one braindump
 - Drive-by ideas now use `/aside` instead of `/braindump side`
-- Auto-committing context files without user request is a workflow artifact — this intentionally bypasses the "do not commit unless asked" convention
+- Auto-committing a tracked capture without user request is a workflow artifact — this intentionally bypasses the "do not commit unless asked" convention, and never applies at the workspace root
