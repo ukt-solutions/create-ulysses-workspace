@@ -6,6 +6,9 @@ import {
   updateSessionContent,
 } from './session-frontmatter.mjs';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 let failed = 0;
@@ -259,6 +262,28 @@ And more lines.
   // it at all, not the particular flags.
   const bare = spawnSync(process.execPath, [modPath], { encoding: 'utf-8' });
   assertEq(bare.status, 2, 'bare direct execution also exits 2');
+
+  // The path as typed is not the path Node loaded: reached through a
+  // symlinked folder, argv[1] keeps the link while import.meta.url is the
+  // real file, so the two never match as strings. The guard compares real
+  // paths, so it fires all the same. (On Windows the spellings differ for
+  // every run — a drive letter and backslashes against a file URL.)
+  let link = null;
+  const linkParent = mkdtempSync(join(tmpdir(), 'fm-lib-link-'));
+  try {
+    link = join(linkParent, 'lib');
+    symlinkSync(dirname(modPath), link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (err) {
+    link = null;
+    if (!['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) throw err;
+    console.log('  (skip: symlink unavailable on this machine)');
+  }
+  if (link) {
+    const viaLink = spawnSync(process.execPath, [join(link, 'session-frontmatter.mjs')], { encoding: 'utf-8' });
+    assertEq(viaLink.status, 2, 'direct execution through a symlinked folder also exits 2');
+    assert(/library, not a CLI/i.test(viaLink.stderr), 'and the symlinked run gets the same explanation');
+  }
+  rmSync(linkParent, { recursive: true, force: true });
 }
 
 // === Summary ===

@@ -263,7 +263,7 @@ assertEq(
 );
 
 import { writeTasksToSession } from './sync-tasks.mjs';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -473,6 +473,44 @@ withTempSession('not a session file\n', (file) => {
   }
   assert(threw, 'CLI throws on non-session file');
 });
+
+// The CLI must recognise that it was invoked directly, whatever spelling the
+// path arrived in: Node resolves import.meta.url to the real file while
+// argv[1] keeps the path as typed, so through a symlinked scripts folder the
+// two differ — and a CLI that compared them outright printed nothing and
+// exited 0.
+{
+  let link = null;
+  const linkParent = mkdtempSync(join(tmpdir(), 'sync-tasks-link-'));
+  try {
+    link = join(linkParent, 'scripts-link');
+    symlinkSync(dirname(SCRIPT_PATH), link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (err) {
+    if (['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) {
+      console.log('  (skip: symlink unavailable on this machine — the direct CLI runs above still ran)');
+    } else {
+      throw err;
+    }
+  }
+  if (link) {
+    withTempSession(FRESH_SESSION, (file) => {
+      const viaLink = join(link, 'sync-tasks.mjs');
+      execFileSync('node', [viaLink, '--write', file], {
+        input: JSON.stringify({
+          todos: [
+            { content: 'Start work', activeForm: 'Starting work', status: 'completed' },
+            { content: 'Test thing', activeForm: 'Testing thing', status: 'in_progress' },
+            { content: 'Complete work', activeForm: 'Completing work', status: 'pending' },
+          ],
+        }),
+        encoding: 'utf-8',
+      });
+      const out = execFileSync('node', [viaLink, '--read', file], { encoding: 'utf-8' });
+      assertEq(JSON.parse(out).todos.length, 3, 'CLI --write and --read both work through a symlinked scripts folder');
+    });
+  }
+  rmSync(linkParent, { recursive: true, force: true });
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

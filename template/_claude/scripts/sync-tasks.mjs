@@ -1,7 +1,7 @@
 // Mirror TodoWrite ↔ session.md ## Tasks section.
 // Round-trips a flat task list across chats by persisting it on the session branch.
 
-import { readFileSync, writeFileSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, realpathSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { readSessionFile } from '../lib/session-frontmatter.mjs';
 import { createTracker } from './trackers/interface.mjs';
@@ -268,6 +268,16 @@ function readStdin() {
   });
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// import.meta.url is the real file while argv[1] keeps the path as typed:
+// compared outright they differ through a symlinked workspace, and the CLI
+// then exited 0 without doing the work it was asked for.
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
+
+if (isMainModule(import.meta.url)) {
   main().catch(e => { console.error(e); process.exit(1); });
 }
