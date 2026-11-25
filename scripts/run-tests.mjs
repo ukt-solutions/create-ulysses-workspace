@@ -18,7 +18,8 @@
 // Each file runs in its own process, with the repository root as its working
 // directory, one after another. That keeps tests from sharing state and lets
 // one crash or hang be reported without taking the rest of the run with it.
-// A file gets 300 seconds; past that it is killed and counted as a failure.
+// A file gets 600 seconds by default (RUN_TESTS_TIMEOUT_SECONDS overrides);
+// past that it is killed and counted as a failure.
 //
 // What is printed: one line per file (`ok` or `FAIL`, its path, the seconds
 // it took), then a summary. The output of a passing file is dropped. For a
@@ -37,10 +38,13 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Where test files live, relative to the repository root.
 const TEST_ROOTS = ['lib', 'scripts', 'template'];
 
-// How long one test file may run before it is killed. The whole suite takes
-// minutes; no single file should take five, and CI should not wait longer
-// than that for a test that hangs.
-const FILE_TIMEOUT_MS = 300 * 1000;
+// How long one test file may run before it is killed. The slowest file,
+// migrate-sessions, spawns git hundreds of times: about 90 s on macOS and
+// close to 300 s on a Windows runner, where process spawns are slow. Ten
+// minutes leaves room for that while still ending a hang.
+const DEFAULT_TIMEOUT_SECONDS = 600;
+const envTimeout = Number(process.env.RUN_TESTS_TIMEOUT_SECONDS);
+const FILE_TIMEOUT_MS = (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : DEFAULT_TIMEOUT_SECONDS) * 1000;
 
 // Lines printed from each output stream of a failing file.
 const FAILURE_LINES = 30;

@@ -8,8 +8,8 @@
 // The runner is copied into small fixture repositories holding fake test
 // files and run there — copied, never linked, because it finds the
 // repository root from its own location. The timeout is not exercised: it is
-// a fixed 300 seconds, so a hanging file cannot be tried in a short run, and
-// a file killed for any other reason takes the same path.
+// ten minutes by default, so a hanging file cannot be tried in a short run,
+// and a file killed for any other reason takes the same path.
 //
 // scripts/ is not part of the published package.
 
