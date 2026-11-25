@@ -28,7 +28,7 @@ node .claude/scripts/capture-context.mjs \
   --type braindump \
   --topic '{kebab-slug}' \
   --scope team-member \
-  --user {workspace.user} \
+  --user '{workspace.user}' \
   --variant aside \
   --local-only <<'BODY'
 {body}
@@ -64,7 +64,7 @@ Dispatch the `aside-researcher` agent in the background. The full mode uses `--t
      --type research \
      --topic '{kebab-slug}' \
      --scope team-member \
-     --user {workspace.user} \
+     --user '{workspace.user}' \
      --variant aside \
      --local-only \
      --print-only
