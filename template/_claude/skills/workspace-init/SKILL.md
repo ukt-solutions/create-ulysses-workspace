@@ -342,7 +342,7 @@ MCP (Model Context Protocol) servers extend what Claude can do inside the worksp
 }
 ```
 
-**This step is guidance only.** The right LSP server depends on your language; the right internal-tool server depends on what your team builds. Configure `.mcp.json` after init when you know what you need — there is no pressure to choose now. The file Step 5 installed carries the template's Playwright entry, and additional servers are additive. Claude Code reads `.mcp.json` when it starts, so a server added later is picked up by the next session.
+**This step is guidance only.** The right LSP server depends on your language; the right internal-tool server depends on what your team builds. Configure `.mcp.json` after init when you know what you need — there is no pressure to choose now. The file Step 5 installed carries the template's Playwright entry, and additional servers are additive.
 
 ### Step 13: Configure user identity and start the team roster
 
