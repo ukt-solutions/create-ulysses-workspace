@@ -387,6 +387,10 @@ function launcherGit(branch = 'main') {
   assertEq(isDefaultBranchCheckout('/ws', launcherGit()), true, 'a top-level checkout on main with no remote is the launcher');
   assertEq(isDefaultBranchCheckout('/ws', launcherGit('master')), true, 'master with no remote is a default branch too');
   assertEq(isDefaultBranchCheckout('/ws', launcherGit('feature/some-task')), false, 'a worktree branch is not the default');
+  // The documented fail-open case: origin/HEAD absent, which is what a remote
+  // added by hand leaves until a fetch or set-head records it, under a
+  // default branch named anything else. Nothing tells it from a worktree.
+  assertEq(isDefaultBranchCheckout('/ws', launcherGit('trunk')), false, 'a default branch under another name is not recognised: the guard fails open');
 }
 
 {
@@ -578,6 +582,15 @@ console.log('# root guard against a real repository');
       const linked = runCli(['--type', 'braindump', '--topic', 'linked', '--scope', 'shared', '--root', worktree], body);
       assertEq(linked.status, 0, 'a tracked capture inside a linked worktree is accepted');
       assert(existsSync(linked.stdout.trim()), 'and is written there');
+
+      // The documented fail-open case, against real git: origin/HEAD absent —
+      // the ref only a clone, a fetch or set-head records — and the checkout
+      // on a branch under another name. Nothing tells it from a worktree, so
+      // the tracked capture passes.
+      fixture('symbolic-ref', '-d', 'refs/remotes/origin/HEAD');
+      fixture('checkout', '-q', '-b', 'trunk');
+      const unrecognised = runCli(capture, body);
+      assertEq(unrecognised.status, 0, 'with no origin/HEAD, a checkout on trunk is not recognised as the launcher: the guard fails open');
     } finally {
       cleanup(area);
     }

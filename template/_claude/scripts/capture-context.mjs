@@ -39,12 +39,15 @@
 //   - --root is not a git repository, or is a directory nested inside one
 //     rather than its top level;
 //   - HEAD is detached, on no branch;
-//   - the default branch is not recognised. Only `git clone` records it, in
-//     refs/remotes/origin/HEAD. A remote added by hand leaves that ref
-//     unset, and `main` and `master` are then taken for the default when
-//     the checkout sits on either. A default branch under any other name —
-//     `trunk`, say, on a launcher whose remote was added by hand — is never
-//     matched, so a tracked capture there passes.
+//   - the default branch is not recognised. It is read from
+//     refs/remotes/origin/HEAD, which `git clone` records and a remote
+//     added by hand leaves unset until something sets it: `git remote
+//     set-head`, or a fetch on a git new enough to create it. While the ref
+//     is absent, `main` and `master` are taken for the default when the
+//     checkout sits on either. A default branch under any other name —
+//     `trunk`, say, on a launcher whose hand-added remote has never been
+//     fetched, or only on an older git — is never matched, so a tracked
+//     capture there passes.
 // The skills keep every root capture local-only regardless; only a skill
 // that forgets the rule is left without this backstop.
 //
@@ -199,12 +202,17 @@ function gitLine(gitFn, root, args) {
   }
 }
 
-// The branch a clone of the repository at {root} would check out. Only a
-// clone records it, in refs/remotes/origin/HEAD; a remote added by hand
-// leaves that ref unset, and then nothing names the default. In that case
-// {current} is taken for it when it is `main` or `master` — the two names
-// git has used on its own — and `main` otherwise, so a default branch under
-// any other name goes unrecognised and the guard fails open.
+// The branch a clone of the repository at {root} would check out. It is read
+// from refs/remotes/origin/HEAD, which `git clone` records and a remote
+// added by hand leaves unset until something sets it: `git remote set-head`,
+// or a fetch on a git new enough to create it. While the ref is absent
+// nothing names the default, so {current} is taken for it when it is `main`
+// or `master` — the two names git has used on its own — and `main`
+// otherwise. The guard therefore fails open when the ref is absent. That
+// costs nothing while the checkout sits on `main` or `master`, and costs
+// everything under another default branch name — typically a hand-added
+// remote whose default is named otherwise and has never been fetched, or
+// only on an older git.
 function defaultBranchOf(gitFn, root, current) {
   const remote = gitLine(gitFn, root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   if (remote) return remote.replace(/^origin\//, '');
