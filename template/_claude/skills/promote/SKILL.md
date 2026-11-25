@@ -48,7 +48,7 @@ The user responds using codes:
 
 Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
 
-Every command in this step is anchored at the workspace root with `{launcher-root}`, the absolute path on the `Workspace root:` line the SessionStart hook injects. A chat inside a session's worktree gets `Working in workspace worktree. Main root: …` instead; that path is the launcher. Sources and scratch files live there, wherever the chat runs.
+Every command in this step is anchored at the workspace root with `{launcher-root}`. That is the absolute path on the `Workspace root:` line the SessionStart hook injects when the chat runs at the root. A chat inside a session's worktree gets that line as well, naming the worktree, and with it `Working in workspace worktree. Main root: …`, whose path is the launcher. A chat inside a task worktree of the workspace repo gets no `Main root:` line: there derive the launcher with `git rev-parse --git-common-dir`, resolving a relative result against the cwd, and take that directory's parent — from inside a project's worktree that lands on the source clone `repos/{repo}/`, and the launcher is two levels up. Sources and scratch files live at the launcher wherever the chat runs, and the worktree is always created from the launcher: never from inside another worktree, which would nest one worktree in another.
 
 For each **drop** action:
 - Delete the file (auto-memory from `~/.claude/projects/*/memory/`, local-only from workspace)
@@ -71,7 +71,7 @@ For the **promote** actions, all of them together: the workspace root is the lau
      --type {braindump|handoff|research} \
      --topic '{kebab-name}' \
      --scope {team-member|shared} \
-     [--user {workspace.user}] \
+     [--user '{workspace.user}'] \
      --update
    ```
    For locked the helper is not involved: write the file to `{worktree}/workspace-context/shared/locked/{bare-name}.md`. Locked files use bare names, because location signals the type, and take no prefix, so strip the `braindump_`, `handoff_` or `research_` prefix.
@@ -88,7 +88,7 @@ For the **promote** actions, all of them together: the workspace root is the lau
      --repo . --body-file '.={launcher-root}/workspace-scratchpad/promote-pr-{name}.md' \
      --out '{launcher-root}/workspace-scratchpad/promote-prs-{name}.json'
    ```
-   The PR's title is the commit's subject. A workspace repo with no origin, or with `merge: "local"` in `workspace.json`, gets no PR: nothing is pushed, and the entry is only recorded for the merge in step 7. If the output lists `.` under `empty`, nothing was committed and there is nothing to promote: go to step 9. If `--create` refuses (forge operations are disabled by `workspace.forge: false`, or the origin is neither forge-hosted nor opted out with `merge: "local"`), report the message and leave everything in place. After any other failure, fix the cause and re-run the same command: it reuses what already landed and never duplicates a PR.
+   The PR's title is the commit's subject. A workspace repo with no origin, or with `merge: "local"` in `workspace.json`, gets no PR: nothing is pushed, and the entry is only recorded for the merge in step 7. If the output lists `.` under `empty`, nothing was committed and there is nothing to promote: go to step 9. If `--create` refuses, nothing was pushed, and the worktree, the branch and its commit stay in place. Say so plainly, with the script's message, and say how to finish: push the branch and open the PR by hand, then continue with step 8 once it is merged and the workspace root is pulled; or set `workspace.merge` to `"local"` in `workspace.json` and re-run this command, which then records a local entry. It refuses when forge operations are disabled (`workspace.forge: false`), or when the origin is neither forge-hosted nor opted out as local, and re-running alone changes neither. After any other failure, fix the cause and re-run the same command: it reuses what already landed and never duplicates a PR.
 7. **Read the checks, then ask before merging, as the workspace's `mergeApproval` says.** The `--create` output carries it on the entry: `workspace.mergeApproval` in `workspace.json`, `ask` when unset.
    ```bash
    node '{launcher-root}/.claude/scripts/task-pr.mjs' --checks --root '{launcher-root}' --prs '{launcher-root}/workspace-scratchpad/promote-prs-{name}.json'
