@@ -13,7 +13,7 @@ git clone git@github.com:team/team-workspace.git
 cd team-workspace
 ```
 
-You will see `CLAUDE.md`, `workspace.json`, `workspace-context/` and a `.claude/` directory. This is the workspace — it wraps your project repos with shared conventions. The project repos themselves are not in the clone yet; `repos/` is empty on purpose, because each person keeps their own clones.
+You will see `CLAUDE.md`, `workspace.json`, `workspace-context/` and a `.claude/` directory. This is the workspace — it wraps your project repos with shared conventions. The project repos themselves are not in the clone; `repos/` is gitignored, because each person keeps their own clones. The join in the next step creates it.
 
 ## Step 2: Join
 
@@ -117,7 +117,7 @@ When the work is done:
 
 Claude rebases, opens pull requests with a description of the change, merges once you approve, and closes the linked issue.
 
-If you need to stop but are not finished:
+In the session lifecycle, if you need to stop but are not finished:
 
 ```
 /pause-work
