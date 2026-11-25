@@ -1168,6 +1168,20 @@ console.log('# classify-update');
   assertTrue(merged.includes('- `/b` — mine\r\n'), 'workspace lines keep their CRLF');
 }
 
+// 10e'. mergeClaudeMd — a current file with no lines of its own yet has no
+//       line endings to follow, so it takes the template's: a CRLF template
+//       (an autocrlf checkout, or a payload packed from one) is not silently
+//       re-wrapped to LF on its way into a fresh workspace.
+{
+  const next = '## Workspace: demo\r\n\r\nIntro.\r\n\r\n## Skills\r\n- `/a` — theirs\r\n';
+  assertEq(mergeClaudeMd('', next), next, 'an empty current file keeps a CRLF template\'s line endings');
+  assertEq(mergeClaudeMd(null, next), next, 'an absent current file keeps a CRLF template\'s line endings');
+  assertEq(mergeClaudeMd('  \n\n', next), next, 'a blank current file keeps a CRLF template\'s line endings');
+  const lf = '## Workspace: demo\n\nIntro.\n\n## Skills\n- `/a` — theirs\n';
+  assertEq(mergeClaudeMd('', lf), lf, 'an LF template still arrives with LF');
+  assertEq(mergeClaudeMd('', lf), mergeClaudeMd(null, lf), 'empty and absent current files give the same result');
+}
+
 // 11. CLI --merge-claude-md — substitutes {{project-name}}, merges with the
 //     workspace's CLAUDE.md, and prints JSON { claudeMd, droppedIncludes,
 //     missingIncludes }: the merged text, the retired @-includes it dropped
