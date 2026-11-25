@@ -79,6 +79,11 @@ const LONG_MASKED = `...${'N'.repeat(39)} [match:14 chars] ${'M'.repeat(39)}...`
 const LOGO = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]), Buffer.from('PNG-ish payload\n')]);
 const SUBJECT = 'feat: rotate the sk-live-abcdef token';
 
+// The file name that makes git quote a path. A double quote is an ordinary
+// byte in a POSIX file name; NTFS refuses to hold one at all, so on Windows
+// the non-ASCII name alone plays the part — git quotes that one too.
+const QUOTE_BAIT = process.platform === 'win32' ? 'quoté file.js' : 'quoté "file".js';
+
 // A launcher root with one project repo under repos/app carrying the
 // release range every test scans: a tagged base, a leak commit (config
 // file, a git-only scratch file, a binary asset, a notes file — and a
@@ -114,7 +119,7 @@ function makeLauncher({
   writeFileSync(join(dir, 'assets', 'logo.png'), LOGO);
   if (weird) {
     writeFileSync(join(dir, 'data', ' leading space.md'), 'space: sk-live-abcdef buried\n');
-    writeFileSync(join(dir, 'data', 'quoté "file".js'), 'const q = "sk-live-abcdef-here";\n');
+    writeFileSync(join(dir, 'data', QUOTE_BAIT), 'const q = "sk-live-abcdef-here";\n');
   }
   git(dir, ['add', '-A']);
   git(dir, ['commit', '-q', '-m', SUBJECT]);
@@ -457,7 +462,7 @@ console.log('# raw -z paths: non-ASCII, quoted, and space-leading names; renames
       'the changed-file diff is NUL-delimited with rename detection off');
     assertEq(out.matches, [
       { file: 'data/ leading space.md', line: 1, pattern: 'sk-live-abcdef', excerpt: 'space: [match:14 chars] buried' },
-      { file: 'data/quoté "file".js', line: 1, pattern: 'sk-live-abcdef', excerpt: 'const q = "[match:14 chars]-here";' },
+      { file: `data/${QUOTE_BAIT}`, line: 1, pattern: 'sk-live-abcdef', excerpt: 'const q = "[match:14 chars]-here";' },
       { file: 'lib/config.js', line: 3, pattern: 'sk-live-abcdef', excerpt: 'const token = "[match:14 chars]1234567890";' },
       { file: 'moved-notes.md', line: 2, pattern: 'sk-live-abcdef', excerpt: LONG_MASKED },
       { file: `commit ${sha}`, line: 1, pattern: 'sk-live-abcdef', excerpt: 'feat: rotate the [match:14 chars] token' },
