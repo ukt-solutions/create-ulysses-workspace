@@ -57,9 +57,11 @@ For each **promote** action:
     --topic '{kebab-name}' \
     --scope {team-member|shared} \
     [--user {workspace.user}] \
-    --update
+    --update \
+    --allow-tracked
   ```
-  When promoting *to locked*, write directly to `workspace-context/shared/locked/{bare-name}.md` instead — locked files use bare names (location signals the type) and don't take a prefix. Strip the `braindump_/handoff_/research_` prefix when locking.
+  `--allow-tracked` is promotion's own exception. The helper refuses a tracked file wherever the workspace root sits on its default branch, because a commit there would land on that branch, and `/handoff` and `/braindump` keep their root captures local-only for the same reason. A promotion is the deliberate decision to make a file tracked, so it is the one write that passes.
+  When promoting *to locked*, write directly to `workspace-context/shared/locked/{bare-name}.md` instead — the helper is not involved there. Locked files use bare names (location signals the type) and don't take a prefix, so strip the `braindump_/handoff_/research_` prefix when locking.
 - Set `type: promoted` in the destination frontmatter (the helper writes the standard fields; edit `type` afterward, or have the body's frontmatter override).
 - Remove the `local-only-` original.
 - Commit individually: `git commit -m 'promote: {name}'`

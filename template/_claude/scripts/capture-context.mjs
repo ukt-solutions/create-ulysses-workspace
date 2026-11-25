@@ -12,6 +12,7 @@
 //     [--description "..."]     # one-line summary, used by index
 //     [--variant aside]         # arbitrary frontmatter marker
 //     [--local-only]            # prefix filename with local-only- (gitignored)
+//     [--allow-tracked]         # write a tracked file even where the root guard refuses one
 //     [--update]                # overwrite if file exists; default appends -2, -3, ...
 //     [--root <path>]           # workspace root (defaults to cwd)
 //     [--print-only]            # don't write; just print the planned path
@@ -23,6 +24,16 @@
 // `local-only-research_my-topic.md`), so the gitignore pattern keeps it
 // out of git.
 //
+// Root guard: the workspace root is the launcher, and it stays on the
+// repository's default branch — only local-only files are written there. A
+// tracked capture committed at the root would land on that branch, so when
+// --root is a git checkout sitting on its default branch the helper refuses
+// a tracked capture, for --print-only as for a write. The error names the two
+// ways out: --local-only, or --allow-tracked for a deliberate promotion
+// (/promote). A worktree is on another branch and passes. Where git cannot
+// answer — not installed, no repository, a detached HEAD — the guard says
+// nothing and the capture proceeds as before.
+//
 // Stdin: the markdown body to write under the frontmatter. Required unless
 // --print-only is passed.
 //
@@ -30,6 +41,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 function isMainModule(metaUrl) {
@@ -55,6 +67,7 @@ function parseArgs(argv) {
     description: null,
     variant: null,
     localOnly: false,
+    allowTracked: false,
     update: false,
     root: process.cwd(),
     printOnly: false,
@@ -68,6 +81,7 @@ function parseArgs(argv) {
     else if (a === '--description') args.description = argv[++i];
     else if (a === '--variant') args.variant = argv[++i];
     else if (a === '--local-only') args.localOnly = true;
+    else if (a === '--allow-tracked') args.allowTracked = true;
     else if (a === '--update') args.update = true;
     else if (a === '--root') args.root = argv[++i];
     else if (a === '--print-only') args.printOnly = true;
@@ -91,6 +105,9 @@ function validate(args) {
   }
   if (args.scope === 'team-member' && !/^[A-Za-z0-9_-]+$/.test(args.user)) {
     throw new Error('--user must be alphanumeric (with optional - or _)');
+  }
+  if (args.localOnly && args.allowTracked) {
+    throw new Error('--local-only and --allow-tracked cannot be combined: one keeps the file out of git, the other writes it tracked');
   }
 }
 
@@ -160,16 +177,77 @@ function ensureDir(dir) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
-function plan(args) {
+// One line of git's output, or null when git could not answer — it is not
+// installed, there is no repository at {root}, or the ref does not resolve.
+// The argument array needs no shell, so a path is never read as shell text.
+function gitLine(gitFn, root, args) {
+  try {
+    const res = gitFn('git', ['-C', root, ...args], { encoding: 'utf8' });
+    if (!res || res.error || res.status !== 0) return null;
+    return String(res.stdout).trim();
+  } catch {
+    return null;
+  }
+}
+
+// The branch a clone of the repository at {root} would check out. A
+// repository with a remote says so in refs/remotes/origin/HEAD. Without one
+// nothing records the name, so {current} is taken for the default when it is
+// `main` or `master` — the two names git has used on its own — and `main`
+// otherwise.
+function defaultBranchOf(gitFn, root, current) {
+  const remote = gitLine(gitFn, root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+  if (remote) return remote.replace(/^origin\//, '');
+  return current === 'main' || current === 'master' ? current : 'main';
+}
+
+/**
+ * True when {root} is the top-level checkout of a git repository whose HEAD
+ * is on that repository's default branch — the state the workspace launcher
+ * is kept in. A task or session worktree is the same repository on another
+ * branch and returns false. So does anything git cannot vouch for: no git,
+ * no repository, a detached HEAD, or a directory merely nested inside some
+ * other repository.
+ *
+ * gitFn is injectable so tests can script git's answers; the default is
+ * spawnSync, called as (command, args, options).
+ */
+function isDefaultBranchCheckout(root, gitFn = spawnSync) {
+  // --show-prefix is empty only at a repository's top level, which tells a
+  // launcher from a directory inside one without comparing paths.
+  const prefix = gitLine(gitFn, root, ['rev-parse', '--show-prefix']);
+  if (prefix !== '') return false;
+  // symbolic-ref, not rev-parse --abbrev-ref: it names the branch before the
+  // first commit too, and fails on a detached HEAD.
+  const current = gitLine(gitFn, root, ['symbolic-ref', '--short', 'HEAD']);
+  if (!current) return false;
+  return current === defaultBranchOf(gitFn, root, current);
+}
+
+// A capture is tracked unless --local-only is passed. At the launcher that
+// puts a file on the default branch at the next commit, so the helper
+// refuses it here rather than trust every skill to remember the rule.
+// --allow-tracked is the deliberate exception: a promotion is meant to
+// produce a tracked file at the root.
+function assertRootWriteAllowed(args, gitFn) {
+  if (args.localOnly || args.allowTracked) return;
+  if (!isDefaultBranchCheckout(args.root, gitFn)) return;
+  throw new Error(`refusing a tracked capture in ${args.root}: that checkout is on its default branch, where only local-only files are written. Pass --local-only to keep the capture gitignored, or --allow-tracked for a deliberate promotion.`);
+}
+
+// Planning is where a capture's path is decided, so it is also where the
+// root guard runs: --print-only reports a refusal exactly as a write does.
+function plan(args, { gitFn = spawnSync } = {}) {
   validate(args);
+  assertRootWriteAllowed(args, gitFn);
   const dir = computeDir(args);
   const baseFilename = computeBaseFilename(args);
   const filePath = resolveCollision(dir, baseFilename, args.update);
   return { dir, filePath, frontmatter: buildFrontmatter(args) };
 }
 
-function write(args, body) {
-  const planned = plan(args);
+function write(args, body, { gitFn = spawnSync } = {}) {
+  const planned = plan(args, { gitFn });
   ensureDir(planned.dir);
   const content = renderFrontmatter(planned.frontmatter) + '\n\n' + body.replace(/^\n+/, '');
   const finalContent = content.endsWith('\n') ? content : content + '\n';
@@ -212,6 +290,7 @@ export {
   resolveCollision,
   buildFrontmatter,
   renderFrontmatter,
+  isDefaultBranchCheckout,
   plan,
   write,
 };
