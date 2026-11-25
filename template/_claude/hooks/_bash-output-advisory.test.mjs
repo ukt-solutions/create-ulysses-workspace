@@ -1,10 +1,25 @@
 #!/usr/bin/env node
-// Unit tests for bash-output-advisory.mjs pattern detection.
+// Unit tests for bash-output-advisory.mjs pattern detection, and for the
+// entry guard that decides whether the hook body runs at all.
 // Run: node .claude/hooks/_bash-output-advisory.test.mjs
 import { detectNoisyPattern } from './bash-output-advisory.mjs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let failed = 0;
 let passed = 0;
+
+function shouldAnswer(result, label) {
+  if (result.status === 0 && String(result.stdout).includes('Bare test-runner invocation')) {
+    passed++;
+  } else {
+    failed++;
+    console.error(`  FAIL: ${label}\n    status: ${result.status}\n    stdout: ${result.stdout}\n    stderr: ${result.stderr}`);
+  }
+}
 
 function shouldWarn(command, label) {
   const result = detectNoisyPattern(command);
@@ -83,6 +98,37 @@ shouldNotWarn('git status', 'git status');
 shouldNotWarn('ls -la', 'ls');
 shouldNotWarn('echo hello', 'echo');
 shouldNotWarn('node --version', 'node version');
+
+// === Spawn: the hook must recognise that it was invoked directly ===
+// A pattern is worth nothing if the hook body never runs. Node resolves
+// import.meta.url to the real file while argv[1] keeps the path as typed, so
+// through a symlinked workspace the two differ; an entry guard that compared
+// them outright kept the hook silent there.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const runHook = (scriptPath) => spawnSync(
+  process.execPath,
+  [scriptPath],
+  { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'npm test' } }), encoding: 'utf-8', timeout: 30000 },
+);
+
+shouldAnswer(runHook(join(HERE, 'bash-output-advisory.mjs')), 'a direct run answers with the advisory');
+
+let link = null;
+const linkParent = mkdtempSync(join(tmpdir(), 'boa-link-'));
+try {
+  link = join(linkParent, 'hooks-link');
+  symlinkSync(HERE, link, process.platform === 'win32' ? 'junction' : 'dir');
+} catch (err) {
+  if (['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) {
+    console.log('  (skip: symlink unavailable on this machine — the direct run above still ran)');
+  } else {
+    throw err;
+  }
+}
+if (link) {
+  shouldAnswer(runHook(join(link, 'bash-output-advisory.mjs')), 'a direct run through a symlinked path answers too');
+}
+rmSync(linkParent, { recursive: true, force: true });
 
 console.log(`Passed: ${passed}, Failed: ${failed}`);
 if (failed > 0) process.exit(1);

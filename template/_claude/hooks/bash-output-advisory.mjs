@@ -8,11 +8,21 @@
 // Add patterns sparingly. The cost of a missed nudge is one bloated tool
 // result; the cost of crying wolf is a permanently-ignored hook.
 import { fileURLToPath } from 'url';
+import { realpathSync } from 'fs';
 import { readStdin, respond } from './_utils.mjs';
 
 // Only run the hook body when invoked directly (not when imported by tests).
-const isEntry = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isEntry) {
+// import.meta.url is the real file while argv[1] stays as the host typed it,
+// so through a symlinked workspace the two spellings differ. Compared
+// outright they never matched there and the hook did nothing at all; as real
+// paths they do — the same guard repo-write-detection.mjs uses.
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
+if (isMainModule(import.meta.url)) {
   const input = await readStdin();
   if (input.tool_name !== 'Bash') {
     respond();

@@ -836,12 +836,17 @@ function renderBlocks(blocks, eol) {
  * matched by heading (`## Workspace:` headings match regardless of name): the
  * result follows the workspace's section order, new template sections are
  * appended at the end, and kept lines land at the end of their section. The
- * output keeps the current file's line endings — CRLF in, CRLF out.
+ * output keeps the current file's line endings — CRLF in, CRLF out. A
+ * current file with no lines of its own yet (absent or blank) is filled
+ * from the template and takes the template's line endings, so what lands on
+ * disk is the template as shipped rather than a re-wrapped copy of it.
  */
 export function mergeClaudeMd(currentText, nextText) {
-  const eol = currentText != null && currentText.includes('\r\n') ? '\r\n' : '\n';
+  const empty = currentText == null || currentText.trim() === '';
+  const eolSource = empty ? nextText : currentText;
+  const eol = eolSource != null && eolSource.includes('\r\n') ? '\r\n' : '\n';
   const nxtBlocks = splitBlocks(nextText);
-  if (currentText == null || currentText.trim() === '') return renderBlocks(nxtBlocks, eol);
+  if (empty) return renderBlocks(nxtBlocks, eol);
   const nxtByHeading = new Map(nxtBlocks.map((b) => [headingKey(b.heading), b]));
   const used = new Set();
   const out = [];

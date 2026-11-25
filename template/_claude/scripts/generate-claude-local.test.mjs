@@ -5,6 +5,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
   readWorkspaceUser,
@@ -160,7 +161,7 @@ console.log('# CLI end-to-end');
 
 {
   const root = setupRoot({ workspace: { user: 'bob' } });
-  const scriptPath = new URL('./generate-claude-local.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./generate-claude-local.mjs', import.meta.url));
   const result = spawnSync('node', [scriptPath, '--root', root], { encoding: 'utf-8' });
   assertEq(result.status, 0, 'CLI exits 0');
   const out = JSON.parse(result.stdout);
@@ -172,7 +173,7 @@ console.log('# CLI end-to-end');
 {
   // CLI exits 1 on missing settings
   const root = mkdtempSync(join(tmpdir(), 'gcl-test-'));
-  const scriptPath = new URL('./generate-claude-local.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./generate-claude-local.mjs', import.meta.url));
   const result = spawnSync('node', [scriptPath, '--root', root], { encoding: 'utf-8' });
   assertEq(result.status, 1, 'CLI exits 1 on missing settings');
   assert(result.stderr.includes('generate-claude-local'), 'stderr labeled');

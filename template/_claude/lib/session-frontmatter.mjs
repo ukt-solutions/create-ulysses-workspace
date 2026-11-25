@@ -13,7 +13,8 @@
 //
 // Anything outside this subset throws. The parser is intentionally narrow.
 
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, realpathSync } from 'fs';
+import { fileURLToPath } from 'url';
 
 const FM_DELIM = '---';
 
@@ -276,7 +277,20 @@ export function readSessionFields(filePath) {
 // session and was only caught by re-reading the file (gh:143).
 //
 // So: fail loudly and say what to call instead.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+//
+// import.meta.url is the real file — percent-encoded, and resolved through
+// symlinks — while argv[1] is the path as typed, so the two are compared as
+// real paths. Gluing a `file://` prefix onto argv[1] instead matched no
+// Windows path at all (`file:///D:/…` against `D:\…`): the guard never fired
+// there and a direct run went back to exiting 0.
+function isMainModule(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
+
+if (isMainModule(import.meta.url)) {
   process.stderr.write(
     'session-frontmatter.mjs is a library, not a CLI — it takes no arguments.\n' +
     '\n' +

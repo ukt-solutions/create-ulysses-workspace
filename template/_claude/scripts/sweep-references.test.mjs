@@ -2,9 +2,10 @@
 // Unit tests for sweep-references.mjs
 // Run: node template/_claude/scripts/sweep-references.test.mjs
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { applyRules, sweep, DEFAULT_RULES } from './sweep-references.mjs';
 
@@ -106,6 +107,47 @@ console.log('# sweep skip rules');
   cleanup(root);
 }
 
+// The script's own file is skipped however its path is spelled. The walked
+// path is built from --target; the script's own comes from argv. Through an
+// alias — a symlinked folder here, a Windows 8.3 short name there — the two
+// differ while naming one file, and swept, the script would turn its rules
+// on their own definitions.
+{
+  const real = setupTree();
+  const linkParent = setupTree();
+  let link = null;
+  try {
+    link = join(linkParent, 'alias');
+    symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (err) {
+    link = null;
+    if (!['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) throw err;
+    console.log('  (skip: symlink unavailable on this machine — the same-spelling case still ran)');
+  }
+  try {
+    const script = join(real, 'scripts', 'sweep-references.mjs');
+    const original = readFileSync(fileURLToPath(new URL('./sweep-references.mjs', import.meta.url)), 'utf8');
+    mkdirSync(join(real, 'scripts'));
+    writeFileSync(script, original);
+    writeFileSync(join(real, 'a.md'), 'shared-context/locked/foo');
+
+    if (link) {
+      const viaAlias = sweep(link, { write: true, scriptPath: script });
+      assertEq(viaAlias.map((c) => c.path), ['a.md'], 'the target reached through an alias: only the other file is swept');
+      writeFileSync(join(real, 'b.md'), 'shared-context/locked/bar');
+      const aliasScript = join(link, 'scripts', 'sweep-references.mjs');
+      const fromReal = sweep(real, { write: true, scriptPath: aliasScript });
+      assertEq(fromReal.map((c) => c.path), ['b.md'], 'the script path spelled through the alias: only the other file is swept');
+    }
+    const sameSpelling = sweep(real, { write: false, scriptPath: script });
+    assert(!sameSpelling.some((c) => c.path === join('scripts', 'sweep-references.mjs')), 'the script is never among the changes');
+    assertEq(readFileSync(script, 'utf8'), original, 'and its own text is left exactly as it was');
+  } finally {
+    cleanup(real);
+    cleanup(linkParent);
+  }
+}
+
 console.log('# sweep skips binary files');
 
 {
@@ -144,7 +186,7 @@ console.log('# CLI end-to-end');
 {
   const root = setupTree();
   writeFileSync(join(root, 'a.md'), 'shared-context/locked/foo and shared-context/bar');
-  const scriptPath = new URL('./sweep-references.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./sweep-references.mjs', import.meta.url));
 
   // --check exits 1 when changes pending
   const check = spawnSync('node', [scriptPath, '--check', '--target', root], { encoding: 'utf-8' });

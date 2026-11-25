@@ -1,0 +1,47 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# Reading the repository is all the workflow needs; nothing is written back.
+permissions:
+  contents: read
+
+# One run per ref. A new push to a pull request replaces its running test
+# run; on main the runs queue, so every push is tested.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # 20.9.0 is the floor declared in package.json `engines`; 24 is the
+        # current release line.
+        node: ['20.9.0', '24']
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: npm ci
+
+      # Many tests create git repositories and commit to them. Git refuses to
+      # commit without an identity, and names a new repository's first branch
+      # `master` unless told otherwise; the tests expect `main`.
+      - name: Give git a throwaway identity
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.com"
+          git config --global init.defaultBranch main
+
+      - run: npm test

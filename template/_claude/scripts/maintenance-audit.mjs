@@ -787,13 +787,17 @@ export async function runAudit({
       { repo: '.', repoDir: reposRoot },
       ...Object.keys(reposManifest).map((name) => ({ repo: name, repoDir: join(reposRoot, 'repos', name) })),
     ];
-    // git reports worktree paths as the filesystem spells them (a resolved
-    // /private/var on macOS where the root arrived as /var), so both sides
-    // are realpathed before relativizing — a gone directory falls back to
-    // its recorded spelling and reports as an absolute path rather than
-    // being skipped.
-    const reposAnchor = (() => { try { return realpathSync(reposRoot); } catch { return reposRoot; } })();
-    const asReal = (p) => { try { return realpathSync(p); } catch { return p; } };
+    // git reports worktree paths as the filesystem spells them — a resolved
+    // /private/var on macOS where the root arrived as /var, the long name of
+    // a Windows 8.3 short path — so both sides go through the same native
+    // realpath before relativizing. The plain JS realpath leaves a short
+    // name as typed: an anchor still spelled that way never matched, and
+    // every worktree was reported by its absolute path instead of its
+    // root-relative one. A gone directory keeps its recorded spelling
+    // (realPathNative's fallback) and reports as an absolute path rather
+    // than being skipped.
+    const reposAnchor = realPathNative(reposRoot);
+    const asReal = realPathNative;
     // Idle gate: a worktree active within the last hour is not removable,
     // guarding a just-started agent even though Claude Code locks running
     // agent worktrees. Last activity is the newest of the directory's mtime

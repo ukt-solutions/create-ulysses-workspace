@@ -83,7 +83,13 @@ const echoBodies = [];
 
 for (const file of markdownFiles(SKILLS)) {
   const rel = relative(SKILLS, file);
-  const source = readFileSync(file, 'utf8');
+  // A Windows autocrlf checkout stores the same skill with CRLF. The
+  // convention is about whole lines, and how a line ends is no part of a
+  // shell command, so it is normalised here once. Left in, `\r` stops the
+  // comment stripper before the end of its line and hides a heredoc's
+  // terminator from the scanner, which then reads heredoc bodies and
+  // comments as shell and reports their placeholders.
+  const source = readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   let singleQuotedValues = 0;
 
   // Check shell text that starts on `firstLine`.

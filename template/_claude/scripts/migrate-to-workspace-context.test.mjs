@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { migrate, dirLooksLikeUserScope } from './migrate-to-workspace-context.mjs';
 
@@ -37,19 +38,22 @@ function setupGitRoot() {
   spawnSync('git', ['init', '-q'], { cwd: root });
   spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
   spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root });
-  // Install the generator and capture-context scripts so step12 can run
+  // Install the generator and capture-context scripts so step12 can run.
+  // A URL's pathname is not a file path on Windows (/D:/…), so each source
+  // is converted with fileURLToPath before it is handed to cpSync.
   mkdirSync(join(root, '.claude', 'scripts'), { recursive: true });
   mkdirSync(join(root, '.claude', 'lib'), { recursive: true });
+  const templateFile = (rel) => fileURLToPath(new URL(rel, import.meta.url));
   cpSync(
-    new URL('./build-workspace-context.mjs', import.meta.url).pathname,
+    templateFile('./build-workspace-context.mjs'),
     join(root, '.claude', 'scripts', 'build-workspace-context.mjs'),
   );
   cpSync(
-    new URL('./generate-claude-local.mjs', import.meta.url).pathname,
+    templateFile('./generate-claude-local.mjs'),
     join(root, '.claude', 'scripts', 'generate-claude-local.mjs'),
   );
   cpSync(
-    new URL('../lib/session-frontmatter.mjs', import.meta.url).pathname,
+    templateFile('../lib/session-frontmatter.mjs'),
     join(root, '.claude', 'lib', 'session-frontmatter.mjs'),
   );
   // Configure user for CLAUDE.local.md generation

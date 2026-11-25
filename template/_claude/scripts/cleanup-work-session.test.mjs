@@ -13,7 +13,7 @@
 
 import { execFileSync, execSync, spawnSync } from 'child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, mkdtempSync, renameSync, symlinkSync, realpathSync } from 'fs';
-import { join, dirname, resolve, basename } from 'path';
+import { join, dirname, resolve, basename, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 
@@ -531,8 +531,11 @@ console.log('# gh:187: a live external worktree survives session cleanup untouch
   const r = runCleanupRaw(fx.T, 'extlive');
   assertEq(r.status, 0, 'cleanup succeeds with a live external worktree registered');
   assertEq(r.json?.success, true, 'success is true');
+  // git spells a path with forward slashes on every platform, and the way
+  // the filesystem does — the long name where tmpdir gave a Windows 8.3
+  // short one — so the expected path is resolved and spelled the same way.
   const list = git(fx.projRepos.proj, 'worktree list --porcelain');
-  assert(list.includes(realpathSync(extWt)), 'the external worktree is still registered');
+  assert(list.includes(realpathSync.native(extWt).split(sep).join('/')), 'the external worktree is still registered');
   assertEq(readFileSync(join(extWt, 'precious.txt'), 'utf8'), 'someone else’s work\n', 'and its files are intact');
   assert((r.json?.skipped || []).every((s) => s.step !== 'prune'), 'no prune-skip note — a live worktree is nothing to protect against');
   teardownFixture(fx.T);

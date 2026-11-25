@@ -135,10 +135,21 @@ function computeMinMedianMax(nums) {
 
 /**
  * Derive the ~/.claude/projects/<slug> directory name for a workspace root:
- * the absolute root path with `/` and `.` replaced by `-`.
+ * the absolute root path with its separators and dots written as dashes —
+ * `/w/my.repo` becomes `-w-my-repo`.
+ *
+ * A Windows path adds a drive colon and backslash separators, and a folder
+ * name may hold neither: left in place, the "slug" was `C:\w\my.repo`, and
+ * every lookup below it failed. So on win32 every character that is not a
+ * letter or a digit becomes a dash: `D:\some\fixture\root` →
+ * `D--some-fixture-root`. Other platforms keep the two-character rule, so a
+ * lookup that resolves today resolves the same way after this.
+ *
+ * `platform` is injectable so both spellings can be tested on any system.
  */
-export function deriveProjectsSlug(absRootPath) {
-  return absRootPath.replace(/[/.]/g, '-');
+export function deriveProjectsSlug(absRootPath, { platform = process.platform } = {}) {
+  const dashed = platform === 'win32' ? /[^A-Za-z0-9]/g : /[/./]/g;
+  return absRootPath.replace(dashed, '-');
 }
 
 /**

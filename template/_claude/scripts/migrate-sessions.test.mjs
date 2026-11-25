@@ -22,7 +22,7 @@ import {
   symlinkSync, utimesSync, renameSync, realpathSync, chmodSync, readdirSync, lstatSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   inventory, backupSession, archiveSession, removeShell, enableTaskModel, classify, parseArgs,
@@ -162,6 +162,18 @@ function makeSession(fx, { name, branch, repos = ['app'], tracker = {}, stripLog
 }
 
 const clean = (...dirs) => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); };
+// git and the module spell a path the way the filesystem does — a resolved
+// /private/var on macOS where tmpdir says /var, the long name of a Windows
+// 8.3 short path — so an expected path goes through the same native
+// realpath before it is compared with one of theirs.
+const real = (p) => realpathSync.native(p);
+// The same path in the spelling git prints a path in: forward slashes on
+// every platform, where the native realpath of Windows uses backslashes.
+const gitSpelled = (p) => real(p).split(sep).join('/');
+// The shell-string `git()` helper above goes through cmd.exe on Windows,
+// which keeps single quotes and eats `^`. A call carrying either passes an
+// argv array instead, the way the module itself runs git.
+const gitArgv = (cwd, args) => String(gitFn('git', ['-C', cwd, ...args], { encoding: 'utf8' }).stdout);
 const byName = (inv, name) => inv.sessions.find((s) => s.name === name);
 
 console.log('# boundary: root must be a workspace, session a single segment');
@@ -529,7 +541,13 @@ console.log('# inventory: fetch age — stale tracking refs are flagged, --fetch
     const s = byName(inventory(fx.root), 'musty');
     const warn = s.warnings.find((w) => w.kind === 'stale-fetch' && w.repo === 'app');
     assert(warn && warn.message.includes('3 day'), 'a fetch older than a day is flagged with its age');
-    assertEq(s.worktrees.find((w) => w.repo === 'app').lastFetch, old.toISOString(), 'the worktree carries the fetch time');
+    // utimesSync() hands the instant to the filesystem and statSync() hands
+    // it back; the round trip is not exact to the millisecond (the macOS
+    // runner has returned one millisecond early), so the fetch time is
+    // compared with a tolerance of two rather than as the same instant.
+    const fetched = s.worktrees.find((w) => w.repo === 'app').lastFetch;
+    const fetchDriftMs = fetched == null ? Infinity : Math.abs(Date.parse(fetched) - old.getTime());
+    assert(fetchDriftMs <= 2, `the worktree carries the fetch time (expected ${old.toISOString()}, got ${fetched}, ${fetchDriftMs}ms apart)`);
     const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
     assert(r.stderr.includes('fetch:3 day(s) ago'), 'the table shows the fetch age');
     assert(r.stderr.includes('--inventory --fetch'), 'the warning names the refresh flag');
@@ -583,15 +601,15 @@ console.log('# inventory + archive: external worktrees are reported and never to
     writeFileSync(join(extWt, 'precious.txt'), 'someone else’s work\n');
 
     const inv = inventory(fx.root);
-    assert(inv.externalWorktrees.some((e) => e.repo === 'app' && e.path === realpathSync(extWt)), 'the outside worktree is listed as external');
+    assert(inv.externalWorktrees.some((e) => e.repo === 'app' && e.path === real(extWt)), 'the outside worktree is listed as external');
     assert(!inv.externalWorktrees.some((e) => e.path && e.path.includes('work-sessions')), 'nothing inside the workspace is called external');
     const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
     assert(r.stderr.includes('external worktrees'), 'the table has an external-worktrees section');
-    assert(r.stderr.includes(realpathSync(extWt)), 'naming the outside path');
+    assert(r.stderr.includes(real(extWt)), 'naming the outside path');
 
     const out = archiveSession(fx.root, { session: 'home', cwd: fx.root });
     assertEq(out.refused, undefined, 'archiving an unrelated session is not refused');
-    assert(git(fx.app, 'worktree list --porcelain').includes(realpathSync(extWt)), 'the external worktree is still registered after the archive');
+    assert(git(fx.app, 'worktree list --porcelain').includes(gitSpelled(extWt)), 'the external worktree is still registered after the archive');
     assertEq(readFileSync(join(extWt, 'precious.txt'), 'utf8'), 'someone else’s work\n', 'and its files are intact');
     assertEq(git(fx.app, 'worktree prune --dry-run -v').trim(), '', 'nothing about it became prunable');
   } finally {
@@ -839,7 +857,7 @@ console.log('# backup: local tags by default; push mode needs an explicit allow 
     assertEq(git(fx.wsOrigin, 'tag -l "drain/drain/*"').trim(), '', 'nothing pushed to the workspace origin');
     assertEq(git(fx.appOrigin, 'tag -l "drain/drain/*"').trim(), '', 'nothing pushed to the project origin');
     assert(
-      git(fx.root, "for-each-ref refs/tags/drain/drain/bugfix-drain --format='%(contents:subject)'").trim()
+      gitArgv(fx.root, ['for-each-ref', 'refs/tags/drain/drain/bugfix-drain', '--format=%(contents:subject)']).trim()
         === 'backup before draining session drain',
       'annotated tag carries the backup message',
     );
@@ -1179,19 +1197,19 @@ console.log('# archive: moves the session and keeps every kind of state intact')
     assert(git(dApp, 'ls-files -v hidden.txt').startsWith('h '), 'the assume-unchanged flag is kept');
     assertEq(git(join(dApp, 'vendor-lib'), 'rev-parse HEAD').trim(), vendorTip, 'the embedded repository and its history are kept');
     // Git follows the move.
-    assertEq(realpathSync(git(dWs, 'rev-parse --show-toplevel').trim()), realpathSync(dWs), 'the workspace worktree resolves at its new path');
-    assertEq(realpathSync(git(dApp, 'rev-parse --show-toplevel').trim()), realpathSync(dApp), 'the project worktree resolves at its new path');
+    assertEq(real(git(dWs, 'rev-parse --show-toplevel').trim()), real(dWs), 'the workspace worktree resolves at its new path');
+    assertEq(real(git(dApp, 'rev-parse --show-toplevel').trim()), real(dApp), 'the project worktree resolves at its new path');
     assertEq(git(dWs, 'rev-parse HEAD').trim(), wsTip, 'workspace branch tip unchanged');
     assertEq(git(dApp, 'rev-parse HEAD').trim(), appTip.length ? git(dApp, 'rev-parse bugfix/keep').trim() : '', 'project branch still checked out');
     assertEq(git(dApp, 'rev-parse refs/worktree/keep').trim(), appTip, 'the per-worktree ref is kept');
     assertEq(git(dApp, `cat-file -t ${appTip}`).trim(), 'commit', 'and the commit it names is still present');
-    assert(git(fx.root, 'worktree list --porcelain').includes(realpathSync(dWs)), 'the workspace repo lists the moved worktree');
-    assert(git(fx.app, 'worktree list --porcelain').includes(realpathSync(dApp)), 'the project repo lists the moved worktree');
+    assert(git(fx.root, 'worktree list --porcelain').includes(gitSpelled(dWs)), 'the workspace repo lists the moved worktree');
+    assert(git(fx.app, 'worktree list --porcelain').includes(gitSpelled(dApp)), 'the project repo lists the moved worktree');
     assertEq(git(fx.root, 'worktree prune --dry-run -v').trim(), '', 'nothing is prunable in the workspace repo');
     assertEq(git(fx.app, 'worktree prune --dry-run -v').trim(), '', 'nothing is prunable in the project repo');
     const st = git(dApp, 'status --porcelain');
     assert(st.includes(' M README.md') && st.includes('?? untracked.txt'), 'the worktree still reports its uncommitted and untracked files');
-    assertEq(git(dApp, 'rev-list --count HEAD ^origin/main').trim(), '2', 'both unpushed project commits are still on the branch');
+    assertEq(gitArgv(dApp, ['rev-list', '--count', 'HEAD', '^origin/main']).trim(), '2', 'both unpushed project commits are still on the branch');
     // The archive is out of the inventory, and a new session may reuse the name.
     assertEq(byName(inventory(fx.root), 'keep'), undefined, 'the inventory no longer lists the archived session');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
@@ -1497,7 +1515,7 @@ console.log('# archive: a failed repair moves the session back, nothing lost');
     assertEq(out.refused, true, 'a failed repair refuses');
     assert(out.reasons.some((r) => r.includes('back at') && r.includes('nothing was lost')), 'the refusal reports a verified restore');
     assert(existsSync(join(fx.root, 'work-sessions', 'rb', 'workspace', 'NOTES.md')), 'the session is back where it was');
-    assertEq(realpathSync(git(wsWt, 'rev-parse --show-toplevel').trim()), realpathSync(wsWt), 'and its worktree resolves there');
+    assertEq(real(git(wsWt, 'rev-parse --show-toplevel').trim()), real(wsWt), 'and its worktree resolves there');
     assert(!existsSync(join(fx.root, 'work-sessions', '.archived', 'rb')), 'nothing was left in the archive');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
@@ -1518,7 +1536,7 @@ console.log('# archive: a thrown git error during repair still rolls back consis
     const out = archiveSession(fx.root, { session: 'thr', cwd: fx.root, allowUnbacked: true, gitFn: throwing });
     assertEq(out.refused, true, 'a thrown error refuses instead of escaping');
     assert(out.reasons.some((r) => r.includes('nothing was lost')), 'the restore is verified');
-    assertEq(realpathSync(git(wsWt, 'rev-parse --show-toplevel').trim()), realpathSync(wsWt), 'the session resolves where it was');
+    assertEq(real(git(wsWt, 'rev-parse --show-toplevel').trim()), real(wsWt), 'the session resolves where it was');
     assertEq(git(fx.root, 'worktree prune --dry-run -v').trim(), '', 'no broken links in the workspace repo');
     assertEq(git(fx.app, 'worktree prune --dry-run -v').trim(), '', 'no broken links in the project repo');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }

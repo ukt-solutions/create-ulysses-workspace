@@ -762,7 +762,7 @@ body
 `,
   );
 
-  const scriptPath = new URL('./build-workspace-context.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./build-workspace-context.mjs', import.meta.url));
 
   // --check should report stale (or missing — index/canonical not yet on disk)
   const check1 = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });
@@ -1298,7 +1298,9 @@ Post.
 
 console.log('# CLI --check exit codes (canonical block)');
 
-const scriptPath = new URL('./build-workspace-context.mjs', import.meta.url).pathname;
+// fileURLToPath, not URL.pathname: on Windows .pathname is `/D:/…`, which
+// node cannot open.
+const scriptPath = fileURLToPath(new URL('./build-workspace-context.mjs', import.meta.url));
 
 {
   // 22. --check on current/in-budget fixture: exit 0, status current, selectionStatus ok.
