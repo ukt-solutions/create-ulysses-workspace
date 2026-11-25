@@ -761,7 +761,7 @@ body
 `,
   );
 
-  const scriptPath = new URL('./build-workspace-context.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./build-workspace-context.mjs', import.meta.url));
 
   // --check should report stale (or missing — index/canonical not yet on disk)
   const check1 = spawnSync('node', [scriptPath, '--check', '--root', root], { encoding: 'utf-8' });

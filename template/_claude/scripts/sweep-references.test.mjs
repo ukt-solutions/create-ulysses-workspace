@@ -5,6 +5,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { applyRules, sweep, DEFAULT_RULES } from './sweep-references.mjs';
 
@@ -144,7 +145,7 @@ console.log('# CLI end-to-end');
 {
   const root = setupTree();
   writeFileSync(join(root, 'a.md'), 'shared-context/locked/foo and shared-context/bar');
-  const scriptPath = new URL('./sweep-references.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./sweep-references.mjs', import.meta.url));
 
   // --check exits 1 when changes pending
   const check = spawnSync('node', [scriptPath, '--check', '--target', root], { encoding: 'utf-8' });

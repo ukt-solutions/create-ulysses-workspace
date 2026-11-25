@@ -5,6 +5,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
   parseArgs,
@@ -113,11 +114,13 @@ console.log('# validate');
 console.log('# computeDir');
 
 {
+  // The directory is the native join of its parts, so the expectation is
+  // too: on Windows the same input comes back with backslashes.
   const sharedDir = computeDir({ scope: 'shared', root: '/ws' });
-  assertEq(sharedDir, '/ws/workspace-context/shared', 'shared scope path');
+  assertEq(sharedDir, join('/ws', 'workspace-context', 'shared'), 'shared scope path');
 
   const userDir = computeDir({ scope: 'team-member', user: 'alice', root: '/ws' });
-  assertEq(userDir, '/ws/workspace-context/team-member/alice', 'team-member scope path');
+  assertEq(userDir, join('/ws', 'workspace-context', 'team-member', 'alice'), 'team-member scope path');
 }
 
 console.log('# computeBaseFilename');
@@ -325,7 +328,7 @@ console.log('# CLI end-to-end');
 
 {
   const root = setupRoot();
-  const scriptPath = new URL('./capture-context.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./capture-context.mjs', import.meta.url));
 
   const result = spawnSync(
     'node',
@@ -343,7 +346,7 @@ console.log('# CLI end-to-end');
 {
   // --print-only: no stdin needed, no file written
   const root = setupRoot();
-  const scriptPath = new URL('./capture-context.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./capture-context.mjs', import.meta.url));
   const result = spawnSync(
     'node',
     [
@@ -367,7 +370,7 @@ console.log('# CLI end-to-end');
 {
   // bad arg
   const root = setupRoot();
-  const scriptPath = new URL('./capture-context.mjs', import.meta.url).pathname;
+  const scriptPath = fileURLToPath(new URL('./capture-context.mjs', import.meta.url));
   const result = spawnSync(
     'node',
     [scriptPath, '--type', 'invalid', '--topic', 'x', '--scope', 'shared', '--root', root],
