@@ -415,7 +415,11 @@ function checkCLAUDEMdTmpl() {
     violations.push({ kind: 'claude-md-tmpl', details: 'missing "## Quick Reference" heading' });
   if (!content.includes('@workspace-context/canonical.md'))
     violations.push({ kind: 'claude-md-tmpl', details: 'missing "@workspace-context/canonical.md" import' });
-  const bytes = Buffer.byteLength(content, 'utf8');
+  // The size of the template's content, with line endings as they are
+  // authored (LF). A Windows autocrlf checkout stores a CR on every line;
+  // that belongs to the checkout, not to the template — 2978 bytes of
+  // template read as 3033 there, over the ceiling.
+  const bytes = Buffer.byteLength(content.replace(/\r\n/g, '\n'), 'utf8');
   if (bytes >= 3000)
     violations.push({ kind: 'claude-md-tmpl', details: `CLAUDE.md.tmpl is ${bytes} bytes (ceiling 3000)` });
   return violations;
