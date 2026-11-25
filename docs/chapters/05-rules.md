@@ -124,7 +124,7 @@ Ship new rules as `.md.skip` if they are optional for the team. Ship them as `.m
 ├── coherent-revisions.md          # Active — loaded every turn
 ├── git-conventions.md             # Active — loaded every turn
 ├── …                              # the rest of the active rules
-├── task-list-mirroring.md         # Active, path-scoped — loads when a tracker is touched
+├── task-list-mirroring.md         # Active, path-scoped — loads when a session tracker (`session.md`) is touched
 ├── scope-guard.md.skip            # Optional — available
 ├── config-review.md.skip          # Optional — available
 ├── …                              # the rest of the optional rules

@@ -37,7 +37,9 @@ my-workspace/
 ├── workspace.json             (with the workspace name and no repos)
 ├── .gitignore                 (created, or merged into an existing one)
 ├── .claudeignore
-├── workspace-context/         (empty until /workspace-init fills it)
+├── workspace-context/
+│   └── shared/
+│       └── locked/            (the canonical level, where team truths live)
 ├── .workspace-update/         (staged template payload)
 └── .claude/
     ├── .template-baseline.json  (hashes of the installed template files)

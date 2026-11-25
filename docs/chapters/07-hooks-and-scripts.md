@@ -77,7 +77,7 @@ The full conversation is still available when this hook fires — it is the last
 
 **Fires:** After context compaction completes.
 
-**Does:** Injects a reminder that earlier context was compacted, and suggests `/braindump` or `/handoff` for any decision or progress not yet captured. This helps Claude (and you) be aware that earlier conversation details may no longer be in memory, so important decisions should be verified against `workspace-context/` rather than recalled from conversation.
+**Does:** Injects a short reminder that earlier context was compacted and that discussion details from before that point may be incomplete. It suggests `/braindump` or `/handoff` for any decision or progress not yet captured, to be run now, while they are still remembered.
 
 ### repo-write-detection
 
