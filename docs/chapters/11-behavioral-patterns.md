@@ -42,21 +42,21 @@ The coherent-revisions rule enforces this for Claude. But you are the one decidi
 
 ## Keep Locked Context Lean
 
-**The practice:** Target under 10KB total for `shared-context/locked/`. This is roughly 2,500 tokens. Every file in locked is read on every turn and injected into every subagent.
+**The practice:** Target under 10KB total for `workspace-context/shared/locked/`. This is roughly 2,500 tokens. Every file there is read on every turn and passed to every subagent.
 
 **Why it matters:** Locked context occupies the highest-priority position in the context window. It costs tokens on every interaction. A 20KB locked directory does not break anything, but it displaces conversation history and tool results — the context that makes Claude's responses relevant to what you are actually doing right now.
 
 **What goes wrong:** Locked context grows to 50KB because every braindump that seems important gets promoted. Claude's responses become slower and more expensive. Subagent dispatches become token-heavy. The signal-to-noise ratio drops — Claude is reading 50KB of "team knowledge" on every turn, most of which is not relevant to the current task.
 
-The `/release` skill's synthesis cycle is the natural pressure valve. It distills verbose ephemerals into concise locked entries. Use it.
+The pressure valve is admission, not distillation. The memory-guidance rule carries the test for what belongs in locked context, and `/context-placement` applies it before anything is written there. Measure the result with `node .claude/scripts/context-footprint.mjs --root .`, which lists each contributor and checks the total against `workspace.alwaysLoadedBudgetBytes`.
 
 ## Clean Up Your Ephemerals
 
-**The practice:** After a release, review your user-scoped context (`shared-context/{user}/`). For each file, decide: promote to locked (if the team needs it), keep as personal reference, or delete.
+**The practice:** From time to time — after a release is a natural moment — review your personal context (`workspace-context/team-member/{user}/`). For each file, decide: promote (if the team needs it), keep as personal reference, or delete. `/promote` gives you a head start: it assesses every `local-only-` file in one table.
 
-**Why it matters:** User-scoped context accumulates naturally during development. Braindumps, handoffs, research notes, design explorations — they pile up. After a release, some of this content is obsolete (superseded by the release notes), some is still relevant (ongoing reference), and some should become team knowledge (promote to locked). Without periodic cleanup, the directory becomes a graveyard of stale files that add noise to searches and confuse Claude when it reads shared context.
+**Why it matters:** Personal context accumulates naturally during development. Braindumps, handoffs, research notes, design explorations — they pile up. Some of this content is obsolete, some is still useful reference, and some should become team knowledge. Without periodic cleanup, the directory becomes a graveyard of stale files that add noise to searches and confuse Claude when it looks for context.
 
-**What goes wrong:** Twelve ephemerals in your user directory, eight of which reference features that shipped two versions ago. Claude reads them during context gathering and surfaces outdated information. `/maintenance` flags them as stale but cannot delete them without your approval.
+**What goes wrong:** Twelve ephemerals in your directory, eight of which reference features that shipped two versions ago. Claude reads them while looking for context and surfaces outdated information. `/maintenance` flags anything still marked active more than a week after its last update, but does not delete it without your approval.
 
 ## Discussion Sessions Don't Need /start-work
 
@@ -98,7 +98,7 @@ The SessionStart hook surfaces active sessions and handoffs at the beginning of 
 
 - One topic, one file. Name it before writing. Rewrite, don't append.
 - Capture decisions when they happen — "we decided..." is the trigger.
-- Keep locked context under 10KB. Use the release cycle as the pressure valve.
+- Keep locked context under 10KB. Admission is the pressure valve: apply the canonical test before anything goes in.
 - Always capture discussion sessions, even if no code was written.
 - One chat session, one work session. Start fresh for fresh work.
 - When PreCompact nudges you, stop and capture. It is your last chance.
