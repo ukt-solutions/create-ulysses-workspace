@@ -90,7 +90,7 @@ The root is the launcher, and the launcher is no place to commit: only `local-on
 
 Every capture goes through `.claude/scripts/capture-context.mjs`, which works out the path, applies the type prefix and adds the frontmatter, so the skills cannot drift from one another. `/handoff` and `/braindump` each take an optional name (`/handoff auth` gives the file the topic `auth`); with no name, the skill looks at the conversation and suggests one.
 
-`/aside` is the one capture that ignores the lifecycle. Inside a session or a task, `/handoff` and `/braindump` write to the tracker or the drawer; `/aside` writes to `workspace-context/team-member/{user}/` regardless, as a gitignored `local-only-` file. By default it dispatches a background agent to research the idea while you keep working; `--quick` parks the thought as a note without the research step. The result is `local-only-research_{topic}.md`, or `local-only-braindump_{topic}.md` with `--quick`. It is never committed and takes no part in a session and, like a root capture, it reaches the team only through `/promote`.
+`/aside` is the one capture that ignores the lifecycle. Inside a session or a task, `/handoff` and `/braindump` write to the tracker or the drawer; `/aside` writes to `workspace-context/team-member/{user}/` regardless, as a gitignored `local-only-` file. By default it dispatches a background agent to research the idea while you keep working; `--quick` parks the thought as a note without the research step. The result is `local-only-research_{topic}.md`, or `local-only-braindump_{topic}.md` with `--quick`. It is never committed and takes no part in a session. Like a root capture, it reaches the team only through `/promote`.
 
 ## The Promotion Lifecycle
 
