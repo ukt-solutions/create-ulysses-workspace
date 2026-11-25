@@ -96,10 +96,11 @@ Begins or resumes work. Which flow it takes depends on the lifecycle in play and
 - `/start-work blank` — start new work from scratch
 - `/start-work handoff` — list shared context to resume from
 - `/start-work all` — list active sessions across all users
+- `/start-work gh:42`, `#42` or an issue URL — under the task lifecycle, start work on that issue
 
 **The session flow:** With a tracker configured, new work first settles the issue. The skill lists the issues assigned to you, falling back to unassigned ones, for you to pick; or it takes a description for something new and creates the issue — with its type, priority, an optional milestone and epic — assigned to you. You then pick which repos to include and confirm a branch name of `{prefix}/{name}`, where the prefix is `feature/`, `bugfix/` or `chore/`. The skill runs `create-work-session.mjs` to create the `work-sessions/{name}/` folder with a workspace worktree, nested project worktrees, and the session tracker (`session.md`). Without a tracker it offers `/setup-tracker`, or a session with no linked issue.
 
-**The task flow:** With `workspace.sessionModel` set to `"task"`, new work takes a lighter path. The skill identifies or creates the tracker issue and claims it. You pick the repos — the workspace repo itself can be one of them — and confirm the branch. It creates one worktree per repo with `task-worktree.mjs` and records the task on the chat's record with `chat-record.mjs`. There is no session folder and no `session.md`: the issue, the branch and the chat record are the whole state.
+**The task flow:** With `workspace.sessionModel` set to `"task"`, new work takes a lighter path. The skill identifies or creates the tracker issue and claims it: the one you named in the command, one you pick from a list, or a new one you describe. If another chat already has a task for that issue, it offers to adopt the task or leave it with that chat. You pick the repos — the workspace repo itself can be one of them — and confirm the branch. It creates one worktree per repo with `task-worktree.mjs` and records the task on the chat's record with `chat-record.mjs`. There is no session folder and no `session.md`: the issue, the branch and the chat record are the whole state.
 
 **The resume flow:** You pick an existing session. The skill verifies the worktrees exist, registers the current chat in the session tracker's `chatSessions` frontmatter, and reconstructs any uncaptured history from previous conversations. Resuming an existing session always takes this flow, whichever lifecycle new work is set to use.
 
@@ -135,7 +136,7 @@ Finalizes the work — rebase, PR, merge, and close the linked issue. It handles
 
 ### /sync-work
 
-Pushes current branches to remote for all project repos and the workspace repo. No PRs, no lifecycle changes, no forced context capture. The lightest-touch backup — just pushes commits. It asks before pushing a repo that has uncommitted changes.
+Pushes current branches to remote for all project repos and the workspace repo. No PRs, no lifecycle changes, no forced context capture. The lightest-touch backup — just pushes commits. If a repo has uncommitted changes, it offers to commit them first, with a message it suggests, and skips that repo if you decline.
 
 **When to use it:** You want to back up your work without any ceremony. You are still actively working and just want a checkpoint.
 
@@ -151,7 +152,7 @@ It belongs to the session lifecycle: it reads the session tracker's list of repo
 
 ### /migrate-sessions
 
-Moves a workspace from the session lifecycle to the task lifecycle. It inventories the old `work-sessions/` entries and proposes an outcome for each, with the evidence behind it. The decision is yours, one session at a time: finish it through the normal flow, keep it as it is, archive it — the folder moves under `work-sessions/.archived/`, and every commit and file comes along — or, for a broken shell that holds nothing, remove it. When the list is drained, the skill switches `workspace.sessionModel` to `"task"`, through a PR when the workspace repo has a forge remote.
+Moves a workspace from the session lifecycle to the task lifecycle. It inventories the old `work-sessions/` entries and proposes an outcome for each, with the evidence behind it. The decision is yours, one session at a time: finish it through the normal flow, keep it as it is, archive it — the folder moves under `work-sessions/.archived/`, and every commit and file comes along — or, for a broken shell that holds nothing, remove it. Then it switches `workspace.sessionModel` to `"task"`. The switch does not wait for the list to drain: a session you keep goes on resuming and completing under the session lifecycle. The change is made on a branch and lands through a PR when the workspace repo has a forge remote, or as a local fast-forward when it has none, and the skill asks before merging.
 
 It runs only inside the workspace it is run from, and the script deletes nothing but verified-empty orphan shells.
 
@@ -241,7 +242,7 @@ Applies a staged template update to an initialized workspace. The CLI's `--upgra
 3. Applies the changes with your confirmation, merging files you have customized three-way against the template you are upgrading from, and asking about anything it cannot merge
 4. Advances `templateVersion`, writes the template baseline, and runs the migrators
 5. Verifies: rebuilds the context catalogs and runs the maintenance audit once, marking findings on the files this update touched
-6. Cleans up, commits, and — if the workspace is still on the session lifecycle — suggests `/migrate-sessions`
+6. Cleans up and commits. If the sessions directory still has entries and `workspace.sessionModel` is not `"task"`, its report points you at `/migrate-sessions`
 
 See [Chapter 10](10-installation-and-upgrades.md) for the upgrade flow.
 
