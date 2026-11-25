@@ -147,11 +147,13 @@ console.log('# parseArgs');
 console.log('# computeDir');
 
 {
+  // The directory is the native join of its parts, so the expectation is
+  // too: on Windows the same input comes back with backslashes.
   const sharedDir = computeDir({ scope: 'shared', root: '/ws' });
-  assertEq(sharedDir, '/ws/workspace-context/shared', 'shared scope path');
+  assertEq(sharedDir, join('/ws', 'workspace-context', 'shared'), 'shared scope path');
 
   const userDir = computeDir({ scope: 'team-member', user: 'alice', root: '/ws' });
-  assertEq(userDir, '/ws/workspace-context/team-member/alice', 'team-member scope path');
+  assertEq(userDir, join('/ws', 'workspace-context', 'team-member', 'alice'), 'team-member scope path');
 }
 
 console.log('# computeBaseFilename');
