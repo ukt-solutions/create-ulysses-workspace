@@ -49,9 +49,11 @@ cd my-existing-project
 npx @ulysses-ai/create-workspace@beta --init
 ```
 
-The scaffolder treats the current directory as the workspace root. If a `CLAUDE.md` already exists, it's backed up to `CLAUDE.md.bak` and replaced with the workspace template — your old content is preserved for `/workspace-init` to extract from.
+`--init` treats the current directory as the workspace root and adds the workspace around what is already there. An existing `.gitignore` gains the template's entries. An existing `.mcp.json` is kept, and `/workspace-init` offers to add the template's servers to it. An existing `CLAUDE.md` is backed up to `CLAUDE.md.bak` and replaced with the workspace template, so your old content is preserved for `/workspace-init` to extract from.
 
 Then run `claude` and `/workspace-init`. The skill discovers any repos already present, asks which to register in `workspace.json`, prompts for any additional repos to add, extracts documentation from existing sources, and formalizes any in-progress git worktrees as work sessions. Then `/start-work` to begin.
+
+The interactive scaffolder is for a new workspace and needs an empty directory: one that doesn't exist yet, or holds nothing but a freshly created, empty git repository. Pointed at a directory that already has files, it refuses and leaves them as they are, naming `--init` as the way to go.
 
 ## Upgrade an existing workspace
 
