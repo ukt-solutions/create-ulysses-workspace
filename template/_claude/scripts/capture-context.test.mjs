@@ -126,14 +126,6 @@ console.log('# validate');
 }
 
 {
-  assertThrows(
-    () => validate({ type: 'handoff', topic: 'x', scope: 'shared', localOnly: true, allowTracked: true }),
-    /cannot be combined/,
-    'rejects --local-only together with --allow-tracked',
-  );
-}
-
-{
   // valid input doesn't throw
   validate({ type: 'braindump', topic: 'my-topic', scope: 'shared' });
   validate({ type: 'handoff', topic: 'my-topic', scope: 'team-member', user: 'alice' });
@@ -143,9 +135,13 @@ console.log('# validate');
 console.log('# parseArgs');
 
 {
-  const args = parseArgs(['node', 'capture-context.mjs', '--allow-tracked']);
-  assertEq(args.allowTracked, true, '--allow-tracked is parsed');
-  assertEq(args.localOnly, false, '--allow-tracked on its own leaves the capture tracked');
+  // The flag that once waved a tracked capture through the guard is gone. A
+  // skill copy that still passes it gets an error, not a silent success.
+  assertThrows(
+    () => parseArgs(['node', 'capture-context.mjs', '--allow-tracked']),
+    /Unknown arg/,
+    'the removed --allow-tracked is rejected as an unknown argument',
+  );
 }
 
 console.log('# computeDir');
@@ -441,7 +437,7 @@ function launcherGit(branch = 'main') {
 
   assertThrows(
     () => plan({ ...capture, localOnly: false }, { gitFn: launcherGit() }),
-    /--local-only.*--allow-tracked/,
+    /--local-only.*worktree/,
     'the refusal names both ways out',
   );
 
@@ -450,12 +446,6 @@ function launcherGit(branch = 'main') {
     'a local-only capture is not refused at the launcher',
   );
   assertEq(local, join(userDir, 'local-only-handoff_root-check.md'), 'and is written under the local-only- name');
-
-  const promoted = assertOk(
-    () => write({ ...capture, localOnly: false, allowTracked: true }, 'Body.\n', { gitFn: launcherGit() }),
-    '--allow-tracked is not refused at the launcher',
-  );
-  assertEq(promoted, join(userDir, 'handoff_root-check.md'), 'and writes the tracked file beside it');
 
   const inWorktree = assertOk(
     () => write(
@@ -564,8 +554,6 @@ console.log('# root guard against a real repository');
       assert(existsSync(localPath), 'and is written');
       assertEq(git(root, 'check-ignore', '-q', localPath).status, 0, "git ignores it under the template's .gitignore");
 
-      assertEq(runCli([...capture, '--local-only', '--allow-tracked'], body).status, 1, '--local-only with --allow-tracked exits 1');
-
       // A remote's HEAD recorded, then a branch off main: a worktree's state.
       fixture('commit', '-q', '--allow-empty', '-m', 'init');
       fixture('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
@@ -574,13 +562,12 @@ console.log('# root guard against a real repository');
       assertEq(tracked.status, 0, 'off the default branch a tracked capture needs no flag');
       assert(tracked.stdout.trim().endsWith(join('team-member', 'ada', 'handoff_root-check.md')), 'and is the tracked name');
 
-      // Back on main, which origin/HEAD now names.
+      // Back on main, which origin/HEAD now names. The tracked file written on
+      // the other branch carried over and shows as untracked; the local-only
+      // one stays out of git's sight. --untracked-files=all lists each file,
+      // where the default would collapse the whole directory to one line.
       fixture('checkout', '-q', 'main');
       assertEq(runCli(capture, body).status, 1, 'origin/HEAD naming main refuses a tracked capture there');
-      const promoted = runCli([...capture, '--allow-tracked'], body);
-      assertEq(promoted.status, 0, '--allow-tracked writes a tracked file at the launcher');
-      // --untracked-files=all lists each file; the default collapses a wholly
-      // untracked directory to one line and would hide the distinction.
       const status = git(root, 'status', '--porcelain', '--untracked-files=all').stdout;
       assert(/^..\s+\S*\/handoff_root-check\.md\s*$/m.test(status), 'the tracked capture shows up as untracked');
       assert(!status.includes('local-only-'), 'the local-only one does not');

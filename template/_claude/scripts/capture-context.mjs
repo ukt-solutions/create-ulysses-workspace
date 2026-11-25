@@ -12,7 +12,6 @@
 //     [--description "..."]     # one-line summary, used by index
 //     [--variant aside]         # arbitrary frontmatter marker
 //     [--local-only]            # prefix filename with local-only- (gitignored)
-//     [--allow-tracked]         # write a tracked file even where the root guard refuses one
 //     [--update]                # overwrite if file exists; default appends -2, -3, ...
 //     [--root <path>]           # workspace root (defaults to cwd)
 //     [--print-only]            # don't write; just print the planned path
@@ -28,11 +27,26 @@
 // repository's default branch — only local-only files are written there. A
 // tracked capture committed at the root would land on that branch, so when
 // --root is a git checkout sitting on its default branch the helper refuses
-// a tracked capture, for --print-only as for a write. The error names the two
-// ways out: --local-only, or --allow-tracked for a deliberate promotion
-// (/promote). A worktree is on another branch and passes. Where git cannot
-// answer — not installed, no repository, a detached HEAD — the guard says
-// nothing and the capture proceeds as before.
+// a tracked capture, for --print-only as for a write. The error names the
+// way out: --local-only, or a worktree — a task's or a session's — which is
+// on another branch and passes. Nothing waves a capture through; what must
+// be tracked is written into a worktree.
+//
+// The guard is a safety net behind the rule the skills state, not the rule
+// itself, and it fails open. It says nothing, and the capture proceeds as if
+// there were no guard, when:
+//   - git is not installed or cannot answer;
+//   - --root is not a git repository, or is a directory nested inside one
+//     rather than its top level;
+//   - HEAD is detached, on no branch;
+//   - the default branch is not recognised. Only `git clone` records it, in
+//     refs/remotes/origin/HEAD. A remote added by hand leaves that ref
+//     unset, and `main` and `master` are then taken for the default when
+//     the checkout sits on either. A default branch under any other name —
+//     `trunk`, say, on a launcher whose remote was added by hand — is never
+//     matched, so a tracked capture there passes.
+// The skills keep every root capture local-only regardless; only a skill
+// that forgets the rule is left without this backstop.
 //
 // Stdin: the markdown body to write under the frontmatter. Required unless
 // --print-only is passed.
@@ -67,7 +81,6 @@ function parseArgs(argv) {
     description: null,
     variant: null,
     localOnly: false,
-    allowTracked: false,
     update: false,
     root: process.cwd(),
     printOnly: false,
@@ -81,7 +94,6 @@ function parseArgs(argv) {
     else if (a === '--description') args.description = argv[++i];
     else if (a === '--variant') args.variant = argv[++i];
     else if (a === '--local-only') args.localOnly = true;
-    else if (a === '--allow-tracked') args.allowTracked = true;
     else if (a === '--update') args.update = true;
     else if (a === '--root') args.root = argv[++i];
     else if (a === '--print-only') args.printOnly = true;
@@ -105,9 +117,6 @@ function validate(args) {
   }
   if (args.scope === 'team-member' && !/^[A-Za-z0-9_-]+$/.test(args.user)) {
     throw new Error('--user must be alphanumeric (with optional - or _)');
-  }
-  if (args.localOnly && args.allowTracked) {
-    throw new Error('--local-only and --allow-tracked cannot be combined: one keeps the file out of git, the other writes it tracked');
   }
 }
 
@@ -190,11 +199,12 @@ function gitLine(gitFn, root, args) {
   }
 }
 
-// The branch a clone of the repository at {root} would check out. A
-// repository with a remote says so in refs/remotes/origin/HEAD. Without one
-// nothing records the name, so {current} is taken for the default when it is
-// `main` or `master` — the two names git has used on its own — and `main`
-// otherwise.
+// The branch a clone of the repository at {root} would check out. Only a
+// clone records it, in refs/remotes/origin/HEAD; a remote added by hand
+// leaves that ref unset, and then nothing names the default. In that case
+// {current} is taken for it when it is `main` or `master` — the two names
+// git has used on its own — and `main` otherwise, so a default branch under
+// any other name goes unrecognised and the guard fails open.
 function defaultBranchOf(gitFn, root, current) {
   const remote = gitLine(gitFn, root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   if (remote) return remote.replace(/^origin\//, '');
@@ -206,8 +216,8 @@ function defaultBranchOf(gitFn, root, current) {
  * is on that repository's default branch — the state the workspace launcher
  * is kept in. A task or session worktree is the same repository on another
  * branch and returns false. So does anything git cannot vouch for: no git,
- * no repository, a detached HEAD, or a directory merely nested inside some
- * other repository.
+ * no repository, a detached HEAD, a directory merely nested inside some
+ * other repository, or a default branch that cannot be recognised.
  *
  * gitFn is injectable so tests can script git's answers; the default is
  * spawnSync, called as (command, args, options).
@@ -226,13 +236,13 @@ function isDefaultBranchCheckout(root, gitFn = spawnSync) {
 
 // A capture is tracked unless --local-only is passed. At the launcher that
 // puts a file on the default branch at the next commit, so the helper
-// refuses it here rather than trust every skill to remember the rule.
-// --allow-tracked is the deliberate exception: a promotion is meant to
-// produce a tracked file at the root.
+// refuses it here rather than trust every skill to remember the rule. There
+// is no flag that waves a capture through: what must be tracked is written
+// into a worktree, by passing --root.
 function assertRootWriteAllowed(args, gitFn) {
-  if (args.localOnly || args.allowTracked) return;
+  if (args.localOnly) return;
   if (!isDefaultBranchCheckout(args.root, gitFn)) return;
-  throw new Error(`refusing a tracked capture in ${args.root}: that checkout is on its default branch, where only local-only files are written. Pass --local-only to keep the capture gitignored, or --allow-tracked for a deliberate promotion.`);
+  throw new Error(`refusing a tracked capture in ${args.root}: that checkout is on its default branch, where only local-only files are written. Pass --local-only to keep the capture gitignored, or write it into a worktree to track it.`);
 }
 
 // Planning is where a capture's path is decided, so it is also where the
