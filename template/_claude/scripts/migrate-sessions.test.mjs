@@ -541,7 +541,13 @@ console.log('# inventory: fetch age — stale tracking refs are flagged, --fetch
     const s = byName(inventory(fx.root), 'musty');
     const warn = s.warnings.find((w) => w.kind === 'stale-fetch' && w.repo === 'app');
     assert(warn && warn.message.includes('3 day'), 'a fetch older than a day is flagged with its age');
-    assertEq(s.worktrees.find((w) => w.repo === 'app').lastFetch, old.toISOString(), 'the worktree carries the fetch time');
+    // utimesSync() hands the instant to the filesystem and statSync() hands
+    // it back; the round trip is not exact to the millisecond (the macOS
+    // runner has returned one millisecond early), so the fetch time is
+    // compared with a tolerance of two rather than as the same instant.
+    const fetched = s.worktrees.find((w) => w.repo === 'app').lastFetch;
+    const fetchDriftMs = fetched == null ? Infinity : Math.abs(Date.parse(fetched) - old.getTime());
+    assert(fetchDriftMs <= 2, `the worktree carries the fetch time (expected ${old.toISOString()}, got ${fetched}, ${fetchDriftMs}ms apart)`);
     const r = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
     assert(r.stderr.includes('fetch:3 day(s) ago'), 'the table shows the fetch age');
     assert(r.stderr.includes('--inventory --fetch'), 'the warning names the refresh flag');
