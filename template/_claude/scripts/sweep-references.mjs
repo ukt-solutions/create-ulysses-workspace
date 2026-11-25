@@ -23,14 +23,28 @@
 //   - binary files (detected via null-byte heuristic)
 
 import { readdirSync, readFileSync, statSync, writeFileSync, realpathSync } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { basename, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// import.meta.url is the real file while argv[1] keeps the path as typed, so
+// through a symlinked checkout the two differ. Compare real paths: a run not
+// recognised as a direct one would exit 0 without sweeping anything.
 function isMainModule(metaUrl) {
-  if (!process.argv[1]) return false;
+  return isSameFile(fileURLToPath(metaUrl), process.argv[1]);
+}
+
+// Whether two paths name one existing file. The native realpath is tried
+// first: it also resolves a Windows 8.3 short name to its long spelling.
+function isSameFile(a, b) {
+  if (!a || !b) return false;
+  const real = (p) => {
+    try { return realpathSync.native(p); } catch { return realpathSync(p); }
+  };
   try {
-    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
-  } catch { return false; }
+    return real(a) === real(b);
+  } catch {
+    return false;
+  }
 }
 
 const DEFAULT_RULES = [
@@ -78,7 +92,13 @@ function shouldSkip(absPath, scriptPath) {
   }
   const base = absPath.split(sep).pop();
   if (SKIP_BASENAMES.has(base)) return true;
-  return false;
+  // The script's own file under another spelling of its path: the walked
+  // path is built from --target, the script's own comes from argv, and
+  // through an alias (a symlinked folder, a Windows 8.3 short name) the two
+  // differ while naming one file. Swept, the script would turn its rules on
+  // their own definitions. Only a file named like the script can be it, so
+  // the real paths are compared for those alone.
+  return base === basename(scriptPath) && isSameFile(absPath, scriptPath);
 }
 
 function* walk(dir) {
