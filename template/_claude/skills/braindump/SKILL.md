@@ -51,9 +51,9 @@ Two worktrees count as **the worktree**:
 - a task's workspace-repo worktree — `{launcher-root}/.claude/worktrees/{slug}/`, where `{slug}` is the task's branch with `/` replaced by `-`. It is this chat's when the chat's record holds that task with `repo: "."`.
 - a session's workspace worktree — `work-sessions/{session-name}/workspace/`, for a chat running inside it.
 
-A chat running inside either is already there; that directory is the `Workspace root:` line the SessionStart hook injects. A chat at the workspace root has a worktree only through its own task: `node .claude/scripts/task-worktree.mjs --root . --detect --chat '{chat}'` lists the chat's tasks with their `branch` and `repo`, and an entry with `repo: "."` names one — ask which when several do. `{chat}` is the name on the `Chat record:` line the hook injects. With no worktree, the capture stays local-only.
+`{launcher-root}` is the workspace root: the absolute path on the `Workspace root:` line the SessionStart hook injects when the chat runs there. A chat running inside either worktree is already in it; there the same line names the worktree, and inside a session's worktree the hook adds `Working in workspace worktree. Main root: …` with the launcher's path. A chat at the workspace root has a worktree only through its own task: `node .claude/scripts/task-worktree.mjs --root . --detect --chat '{chat}'` lists the chat's tasks with their `branch` and `repo`, and an entry with `repo: "."` names one — ask which when several do. `{chat}` is the name on the `Chat record:` line the hook injects. With no worktree, the capture stays local-only.
 
-Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to. `--root` is what decides where the capture goes. This is the root form, for when there is no worktree:
+Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to. `--root` decides where the capture goes, so there are two forms. Without a worktree the capture is local-only at the root — the root form:
 
 ```bash
 node .claude/scripts/capture-context.mjs \
@@ -61,18 +61,30 @@ node .claude/scripts/capture-context.mjs \
   --type braindump \
   --topic '{kebab-case-name}' \
   --scope team-member \
-  --user {workspace.user} \
+  --user '{workspace.user}' \
   --description '{one-line summary}' \
   --local-only <<'BODY'
 {body}
 BODY
 ```
 
-For a tracked capture, replace `--root .` and `--local-only` with `--root '{worktree}'`.
+With a worktree it is tracked, written into the worktree — the tracked form:
+
+```bash
+node .claude/scripts/capture-context.mjs \
+  --root '{worktree}' \
+  --type braindump \
+  --topic '{kebab-case-name}' \
+  --scope team-member \
+  --user '{workspace.user}' \
+  --description '{one-line summary}' <<'BODY'
+{body}
+BODY
+```
 
 The body goes in on stdin through the quoted heredoc (`<<'BODY'`), so backticks and `$` in it stay literal — never `echo "…" |`. Use another delimiter if `BODY` occurs on a line of its own in the body.
 
-Per-user is the default scope: `--scope team-member --user {user}`. In a worktree, `--scope shared` (dropping `--user`) makes the capture team-visible, and keeping `--local-only` keeps it gitignored. At the workspace root no scope is team-visible, because the file is gitignored wherever it lands: keep the default there, and leave team visibility to `/promote`. Add `--update` to overwrite an existing file with the same name; without it, the helper appends `-2`, `-3`, etc. on collision.
+Per-user is the default scope: `--scope team-member --user '{workspace.user}'`. In a worktree, `--scope shared` (dropping `--user`) makes the capture team-visible, and the root form with `--root '{worktree}'` in place of `--root .` keeps it gitignored. At the workspace root no scope is team-visible, because the file is gitignored wherever it lands: keep the default there, and leave team visibility to `/promote`. Add `--update` to overwrite an existing file with the same name; without it, the helper appends `-2`, `-3`, etc. on collision.
 
 The body content sent on stdin should follow this template:
 
