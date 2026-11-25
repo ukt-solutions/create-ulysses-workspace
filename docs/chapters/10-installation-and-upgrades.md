@@ -12,9 +12,13 @@ To create a new workspace:
 npx @ulysses-ai/create-workspace@beta --init my-workspace
 ```
 
-The CLI installs the bootstrap essentials: CLAUDE.md (generated from template), workspace.json, the workspace-init and workspace-update skills, all hooks, all scripts, the shared library helpers, shared-context directory structure, and gitignore. The remaining skills, rules, and agents are installed interactively by `/workspace-init`. The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created when they first need to hold something. Until 1.0.0, install with `@beta`: `latest` is not maintained, and a bare `npx @ulysses-ai/create-workspace` may run an older beta.
+The CLI installs the bootstrap essentials: CLAUDE.md (generated from template), workspace.json, the workspace-init and workspace-update skills, all hooks, the script files, the shared library helpers, the `workspace-context/` directory, and the ignore files. The remaining skills, the rules, the agents, and the adapter modules under `scripts/` are installed interactively by `/workspace-init`. The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created when they first need to hold something.
 
-One detail of the template's layout is invisible in the installed workspace: the package stores `_gitignore`, `_claude/`, and `_mcp.json` under these inert names because Claude Code treats `.claude/` directories and `.mcp.json` files as protected paths that headless workers cannot edit — the live names inside `template/` would block automated maintenance of the template itself. Both `--init` and `--upgrade` write the live names out: the scaffold installs `.gitignore`, `.claude/`, and `.mcp.json` directly, and the staged `.workspace-update/` payload also carries `.claude/` and `.mcp.json` under their live names, keeping the layout that older workspaces' already-installed skills expect.
+`--init` writes files and does nothing else. It does not create a git repository, which is what lets it turn an existing project directory into a workspace. In a fresh directory, run `git init` yourself before `/workspace-init`: that skill does all of its work on a branch, so it needs a repository to branch in.
+
+Until 1.0.0, install with `@beta`: `latest` is not maintained, and a bare `npx @ulysses-ai/create-workspace` may run an older beta.
+
+One detail of the template's layout is invisible in the installed workspace: the package stores `_gitignore`, `_claude/`, and `_mcp.json` under these inert names because Claude Code treats `.claude/` directories and `.mcp.json` files as protected paths that headless workers cannot edit — the live names inside `template/` would block automated maintenance of the template itself. Both `--init` and `--upgrade` write the live names out where the installed skills expect them, and the staged `.workspace-update/` payload always carries `.claude/` and `.mcp.json` under their live names, keeping the layout that older workspaces' already-installed skills read.
 
 If you omit the directory name, the current directory is used — this supports initializing an existing project directory as a workspace:
 
@@ -30,20 +34,22 @@ After scaffolding, the workspace has the bootstrap structure:
 ```
 my-workspace/
 ├── CLAUDE.md                  (generated from template)
-├── workspace.json             (with workspace name and empty repos)
-├── shared-context/
-│   └── locked/                (empty)
+├── workspace.json             (with the workspace name and no repos)
+├── .gitignore                 (created, or merged into an existing one)
+├── .claudeignore
+├── workspace-context/         (empty until /workspace-init fills it)
 ├── .workspace-update/         (staged template payload)
 └── .claude/
+    ├── .template-baseline.json  (hashes of the installed template files)
     ├── skills/
-    │   ├── workspace-init/    (bootstrap skill)
-    │   └── workspace-update/  (bootstrap skill)
-    ├── hooks/                 (all hooks installed)
-    ├── scripts/               (all scripts installed)
-    └── lib/                   (shared parser helpers)
+    │   ├── workspace-init/      (bootstrap skill)
+    │   └── workspace-update/    (bootstrap skill)
+    ├── hooks/                   (all hooks installed)
+    ├── scripts/                 (the script files)
+    └── lib/                     (shared parser helpers)
 ```
 
-The full template (remaining skills, rules, agents) lives in `.workspace-update/` and is installed interactively by `/workspace-init`. `repos/` is created when the first repo is cloned, `work-sessions/` when the first session is started, and `workspace-scratchpad/` when the first hook or script needs to write to it.
+The full template — the remaining skills, the rules, the agents, `settings.json`, and the `forges/` and `trackers/` adapters — lives in `.workspace-update/` and is installed interactively by `/workspace-init`. `repos/` is created when the first repo is cloned, `work-sessions/` when the first session is started, and `workspace-scratchpad/` when the first hook or script needs to write to it.
 
 ## First-Time Initialization
 
@@ -58,21 +64,25 @@ claude
 The skill creates a `chore/workspace-init` branch and walks you through a comprehensive setup:
 
 1. **Inventory.** Scans for existing files, pre-migration content, and auto-memory.
-2. **Clone repos.** Reads workspace.json and clones each configured repo into `repos/`.
+2. **Clone repos.** Reads workspace.json and offers to clone each configured repo into `repos/`. With the file open, it asks which lifecycle new work should use: `"task"` is recommended for a new workspace, and `"session"` is the template default.
 3. **Identify documentation sources.** Asks where project documentation lives (Notion, Confluence, markdown, etc.) — checks for already-extracted content before re-fetching.
-4. **Install template components.** Installs remaining skills, rules, and agents from the staged payload. Asks before overwriting any existing files.
-5. **Activate optional rules.** Presents `.skip` rules and lets you choose which to activate.
-6. **Extract documentation.** Pulls team knowledge from identified sources into rules and shared context.
-7. **Scan Claude chat history.** Searches `~/.claude/projects/` for prior conversation logs, synthesizes decisions and context into shared context. Uses a manifest to survive auto-compaction during processing.
-8. **Preserve local preferences.** Extracts conventions and settings from CLAUDE.md.bak.
-9. **Create locked team knowledge.** Combines extracted content into `shared-context/locked/`.
-10. **Formalize existing worktrees.** Detects in-progress git worktrees and creates `work-sessions/{name}/` folders with session trackers for them, linking to related chat history.
-11. **Configure user identity.** Sets your name for user-scoped context.
-12. **Clean and verify.** Moves non-template items to unmigrated, cleans up the payload, checks for self-contradictions.
-13. **Set up workspace remote.** Creates a new repo or connects to an existing one (for team members joining a workspace that already exists).
-14. **Merge to the default branch.** Squash-merges `chore/workspace-init` into the default branch (pushing if a remote is configured), so initialization ends with every commit — including `initialized: true` — on the default branch. The init branch itself is kept for its granular history.
+4. **Present the plan.** Lays out a numbered plan for the rest of the run, and shows it before executing any of it.
+5. **Install template components.** Installs the remaining skills, rules, agents, scripts, and `settings.json` from the staged payload. Asks before overwriting any existing files, and offers to generate `CODEBASE.md` and a `CLAUDE.md` stub for each repo.
+6. **Activate optional rules.** Presents `.skip` rules and lets you choose which to activate.
+7. **Extract documentation.** Pulls team knowledge from identified sources into rules and workspace context.
+8. **Scan Claude chat history.** Searches `~/.claude/projects/` for prior conversation logs, synthesizes decisions and context into workspace context. Uses a manifest to survive auto-compaction during processing.
+9. **Preserve local preferences.** Extracts conventions and settings from CLAUDE.md.bak.
+10. **Create locked team knowledge.** Combines extracted content into `workspace-context/shared/locked/`.
+11. **Formalize existing worktrees.** Detects in-progress git worktrees and creates `work-sessions/{name}/` folders with session trackers for them, linking to related chat history.
+12. **Set up the issue tracker and MCP servers.** Offers `/setup-tracker`, then gives guidance on configuring MCP servers in `.mcp.json`.
+13. **Configure user identity and start the team roster.** Sets your name for your personal context, `workspace-context/team-member/{user}/`, and offers to record you as the roster's first entry.
+14. **Clean the root.** Moves everything in the root that is not template structure to `workspace-scratchpad/unmigrated/`.
+15. **Clean up the payload.** Deletes `.workspace-update/` and the other pre-migration artifacts.
+16. **Verify.** Checks the result for self-contradictions.
+17. **Set up the workspace remote.** Creates a new repo, or connects to one that already exists — the case of a workspace initialized locally and then pointed at the team's remote, which rebases the init branch onto it first.
+18. **Mark initialized and merge.** Sets `initialized: true`, then offers to squash-merge `chore/workspace-init` into the default branch (pushing if a remote is configured), so initialization ends with every commit on the default branch. The init branch itself is kept for its granular history.
 
-For solo use, many steps are quick or skipped. For teams, the team lead runs the full init and commits the result. Team members then clone the workspace repo and run `/workspace-init` to connect — the skill detects the initialized workspace and handles onboarding (clone repos, set identity, rebase local changes onto the remote).
+For solo use, many steps are quick or skipped. For teams, the team lead runs the full init, which ends on the default branch. Team members then clone the workspace repo and run `/workspace-init` to connect: because `workspace.json` says the workspace is initialized, the skill runs its **join** flow instead. A join sets up only that one machine — the user identity, any missing repo clones, the per-user context folder, and `CLAUDE.local.md`. Everything it writes is gitignored, so it creates no branch and makes no commits.
 
 ## Adding Repos
 
@@ -122,7 +132,7 @@ workspace.json tracks which template version the workspace was created from:
 
 This field is set during scaffolding and updated during upgrades. It lets the system know what version of the rules, skills, hooks, and scripts the workspace currently has.
 
-Template versions follow semantic versioning. Patches are backward-compatible fixes. Minor versions add new features (new skills, new hooks, new workspace.json fields). Major versions have breaking changes to conventions or schema.
+What a version number promises is defined in [VERSIONING.md](../../VERSIONING.md). In short: a patch leaves the documented contract as it is, a minor adds something or ships a migration, and a major changes the contract. Until 1.0.0 a breaking change rides on a minor bump instead of a major, so read the release notes rather than relying on the number.
 
 ## Upgrading
 
@@ -159,7 +169,7 @@ npx @ulysses-ai/create-workspace@<version> --upgrade --allow-downgrade
 
 ## Applying Updates
 
-After the CLI stages an upgrade, the workspace-update-check hook detects the `.workspace-update/` directory on the next tool call and nudges Claude to run `/workspace-update`.
+After the CLI stages an upgrade, the workspace-update-check hook detects the `.workspace-update/` directory — at the start of the next chat, and on every tool call from then on — and tells Claude to run `/workspace-update` before doing anything else.
 
 The `/workspace-update` skill applies the staged changes interactively:
 
@@ -238,6 +248,8 @@ After the upgrade, each active session branch needs a one-time `git rebase main`
 
 v0.8.0 restructures the on-disk layout so each work session lives in a single self-contained folder at `work-sessions/{name}/`. This replaces the scattered old layout where session state was spread across `repos/{name}___wt-*/`, `.claude-scratchpad/.work-session-*.json`, and `shared-context/{user}/inflight/`. It also eliminates the `repos/` symlink that caused the v0.5.1 destructive gitignore bug.
 
+The paths in this section are the ones a pre-v0.8.0 workspace had. `shared-context/` in particular is historical: it was renamed to `workspace-context/` in v0.15.0, and `/workspace-update` runs that migration on the way through.
+
 The user-facing skill API does not change — `/start-work`, `/complete-work`, `/pause-work` still work the same. The breaking part is the on-disk shape, which existing workspaces upgrade manually. There is no auto-migration. Clean state is required before upgrading.
 
 ### Procedure
@@ -275,7 +287,7 @@ The user-facing skill API does not change — `/start-work`, `/complete-work`, `
 
 ## Staying Current
 
-The workspace-update-check hook runs on every tool call. If a `.workspace-update/` directory exists, it injects a reminder into Claude's context. This means you will not forget about a pending update — Claude will mention it until you apply or dismiss it.
+The workspace-update-check hook runs at the start of every session and on every tool call. If a `.workspace-update/` directory exists, it injects a reminder into Claude's context. This means you will not forget about a pending update — Claude will mention it until you apply or dismiss it.
 
 For teams, one person typically runs the upgrade and commits the result. The updated files — rules, skills, hooks, scripts — are tracked in git, so the rest of the team gets them on their next pull.
 
