@@ -65,10 +65,12 @@ async function main() {
   console.log(`
   \u2713 Workspace created at ${workspacePath}
   \u2713 Git repo initialized${answers.repos.length > 0 ? `\n  \u2713 ${answers.repos.length} repo(s) cloned to repos/` : ''}
+  \u2713 Template payload staged for /workspace-init
 
   Next steps:
     cd ${workspacePath}
     claude
+    /workspace-init
     /start-work blank
   `);
 }

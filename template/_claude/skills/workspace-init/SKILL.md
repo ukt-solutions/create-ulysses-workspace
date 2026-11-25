@@ -1,6 +1,6 @@
 ---
 name: workspace-init
-description: First-time workspace initialization, or joining a workspace a teammate already initialized. Init clones repos, installs template components, extracts team knowledge from documentation sources and Claude chat history, activates rules, configures user identity — run once after scaffolding with --init. Join (an initialized workspace you just cloned) sets up only this machine's per-user pieces — repos, user identity, CLAUDE.local.md.
+description: First-time workspace initialization, or joining a workspace a teammate already initialized. Init clones repos, installs template components, extracts team knowledge from documentation sources and Claude chat history, activates rules, configures user identity — run once after scaffolding, whether by `npm create` or `--init`. Join (an initialized workspace you just cloned) sets up only this machine's per-user pieces — repos, user identity, CLAUDE.local.md.
 
 # scope example (remove # to activate path-scoped loading):
 # scope: repos/my-api/
@@ -86,11 +86,11 @@ All commits go on this branch. Step 18 merges the branch back into the default b
 
 Scan the workspace for existing content that needs organizing:
 - CLAUDE.md.bak — pre-existing CLAUDE.md (old config, rules, preferences)
-- .mcp.json or .mcp.json.bak — external service configs
+- .mcp.json.bak, or a .mcp.json that differs from the payload's — external service configs
 - Non-standard directories and files at root — anything not part of the template structure
 - Existing auto-memory files in `~/.claude/projects/` for this project path
 - Existing git worktrees (branches checked out in separate directories)
-- Any files at workspace root that aren't: CLAUDE.md, workspace.json, .gitignore
+- Any files at workspace root that aren't the template's own: CLAUDE.md, workspace.json, .gitignore, .claudeignore, .mcp.json
 
 Present the inventory as a table.
 
@@ -158,16 +158,20 @@ Adapt the plan to what was actually found. Only include relevant steps. Wait for
 
 Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 18 after the payload is deleted.
 
-Install components from `.workspace-update/.claude/` to `.claude/`. For each component directory — skills, hooks, agents, rules, scripts:
+How much this step has to do depends on how the workspace was scaffolded. `--init` installs only the bootstrap pieces and leaves the rest of the template to this step. `npm create` installs the whole template up front, so by the time you get here every file in the walk below is already present and matches — the walk asks nothing and installs nothing. Walk the payload either way: it is the same payload.
 
-1. List files in `.workspace-update/.claude/{component}/`
+Install components from `.workspace-update/.claude/` to `.claude/`. For each directory under the payload's `.claude/` — skills, hooks, agents, rules, scripts, lib, recipes:
+
+1. List files in `.workspace-update/.claude/{directory}/`
 2. For each file:
    - If the file does not exist locally: "Install {file}? [Y/n]"
    - If the file exists locally and differs: "Template has {file} but you have a local version. Show diff? [y/N]" — let the user decide
    - If the file exists locally and matches: skip silently
+3. Skip an optional rule that is already active. `{name}.md` is installed and the payload ships `{name}.md.skip`: the `npm create` prompts, or Step 6 of an earlier run of this skill, activated it. Do not install the `.skip` file beside it — Step 6 lists the rules that are still optional.
 
 Also install these top-level files from the payload:
 - **`.claude/settings.json`** — Merge payload settings into existing file. Preserve user-added settings, add missing entries.
+- **`.mcp.json`** — `--init` does not install it; the payload carries it. If no `.mcp.json` exists at the root, ask "Install .mcp.json from the template? [Y/n]" and copy the payload's. If one exists and matches the payload, skip silently. If one exists with different content, it is the workspace's own config: never replace it wholesale, which would drop its own MCP servers. Show the servers on each side and ask "Add the template's servers to your .mcp.json, or leave it as it is? [Y/n]" — add the ones it lacks and keep everything already there, or leave the file untouched.
 - **`.gitignore`** — Merge: add lines from payload not already present.
 - **`CLAUDE.md`** — Generate from `.workspace-update/CLAUDE.md.tmpl`, substituting `{{project-name}}` with the workspace name. If the existing CLAUDE.md has user-added content beyond the bootstrap template, preserve it.
 - **`CODEBASE.md` (optional)** — Ask: "Generate CODEBASE.md? This produces a lightweight file-tree map that helps Claude navigate the codebase without exhaustive exploration. [Y/n]". If yes: scaffold `CODEBASE.md` from `.workspace-update/CODEBASE.md.tmpl`, substitute `{{project-name}}`, then pre-populate `## Top-level layout` by listing the top-level entries of each `repos/{repo}/` directory using `fs.readdirSync` (Node.js, no network calls). If no: skip — `CODEBASE.md` can always be created manually later by copying and filling the template.
@@ -180,7 +184,7 @@ node .claude/scripts/classify-update.mjs --root . --write-baseline --payload .wo
 ```
 It hashes the payload's verbatim files — run it before Step 15 deletes the payload.
 
-**Commit:** `git commit -m "feat: install template components from payload"`
+**Commit (if this step installed or changed anything):** `git commit -m "feat: install template components from payload"`. On a workspace made with `npm create` there is usually nothing to commit here.
 
 ### Step 6: Activate optional rules
 
@@ -338,12 +342,12 @@ MCP (Model Context Protocol) servers extend what Claude can do inside the worksp
 }
 ```
 
-**This step is guidance only.** The right LSP server depends on your language; the right internal-tool server depends on what your team builds. Configure `.mcp.json` after init when you know what you need — there is no pressure to choose now. The Playwright entry already present in `.mcp.json` satisfies the template's audit assertion; additional servers are additive.
+**This step is guidance only.** The right LSP server depends on your language; the right internal-tool server depends on what your team builds. Configure `.mcp.json` after init when you know what you need — there is no pressure to choose now. The file Step 5 installed carries the template's Playwright entry, and additional servers are additive.
 
 ### Step 13: Configure user identity and start the team roster
 
-Run `node .claude/scripts/team-roster.mjs --suggest --root .` for the default. On a fresh workspace this is usually the OS username. If `workspace.json` arrived with a roster, it is whichever member's forge login or git email matches this machine. Ask: "What name should be used for your user-scoped context? [{suggestion}]".
-Save to `.claude/settings.local.json`:
+If `.claude/settings.local.json` already holds a `workspace.user`, it is the default. The interactive `npm create` scaffold asks for it and writes it. Otherwise run `node .claude/scripts/team-roster.mjs --suggest --root .` for the default. On a fresh workspace this is usually the OS username. If `workspace.json` arrived with a roster, it is whichever member's forge login or git email matches this machine. Ask: "What name should be used for your user-scoped context? [{default}]".
+Save it to `.claude/settings.local.json`, keeping any other keys the file already has:
 ```json
 {
   "workspace": {
@@ -362,7 +366,7 @@ node .claude/scripts/team-roster.mjs --add '{name}' --name '{git config user.nam
 
 ### Step 14: Clean root directory
 
-The workspace root should contain ONLY template structure: CLAUDE.md, workspace.json, .gitignore, and the standard directories (`.claude/`, `workspace-context/`). The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created the first time something writes to them — they won't exist yet unless a repo has already been cloned.
+The workspace root holds only the template's own files: `CLAUDE.md`, `workspace.json`, `.gitignore`, `.claudeignore`, `.mcp.json`, the `CODEBASE.md` Step 5 may have generated, and the standard directories (`.claude/`, `workspace-context/`). The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created the first time something writes to them — they won't exist yet unless something already has. `.workspace-update/` is the payload Step 15 deletes; leave it where it is.
 
 Move everything else to `workspace-scratchpad/unmigrated/`:
 
@@ -376,15 +380,16 @@ For each non-template item at root:
 
 Report: "Moved {N} items to workspace-scratchpad/unmigrated/: {list}."
 
-**Commit:** `git commit -m "chore: clean root — move non-template items to unmigrated"`
+**Commit (if anything was moved):** `git commit -m "chore: clean root — move non-template items to unmigrated"`
 
 ### Step 15: Clean up payload and pre-migration artifacts
 
 - **Delete `.workspace-update/` directory entirely**
 - **Remove any `@.workspace-update/` lines from CLAUDE.md**
-- .mcp.json → back up and move to unmigrated
 - CLAUDE.md.bak → remove (content extracted)
 - Any other pre-migration artifacts → clean up or move to unmigrated
+
+`.mcp.json` stays where it is. Claude Code reads it from the root on every start, so moving it away would switch off the workspace's MCP servers: it is a config file the workspace owns once Step 5 installed it or added the template's servers to it, and a `.mcp.json` that pre-dates the scaffold is the workspace's own for the same reason. Only a backup such as `.mcp.json.bak` is a pre-migration artifact, and it goes to unmigrated.
 
 **Commit:** `git commit -m "chore: clean up payload and pre-migration artifacts"`
 
@@ -405,6 +410,20 @@ Check for:
 Fix ALL issues found. This step must not be rushed.
 
 **Commit:** `git commit -m "fix: resolve self-contradictions from init"`
+
+### Step 16.5: Build the context catalogs and CLAUDE.local.md
+
+The root `CLAUDE.md` imports `workspace-context/canonical.md` and `workspace-context/index.md`, and `CLAUDE.local.md` imports this user's index. Nothing earlier in the flow writes them. Without them, the locked knowledge from Step 10 never reaches the main session, and the next session start reports "Setup incomplete". Create this user's folder if it is missing (`workspace-context/team-member/{user}/`), then run:
+
+```bash
+node .claude/scripts/generate-claude-local.mjs --root .
+node .claude/scripts/build-workspace-context.mjs --write --root .
+node .claude/scripts/build-workspace-context.mjs --check --root .
+```
+
+The first writes `CLAUDE.local.md` from `workspace.user` and regenerates the indexes, including the per-user one. The second writes the shared catalogs, and `--check` must then report them current. `CLAUDE.local.md` and the per-user index are gitignored. `canonical.md` and `index.md` are tracked.
+
+**Commit:** `git commit -m "chore: build the workspace-context catalogs" -- workspace-context/canonical.md workspace-context/index.md`
 
 ### Step 17: Set up workspace remote
 
