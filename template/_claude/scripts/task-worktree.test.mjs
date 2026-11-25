@@ -12,7 +12,7 @@ import {
   mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   slugForBranch, taskWorktreePath, createTaskWorktree, removeTaskWorktree,
@@ -125,20 +125,27 @@ function makeSession(root, name, { branch, workItem = null, status = 'active', c
 }
 
 const clean = (r) => rmSync(r, { recursive: true, force: true });
-const real = (p) => realpathSync(p);
+// git and detectWorkModel() spell a path the way the filesystem does — a
+// resolved /private/var on macOS where tmpdir says /var, the long name of a
+// Windows 8.3 short path — so an expected path is resolved the same way
+// (the native realpath, which expands short names) before it is compared.
+const real = (p) => realpathSync.native(p);
 
 console.log('# slug and path');
 {
   assertEq(slugForBranch('feature/foo-bar'), 'feature-foo-bar', 'slash becomes dash');
   assertEq(slugForBranch('main'), 'main', 'plain branch unchanged');
+  // `/w` is a POSIX absolute path but drive-relative on Windows; the
+  // expectation resolves it exactly as taskWorktreePath() resolves its root.
+  const w = resolve('/w');
   assertEq(
     taskWorktreePath('/w', 'app', 'feature/x'),
-    join('/w', 'repos', 'app', '.claude', 'worktrees', 'feature-x'),
+    join(w, 'repos', 'app', '.claude', 'worktrees', 'feature-x'),
     'path is the native worktree location',
   );
   assertEq(
     taskWorktreePath('/w', '.', 'feature/x'),
-    join('/w', '.claude', 'worktrees', 'feature-x'),
+    join(w, '.claude', 'worktrees', 'feature-x'),
     'workspace repo path is the native worktree location at the root',
   );
 }
