@@ -78,7 +78,7 @@ Take a minute to look around. You do not need to memorize everything — it will
 
 **`workspace-context/shared/`** (the rest) holds working documents — braindumps, research, designs. Browse when you are curious; you do not need to read them all on day one.
 
-**`workspace-context/team-member/{you}/`** is yours. Personal braindumps and handoffs land here and load only into your sessions.
+**`workspace-context/team-member/{you}/`** is yours. Personal braindumps and handoffs land here. Once they are tracked, they load only into your sessions.
 
 **`.claude/rules/`** contains the behavioural rules Claude follows — git conventions, how to revise documents, when to push back. They apply automatically.
 

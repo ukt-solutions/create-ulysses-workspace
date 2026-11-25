@@ -40,7 +40,7 @@ Every skill has its own entry in this chapter, in four groups:
 
 ## Capture Skills
 
-These skills turn conversation knowledge into files that outlive it.
+These skills turn conversation knowledge into files that outlive it. Where a capture goes depends on the lifecycle in play. Inside neither, it is a gitignored `local-only-` draft, which becomes team-visible through `/promote`.
 
 ### /handoff
 
@@ -54,11 +54,11 @@ Saves workstream state: what was done, what is in progress, what comes next. Str
 |---|---|
 | Inside a session's workspace worktree | The session tracker's `## Progress` section, at `work-sessions/{name}/workspace/session.md`, committed on the session branch |
 | In a chat under the task model | `handoff_{topic}.md` in the chat's drawer, `workspace-scratchpad/chats/{chat}/` — nothing is committed, because the drawer is gitignored |
-| At the workspace root, otherwise | A standalone `handoff_{topic}.md`, personal by default, in `workspace-context/team-member/{user}/`, committed on its own |
+| Anywhere else, which includes a chat at the workspace root | A gitignored draft, `local-only-handoff_{topic}.md`, in `workspace-context/team-member/{user}/` — not committed |
 
 **When to use it:** You are stopping work and someone, including future you, needs to know where things stand. You finished a chunk of work and want to record the state before moving on.
 
-**What it produces:** An updated session tracker, a drawer file, or a standalone context file, as above.
+**What it produces:** An updated session tracker, a drawer file, or a local-only draft, as above.
 
 ### /braindump
 
@@ -66,11 +66,11 @@ Captures reasoning, exploration, and design rationale. More freeform than a hand
 
 **Parameters:** `/braindump {name}` creates or updates a named braindump. With no name, the skill suggests one from the conversation.
 
-**Where it writes:** Wherever `/handoff` does. In a session it adds a section to the tracker's body, on the session branch. Under the task model it writes `braindump_{topic}.md` to the chat's drawer. Otherwise it writes a standalone `braindump_{topic}.md`, personal by default, in `workspace-context/team-member/{user}/`.
+**Where it writes:** Wherever `/handoff` does. In a session it adds a section to the tracker's body, on the session branch. Under the task model it writes `braindump_{topic}.md` to the chat's drawer. Anywhere else it writes a gitignored `local-only-braindump_{topic}.md` to `workspace-context/team-member/{user}/`.
 
 **When to use it:** The conversation produced a decision worth preserving. You discussed tradeoffs, explored alternatives, or settled on an approach. The signal is hearing "we decided..." — that means a decision just happened.
 
-**What it produces:** Reasoning added to the session tracker, a drawer file, or a standalone braindump file, as above.
+**What it produces:** Reasoning added to the session tracker, a drawer file, or a local-only draft, as above.
 
 ### /aside
 
@@ -291,7 +291,7 @@ The chaining is a natural workflow, not enforced coupling: any skill can be invo
 
 - Skills are on-demand workflow commands. Only a skill's description is always loaded; its body is read when it is invoked.
 - The template ships seventeen skills: three capture, six lifecycle, seven admin, and one project.
-- Capture skills (/handoff, /braindump, /aside) turn conversation knowledge into files. The first two follow the lifecycle in play; /aside always writes a personal local-only file.
+- Capture skills (/handoff, /braindump, /aside) turn conversation knowledge into files. The first two follow the lifecycle in play, and outside it write a local-only draft; /aside always writes a local-only draft.
 - Lifecycle skills (/start-work, /pause-work, /complete-work, /sync-work, /migrate-sessions, /goal-driven-work) carry work from start to finish. /start-work and /complete-work serve both lifecycles; /pause-work and /sync-work belong to the session lifecycle.
 - Admin skills (/promote, /context-placement, /release, /maintenance, /setup-tracker, /workspace-init, /workspace-update) manage workspace context, configuration, maintenance and releases.
 - /build-docs-site builds a documentation site for a project repo.
