@@ -121,7 +121,7 @@ The eleven [chapters](https://github.com/ukt-solutions/create-ulysses-workspace/
 |------|---------|-------|
 | Concepts | [01](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/01-what-is-a-workspace.md) | What Is a Workspace |
 | | [02](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/02-work-sessions.md) | Work Sessions |
-| | [03](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/03-shared-context.md) | Shared Context |
+| | [03](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/03-workspace-context.md) | Workspace Context |
 | The Toolkit | [04](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/04-claude-md.md) | CLAUDE.md |
 | | [05](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/05-rules.md) | Rules |
 | | [06](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/06-skills.md) | Skills |

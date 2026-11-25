@@ -132,5 +132,5 @@ The workspace handles the rest — hooks surface context when a session starts, 
 ## Where to Go Next
 
 - [Chapter 1: What Is a Workspace](../chapters/01-what-is-a-workspace.md) — the workspace model, its layers, and why the root stays on main
-- [Chapter 3: Shared Context](../chapters/03-shared-context.md) — how team knowledge is organized and where your work lands
+- [Chapter 3: Workspace Context](../chapters/03-workspace-context.md) — how team knowledge is organized and where your work lands
 - [Chapter 11: Behavioral Patterns](../chapters/11-behavioral-patterns.md) — the habits that make the workspace work well

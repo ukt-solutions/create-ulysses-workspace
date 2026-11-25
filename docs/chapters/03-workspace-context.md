@@ -1,6 +1,6 @@
-# Shared Context
+# Workspace Context
 
-Shared context is the workspace's memory system. It is where team knowledge lives, where work-in-progress reasoning accumulates, and where decisions are recorded for future sessions. It lives in `workspace-context/`, and nearly everything there is a markdown file tracked in git — which means it is versioned, shareable, and survives workstation switches.
+Workspace context is the workspace's memory system. It is where team knowledge lives, where work-in-progress reasoning accumulates, and where decisions are recorded for future sessions. It lives in `workspace-context/`, and nearly everything there is a markdown file tracked in git — which means it is versioned, shareable, and survives workstation switches.
 
 This chapter explains the three levels of `workspace-context/`, how each one reaches Claude, how content gets created, and how it flows through the promotion lifecycle.
 

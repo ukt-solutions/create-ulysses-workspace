@@ -87,7 +87,7 @@ Each directory has one job:
 
 **.claude/worktrees/** is where a task's worktree for the workspace repo itself lives, at `.claude/worktrees/{slug}/`. A task creates one worktree per repo it touches, and the workspace repo can be one of them. Like every task worktree, it is removed when the task completes.
 
-**workspace-context/** is the memory system. Files here are tracked in git and shared across the team, apart from `local-only-*` drafts. It has three levels — `shared/locked/` for canonical team truths, `shared/` for team-visible working documents, and `team-member/{user}/` for each person's context — plus two generated catalogs, `canonical.md` and `index.md`, that CLAUDE.md imports. [Chapter 3](03-shared-context.md) covers this in depth.
+**workspace-context/** is the memory system. Files here are tracked in git and shared across the team, apart from `local-only-*` drafts. It has three levels — `shared/locked/` for canonical team truths, `shared/` for team-visible working documents, and `team-member/{user}/` for each person's context — plus two generated catalogs, `canonical.md` and `index.md`, that CLAUDE.md imports. [Chapter 3](03-workspace-context.md) covers this in depth.
 
 **workspace-scratchpad/** is machine-local and gitignored: the session log, hook debug output, and — under the task lifecycle — each chat's record and drawer. It is lazy-created. Losing it costs a re-derivation, not the work, with one exception: `session-log.jsonl` is a history no other file keeps.
 

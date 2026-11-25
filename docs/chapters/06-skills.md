@@ -175,7 +175,7 @@ These skills handle workspace context, configuration, maintenance, and releases.
 
 Moves personal auto-memory or `local-only-` files into workspace context. Use when you've discovered something valuable that the team should know.
 
-It scans three sources — auto-memory, `local-only-*.md` files under `workspace-context/`, and `local-only-*.md` rules — and presents every candidate in one table, each with an assessment and a recommendation. You decide with codes: promote, drop, or keep. For each promotion you pick the destination — team-visible in `workspace-context/shared/`, personal in `workspace-context/team-member/{user}/`, or canonical in `workspace-context/shared/locked/` — and the skill rewrites the file for its new audience, removes the local-only original, and commits the result on its own. [Chapter 3](03-shared-context.md#the-promotion-lifecycle) covers the flow.
+It scans three sources — auto-memory, `local-only-*.md` files under `workspace-context/`, and `local-only-*.md` rules — and presents every candidate in one table, each with an assessment and a recommendation. You decide with codes: promote, drop, or keep. For each promotion you pick the destination — team-visible in `workspace-context/shared/`, personal in `workspace-context/team-member/{user}/`, or canonical in `workspace-context/shared/locked/` — and the skill rewrites the file for its new audience, removes the local-only original, and commits the result on its own. [Chapter 3](03-workspace-context.md#the-promotion-lifecycle) covers the flow.
 
 ### /context-placement
 

@@ -153,7 +153,7 @@ When it is time to release, `/release` combines everyone's branch notes into a u
 
 ## Where to Go Next
 
-- [Chapter 3: Shared Context](../chapters/03-shared-context.md) — the full shared context model, promotion lifecycle, and ephemeral patterns
+- [Chapter 3: Workspace Context](../chapters/03-workspace-context.md) — the full shared context model, promotion lifecycle, and ephemeral patterns
 - [Chapter 5: Rules](../chapters/05-rules.md) — all rules explained, the .skip pattern, writing custom rules
 - [Chapter 6: Skills](../chapters/06-skills.md) — every skill, when to use it, how they chain together
 - [Chapter 9: The Release Cycle](../chapters/09-the-release-cycle.md) — how release notes flow and how ephemeral context gets cleaned up
