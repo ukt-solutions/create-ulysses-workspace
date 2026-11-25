@@ -90,7 +90,7 @@ Scan the workspace for existing content that needs organizing:
 - Non-standard directories and files at root — anything not part of the template structure
 - Existing auto-memory files in `~/.claude/projects/` for this project path
 - Existing git worktrees (branches checked out in separate directories)
-- Any files at workspace root that aren't: CLAUDE.md, workspace.json, .gitignore
+- Any files at workspace root that aren't the template's own: CLAUDE.md, workspace.json, .gitignore, .claudeignore, .mcp.json
 
 Present the inventory as a table.
 
