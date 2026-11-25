@@ -17,7 +17,10 @@
 //                         directory) and closed-out lifecycles are skipped
 //   3. structure        — workspace.json and CLAUDE.md present and parseable,
 //                         manifest repos cloned, expected directories there,
-//                         and the template-modification registry sane:
+//                         no stale workspace-context/locked/ directory (older
+//                         scaffolds created it there; only shared/locked/ is
+//                         read — empty it is safe to delete, files in it never
+//                         load), and the template-modification registry sane:
 //                         legacy workspace.json keys, keys that escape
 //                         .claude/, and registrations the workspace abandoned
 //                         are info, a registry that doesn't parse is a
@@ -99,7 +102,7 @@
 // Exit codes: 0 — no issue-severity findings; 1 — at least one; 2 — argument
 // or filesystem error before any check ran.
 
-import { existsSync, readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, lstatSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -293,6 +296,9 @@ export async function runAudit({
 
   // ---------- 3. structure ----------
 
+  // Names that hold no content when found in a directory the audit judges empty.
+  const HOUSEKEEPING_FILES = new Set(['.gitkeep', '.keep', '.DS_Store', 'Thumbs.db']);
+
   if (!existsSync(wsJsonPath)) add('structure', 'issue', 'workspace.json', 'workspace.json is missing');
   if (!existsSync(join(absRoot, 'CLAUDE.md'))) {
     add('structure', 'issue', 'CLAUDE.md', 'CLAUDE.md is missing — cross-reference checks skipped');
@@ -303,6 +309,51 @@ export async function runAudit({
   for (const dir of ['rules', 'skills', 'scripts']) {
     if (!existsSync(join(absRoot, '.claude', dir))) {
       add('structure', 'warning', `.claude/${dir}`, `.claude/${dir}/ does not exist — the workspace structure expects it`);
+    }
+  }
+
+  // A locked/ directory directly under workspace-context/ is a leftover from
+  // older scaffolds, which created it there. canonical.md, the index,
+  // /promote and the subagent hook all go through shared/locked/, so nothing
+  // loads from it: empty, it is safe to delete; holding files, they never
+  // load and belong in shared/locked/. Two are left alone, so those claims
+  // stay true — a symlink, which may be a deliberate alias of shared/locked/,
+  // and a directory CLAUDE.md's import graph reaches, as in a workspace moved
+  // to workspace-context/ by hand before canonical.md existed. Judged in the
+  // audited tree only. Nothing is deleted or moved here; that is cleanup's
+  // call.
+  {
+    const staleLocked = join(absRoot, wcDir, 'locked');
+    const files = [];
+    const walk = (dir, prefix) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        // Dirents do not follow links, so a symlinked subdirectory cannot loop.
+        if (entry.isDirectory()) walk(join(dir, entry.name), `${prefix}${entry.name}/`);
+        // Housekeeping files hold no content, so a directory of only these
+        // still reads as empty and safe to delete.
+        else if (!HOUSEKEEPING_FILES.has(entry.name)) files.push(`${prefix}${entry.name}`);
+      }
+    };
+    let present = false;
+    try {
+      if (lstatSync(staleLocked).isDirectory()) {
+        walk(staleLocked, '');
+        present = true;
+      }
+    } catch { /* absent or unreadable — nothing to judge */ }
+    // CLAUDE.local.md counts too: a file one user imports does load for them.
+    const imported = present && ['CLAUDE.md', 'CLAUDE.local.md']
+      .map((name) => join(absRoot, name))
+      .filter((file) => existsSync(file))
+      .some((file) => resolveImports(file, new Set([file]), [])
+        .some((p) => p === staleLocked || p.startsWith(staleLocked + sep)));
+    if (present && !imported) {
+      files.sort();
+      const shown = files.slice(0, 5).join(', ') + (files.length > 5 ? ', …' : '');
+      add('structure', 'warning', `${wcDir}/locked`, files.length === 0
+        ? 'is empty — a leftover from an old scaffold that created it at the wrong path; nothing reads it, so it is safe to delete'
+        : `holds ${files.length} file(s) that never load (${shown}) — canonical.md is built from ${wcDir}/shared/locked/ only; `
+          + 'move the ones that belong in canonical there, then remove the directory');
     }
   }
   // Cloned repos live at the launcher. From a task worktree the audit root's
