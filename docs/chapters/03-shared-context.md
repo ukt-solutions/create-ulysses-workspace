@@ -54,7 +54,7 @@ Shared-level files are an explicit choice. Content lands here when you deliberat
 
 Personal files persist from one piece of work to the next. They stay until you promote them, move them, or delete them.
 
-In-flight work state — a session's tracker, a task's specs and plans — never lives in `workspace-context/`. That is for knowledge that outlives any single effort. A session keeps its state in `work-sessions/{name}/`, and a task keeps it in its chat's drawer under `workspace-scratchpad/chats/{chat}/`. The capture skills route around this on their own; the next-but-one section shows how.
+In-flight work state — a session's tracker, a task's specs and plans — never lives in `workspace-context/`. That is for knowledge that outlives any single effort. A session keeps its state in `work-sessions/{name}/`, and a task keeps it in its chat's drawer under `workspace-scratchpad/chats/{chat}/`. The capture skills route around this on their own; [how context gets created](#how-context-gets-created) shows how.
 
 ## How the Levels Reach Claude
 
