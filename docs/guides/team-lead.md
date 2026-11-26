@@ -63,7 +63,7 @@ claude
 
 It runs the whole setup in one pass, on a `chore/workspace-init` branch:
 
-- It offers to clone each repo in `workspace.json`, and asks which lifecycle new work should use.
+- It offers to clone each repo in `workspace.json`. New work is always a task, so there is no lifecycle to choose.
 - If you point it at documentation — Notion, Confluence, markdown — it extracts team knowledge from it, and from your earlier Claude chats, into `workspace-context/`.
 - It installs the rest of the template, and asks which optional rules to activate.
 - It configures your identity, and offers to start the team roster with you as its first entry.

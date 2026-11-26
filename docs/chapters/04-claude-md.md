@@ -24,9 +24,8 @@ The default CLAUDE.md follows a consistent structure. This is the template as it
 This is a claude-workspace. All conventions are defined in .claude/rules/.
 
 ## Quick Reference
-- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`
-- `/start-work` to create or resume a work session
-- Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker
+- This root is the launcher — all work happens in task worktrees at `repos/{repo}/.claude/worktrees/{slug}/` (`.claude/worktrees/{slug}/` for the workspace repo)
+- `/start-work` to start a task, or resume a `work-sessions/` session the workspace already has
 - From root: only `local-only-*` and `workspace-scratchpad/` are writable
 - Team knowledge lives in `workspace-context/`
 - Run `/rename` to label this chat before `/clear` — keeps the chat findable in your CLI history after the context is wiped
@@ -42,7 +41,7 @@ Config lives in `workspace.json` — read it when a skill needs a value.
 
 ## Skills
 - `/workspace-init` — first-time workspace setup (clone repos, install template, activate rules)
-- `/start-work [handoff|blank]` — begin a work session
+- `/start-work [issue|handoff|blank]` — start a task, or resume an existing session
 - `/handoff [name]` — save workstream state
 - `/braindump [name]` — capture discussion/reasoning
 - `/aside [--quick] <thought>` — capture a drive-by idea without interrupting current work
@@ -117,7 +116,7 @@ The practical implication: do not put large documents in canonical context. A 5,
 When Claude processes a turn, configuration loads in a specific order. Understanding this order helps you know where to put things and what takes priority:
 
 1. **CLAUDE.md** — the entry point. Quick reference, @-references, skill listing.
-2. **SessionStart hook context** — the workspace summary line (session model, tracker, forge, repos), chat record, and open sessions, injected when the chat begins.
+2. **SessionStart hook context** — the workspace summary line (session model, tracker, forge, repos), chat record, a line naming any work sessions still under the old session model, and the open sessions, injected when the chat begins.
 3. **Rules** — the active `.md` files in `.claude/rules/`. Behavioral constraints. A rule with `paths:` joins the set when a matching file is read.
 4. **Canonical context** — through the `@workspace-context/canonical.md` import. Every file in `workspace-context/shared/locked/`.
 5. **Skills** — loaded on invocation, not on every turn.
@@ -140,7 +139,7 @@ CLAUDE.md is a template file that you own. The scaffold provides a default, but 
 
 The one thing to preserve is the pair of `@workspace-context/` imports. They are how Claude stays aware of team knowledge — removing them disconnects Claude from the workspace's shared memory. The connection to `workspace.json` needs no import to preserve: the SessionStart hook summarizes it in every chat, and skills read the file when they need it.
 
-Your edits survive upgrades. CLAUDE.md is a template file, so `/workspace-update` merges a new template into your customized copy — and asks about anything it cannot merge cleanly — instead of overwriting it.
+Your edits survive upgrades. CLAUDE.md is a template file, so `/workspace-update` merges a new template into your customized copy — and asks about anything it cannot merge cleanly — instead of overwriting it. The one thing the merge takes away is what the template itself has retired and your copy still carries word for word: an include it no longer ships, or a bullet it replaced. Each is dropped from the merged result and named in the diff you approve.
 
 ---
 

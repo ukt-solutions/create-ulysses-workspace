@@ -50,7 +50,7 @@ Shared-level files are an explicit choice. Content lands here when you deliberat
 
 ### Personal — One Person's Working Context
 
-`workspace-context/team-member/{user}/` contains one person's working context. This is the default destination for standalone captures: braindumps, handoffs, research, personal notes. Each tracked file gets a line in a per-user index at `team-member/{user}/index.md`, which only that person's sessions load; `local-only-` drafts are left out until they are promoted.
+`workspace-context/team-member/{user}/` contains one person's working context. This is the default destination for captures made as standalone files: braindumps, handoffs, research, personal notes. (A braindump or handoff made in a chat that has a drawer goes to the drawer first; [how context gets created](#how-context-gets-created) shows the routing.) Each tracked file gets a line in a per-user index at `team-member/{user}/index.md`, which only that person's sessions load; `local-only-` drafts are left out until they are promoted.
 
 Personal files persist from one piece of work to the next. They stay until you promote them, move them, or delete them.
 
@@ -80,11 +80,11 @@ Where `/handoff` and `/braindump` write depends on where you are:
 
 | Where you are | What they write |
 |---|---|
-| Inside a session's workspace worktree | The session tracker's body, at `work-sessions/{name}/workspace/session.md`, committed on the session branch |
-| In a chat under the task model (`workspace.sessionModel` is `"task"`) | A `handoff_{topic}.md` or `braindump_{topic}.md` in that chat's drawer, `workspace-scratchpad/chats/{chat}/` — gitignored and machine-local |
-| Anywhere else, which includes a chat at the workspace root | A gitignored draft in `workspace-context/team-member/{user}/`: `local-only-handoff_{topic}.md` or `local-only-braindump_{topic}.md` |
+| Inside a legacy session's workspace worktree | The session tracker's body, at `work-sessions/{name}/workspace/session.md`, committed on the session branch |
+| Anywhere else, in a chat with a drawer — the default | A `handoff_{topic}.md` or `braindump_{topic}.md` in that chat's drawer, `workspace-scratchpad/chats/{chat}/` — gitignored and machine-local |
+| In a chat with no drawer, because the SessionStart hook injected no `Chat record:` line | A gitignored draft in `workspace-context/team-member/{user}/`: `local-only-handoff_{topic}.md` or `local-only-braindump_{topic}.md` |
 
-Under a session, the captured reasoning becomes part of the session's durable thinking, and `/complete-work` carries it into the PR body when the session finishes. Under a task, `/complete-work` lists the drawer and asks what deserves to move into `workspace-context/`. Neither commits anything at capture time outside a session.
+The drawer needs only the `Chat record:` line the SessionStart hook injects, and `workspace.sessionModel` plays no part in the choice. Under a session, the captured reasoning becomes part of the session's durable thinking, and `/complete-work` carries it into the PR body when the session finishes. Under a task, `/complete-work` lists the drawer and asks what deserves to move into `workspace-context/`. Neither commits anything at capture time.
 
 The root is the launcher, and the launcher is no place to commit: only `local-only-*` files and the scratchpad are writable from it, and real work happens in worktrees. So a capture made there stays on your machine, a draft for an audience of one. Nothing is committed, and the generated index does not list it. It becomes team-visible through `/promote`, which picks up `local-only-` files: for each one you promote, it writes a tracked copy where you choose — `workspace-context/shared/`, `workspace-context/team-member/{user}/`, or `workspace-context/shared/locked/` — removes the draft, and commits the result on its own.
 
@@ -171,7 +171,7 @@ That makes one corner of the scratchpad worth more than the rest. A task's drawe
 - Workspace context is markdown files in git — no database, no external service.
 - Three levels under `workspace-context/`: `shared/locked/` (canonical, loaded every session), `shared/` (team-visible), `team-member/{user}/` (personal, and the default).
 - Canonical loads in full through the generated `canonical.md`; the other two levels load as generated indexes.
-- `/handoff`, `/braindump` and `/aside` are the capture skills. The first two follow the lifecycle in play: a session tracker, a task's drawer, or — anywhere else — a gitignored `local-only-` draft. `/aside` always writes a `local-only-` draft, whatever the lifecycle.
+- `/handoff`, `/braindump` and `/aside` are the capture skills. The first two follow where the chat is working: a legacy session's tracker, otherwise the chat's drawer, or — in a chat with no drawer — a gitignored `local-only-` draft. `/aside` always writes a `local-only-` draft.
 - Content flows upward through `/promote`. Promotion to canonical is a high bar.
 - A `local-only-` file is never loaded by the generated catalogs; import it from CLAUDE.md if you want it in the window.
 - For things you genuinely do not want preserved, use `workspace-scratchpad/` — gitignored and lazy-created.

@@ -27,7 +27,7 @@ Every skill has its own entry in this chapter, in four groups:
 | `/pause-work` | Lifecycle | Suspend a session: capture, push, draft PRs |
 | `/complete-work` | Lifecycle | Rebase, PR, merge, close the linked issue |
 | `/sync-work` | Lifecycle | Push branches without ceremony |
-| `/migrate-sessions` | Lifecycle | Move a workspace from the session model to the task model |
+| `/migrate-sessions` | Lifecycle | Drain the sessions a workspace still holds under the old session lifecycle |
 | `/goal-driven-work` | Lifecycle | Run multi-phase work under `/goal` |
 | `/promote` | Admin | Move personal knowledge into workspace context |
 | `/context-placement` | Admin | Decide where durable content belongs, and what it costs |
@@ -40,7 +40,7 @@ Every skill has its own entry in this chapter, in four groups:
 
 ## Capture Skills
 
-These skills turn conversation knowledge into files that outlive it. Where a capture goes depends on the lifecycle in play. Inside neither, it is a gitignored `local-only-` draft, which becomes team-visible through `/promote`.
+These skills turn conversation knowledge into files that outlive it. Where a capture goes depends on where the chat is working. In a chat with no drawer, it is a gitignored `local-only-` draft, which becomes team-visible through `/promote`.
 
 ### /handoff
 
@@ -52,9 +52,9 @@ Saves workstream state: what was done, what is in progress, what comes next. Str
 
 | Where you are | What it writes |
 |---|---|
-| Inside a session's workspace worktree | The session tracker's `## Progress` section, at `work-sessions/{name}/workspace/session.md`, committed on the session branch |
-| In a chat under the task model | `handoff_{topic}.md` in the chat's drawer, `workspace-scratchpad/chats/{chat}/` — nothing is committed, because the drawer is gitignored |
-| Anywhere else, which includes a chat at the workspace root | A gitignored draft, `local-only-handoff_{topic}.md`, in `workspace-context/team-member/{user}/` — not committed |
+| Inside a legacy session's workspace worktree | The session tracker's `## Progress` section, at `work-sessions/{name}/workspace/session.md`, committed on the session branch |
+| Anywhere else, in a chat with a drawer — the default | `handoff_{topic}.md` in the chat's drawer, `workspace-scratchpad/chats/{chat}/` — nothing is committed, because the drawer is gitignored |
+| In a chat with no drawer, because the SessionStart hook injected no `Chat record:` line | A gitignored draft, `local-only-handoff_{topic}.md`, in `workspace-context/team-member/{user}/` — not committed |
 
 **When to use it:** You are stopping work and someone, including future you, needs to know where things stand. You finished a chunk of work and want to record the state before moving on.
 
@@ -66,7 +66,7 @@ Captures reasoning, exploration, and design rationale. More freeform than a hand
 
 **Parameters:** `/braindump {name}` creates or updates a named braindump. With no name, the skill suggests one from the conversation.
 
-**Where it writes:** Wherever `/handoff` does. In a session it adds a section to the tracker's body, on the session branch. Under the task model it writes `braindump_{topic}.md` to the chat's drawer. Anywhere else it writes a gitignored `local-only-braindump_{topic}.md` to `workspace-context/team-member/{user}/`.
+**Where it writes:** Wherever `/handoff` does. In a legacy session it adds a section to the tracker's body, on the session branch. In a chat with a drawer it writes `braindump_{topic}.md` to the drawer. In a chat with no drawer it writes a gitignored `local-only-braindump_{topic}.md` to `workspace-context/team-member/{user}/`.
 
 **When to use it:** The conversation produced a decision worth preserving. You discussed tradeoffs, explored alternatives, or settled on an approach. The signal is hearing "we decided..." — that means a decision just happened.
 
@@ -84,25 +84,23 @@ Captures a drive-by idea without interrupting the current work. By default it di
 
 ## Lifecycle Skills
 
-These skills carry a piece of work from start to finish. Two lifecycles share them, selected for new work by `workspace.sessionModel` in `workspace.json`. A **session** (the default) wraps an effort in a self-contained `work-sessions/{name}/` folder with a tracker file. A **task**, the forward path for new work, is one issue, one branch and one worktree per repo the work touches, with the chat staying at the workspace root. [Chapter 2](02-work-sessions.md) covers both.
+These skills carry a piece of work from start to finish. New work is always a **task**: one issue, one branch and one worktree per repo the work touches, with the chat staying at the workspace root. The **session** lifecycle — a self-contained `work-sessions/{name}/` folder with a tracker file — is legacy: no new session starts, and the sessions a workspace already has keep resuming and completing until `/migrate-sessions` drains them. Nothing in `workspace.json` selects between them. [Chapter 2](02-work-sessions.md) covers both.
 
 ### /start-work
 
-Begins or resumes work. Which flow it takes depends on the lifecycle in play and on the argument.
+Starts new work as a task, or resumes a session the workspace already has. Which flow it takes depends on the argument and on what is on disk.
 
 **Parameters:**
 
-- `/start-work` — list your active sessions, then resume one or start new work
-- `/start-work blank` — start new work from scratch
-- `/start-work handoff` — list shared context to resume from
-- `/start-work all` — list active sessions across all users
-- `/start-work gh:42`, `#42` or an issue URL — under the task lifecycle, start work on that issue
+- `/start-work` — start a task; a workspace that still has `work-sessions/` sessions is offered them first, so one can be resumed instead
+- `/start-work blank` — start a task without offering the session list
+- `/start-work handoff` — list shared context to resume from, then start the task it belongs to
+- `/start-work all` — offer the workspace's sessions across all users when listing them
+- `/start-work gh:42`, `#42` or an issue URL — start a task on that issue
 
-**The session flow:** With a tracker configured, new work first settles the issue. The skill lists the issues assigned to you, falling back to unassigned ones, for you to pick; or it takes a description for something new and creates the issue — with its type, priority, an optional milestone and epic — assigned to you. You then pick which repos to include and confirm a branch name of `{prefix}/{name}`, where the prefix is `feature/`, `bugfix/` or `chore/`. The skill runs `create-work-session.mjs` to create the `work-sessions/{name}/` folder with a workspace worktree, nested project worktrees, and the session tracker (`session.md`). Without a tracker it offers `/setup-tracker`, or a session with no linked issue.
+**The task flow:** The skill identifies or creates the tracker issue and claims it: the one you named in the command, one you pick from a list — the issues assigned to you, falling back to unassigned ones — or a new one you describe, with its type, priority, an optional milestone and epic. If another chat already has a task for that issue, it offers to adopt the task or leave it with that chat. You pick the repos — the workspace repo itself can be one of them — and confirm a branch of `{prefix}/{slug}`. It creates one worktree per repo with `task-worktree.mjs` and records the task on the chat's record with `chat-record.mjs`. There is no session folder and no `session.md`: the issue, the branch and the chat record are the whole state. Without a tracker the task is still recorded, keyed by repo and branch.
 
-**The task flow:** With `workspace.sessionModel` set to `"task"`, new work takes a lighter path. The skill identifies or creates the tracker issue and claims it: the one you named in the command, one you pick from a list, or a new one you describe. If another chat already has a task for that issue, it offers to adopt the task or leave it with that chat. You pick the repos — the workspace repo itself can be one of them — and confirm the branch. It creates one worktree per repo with `task-worktree.mjs` and records the task on the chat's record with `chat-record.mjs`. There is no session folder and no `session.md`: the issue, the branch and the chat record are the whole state.
-
-**The resume flow:** You pick an existing session. The skill verifies the worktrees exist, registers the current chat in the session tracker's `chatSessions` frontmatter, and reconstructs any uncaptured history from previous conversations. Resuming an existing session always takes this flow, whichever lifecycle new work is set to use.
+**The resume flow:** You pick an existing session. The skill verifies the worktrees exist, registers the current chat in the session tracker's `chatSessions` frontmatter, and reconstructs any uncaptured history from previous conversations. Only sessions a workspace already has take this flow — nothing starts a new one.
 
 ### /pause-work
 
@@ -130,7 +128,7 @@ Finalizes the work — rebase, PR, merge, and close the linked issue. It handles
 10. Closes the linked issue on the tracker
 11. Cleans up the worktrees in the mandatory order and removes the session folder
 
-**The task flow** rebases each task worktree onto its base and routes the durable thinking in the chat's drawer, asking what deserves to move into `workspace-context/`. It then hands the rest to `task-pr.mjs`: one PR per repo with a body written for it, the CI checks read for every PR, a merge that follows the task's merge-approval setting, the linked issue closed, and finally the worktrees torn down. [Chapter 2](02-work-sessions.md#the-task-model) has the detail.
+**The task flow** starts with a pre-flight — every task worktree clean, and, when the chat's drawer holds a goal artifact, every `/goal` sub-branch already merged into the task branch. It then rebases each worktree onto its base and routes the durable thinking in the chat's drawer, asking what deserves to move into `workspace-context/`. The rest goes to `task-pr.mjs`: one PR per repo with a body written for it, the CI checks read for every PR, a merge that follows the task's merge-approval setting, the linked issue closed, and finally the worktrees torn down. [Chapter 2](02-work-sessions.md#the-task-model) has the detail.
 
 **When to use it:** The work is done. You are ready to merge and move on.
 
@@ -225,7 +223,7 @@ Configures an issue tracker for the workspace, so that work items — bugs, feat
 
 First-time workspace initialization, or joining a workspace a teammate already initialized. Run it once after scaffolding with `--init`.
 
-**The init flow** sets up the workspace itself. It clones the repos in the manifest and registers each as a `repo-{name}` remote of the workspace repo, installs the remaining template components from the staged payload, activates the optional rules you choose, and configures your identity. It asks which lifecycle new work should use. It then extracts team knowledge — from the documentation sources you point it at, and from prior Claude chat history — into `workspace-context/`, formalizes any in-progress git worktrees as work sessions, and offers to set up an issue tracker and to generate `CODEBASE.md`. Finally it cleans up the payload, checks the result for self-contradictions, sets up the workspace's own remote, `origin`, and marks the workspace initialized. It works on a `chore/workspace-init` branch, and ends by offering to squash-merge that branch into the default branch, pushing it if the workspace repo has an `origin`.
+**The init flow** sets up the workspace itself. It clones the repos in the manifest and registers each as a `repo-{name}` remote of the workspace repo, installs the remaining template components from the staged payload, activates the optional rules you choose, and configures your identity. It reports the work lifecycle as task — new work is always a task, so there is nothing to choose. It then extracts team knowledge — from the documentation sources you point it at, and from prior Claude chat history — into `workspace-context/`, formalizes any in-progress git worktrees as work sessions, and offers to set up an issue tracker and to generate `CODEBASE.md`. Finally it cleans up the payload, checks the result for self-contradictions, sets up the workspace's own remote, `origin`, and marks the workspace initialized. It works on a `chore/workspace-init` branch, and ends by offering to squash-merge that branch into the default branch, pushing it if the workspace repo has an `origin`.
 
 **The join flow** runs when the workspace is already initialized — a teammate who has just cloned it. It sets up only that one machine: the user identity, the missing repo clones (each registered as a `repo-{name}` remote of the workspace repo), the per-user context folder, and `CLAUDE.local.md`. It never touches tracked files, creates no branch, and makes no commits.
 
@@ -239,10 +237,10 @@ Applies a staged template update to an initialized workspace. The CLI's `--upgra
 
 1. Decides where the update lands: in a task worktree and through a PR when the workspace repo has a remote of its own (`origin`), in place when it has none
 2. Classifies every file in the payload — new, updated, locally modified, activated, removed, and the rest
-3. Applies the changes with your confirmation, merging files you have customized three-way against the template you are upgrading from, and asking about anything it cannot merge
+3. Applies the changes with your confirmation, merging files you have customized three-way against the template you are upgrading from, and asking about anything it cannot merge. In CLAUDE.md, a line the template has retired — an include it no longer ships, or a bullet it replaced — is dropped and named in the diff you approve
 4. Advances `templateVersion`, writes the template baseline, and runs the migrators
 5. Verifies: rebuilds the context catalogs and runs the maintenance audit once, marking findings on the files this update touched
-6. Cleans up and commits. If the sessions directory still has entries and `workspace.sessionModel` is not `"task"`, its report points you at `/migrate-sessions`
+6. Cleans up and commits. When the sessions directory still holds sessions under the old session lifecycle — counted from the directory alone, whatever `workspace.sessionModel` says — its report points you at `/migrate-sessions`
 
 See [Chapter 10](10-installation-and-upgrades.md) for the upgrade flow.
 
@@ -256,7 +254,7 @@ Builds a comprehensive Docusaurus documentation site for a project. It consolida
 
 **Parameters:** `/build-docs-site` starts a new site, or resumes an in-progress one. `/build-docs-site --diagrams` resumes at the diagram phase on an existing site.
 
-**When to use it:** A project's documentation has outgrown a README. It is a multi-hour skill that requires an active work session — run `/start-work` first if none is active — and a confirmed target repo.
+**When to use it:** A project's documentation has outgrown a README. It is a multi-hour skill that needs work to have been started — run `/start-work` first if it has not — and a confirmed target repo.
 
 **What it produces:** A Docusaurus site at `docs-site/` (or `apps/docs-site/` in a monorepo), a `sources.md` inventory and a `design-docs-site.md` spec at the project worktree's root, and a final report naming the files it replaced and any URLs that may need redirects. It opens no PR of its own: `/complete-work` handles the merge.
 
@@ -273,10 +271,6 @@ Skills are independent, but they form a natural workflow:
     ↓
   /braindump or /handoff (as decisions happen) — /aside for drive-by ideas
     ↓
-  /sync-work (backup checkpoints)
-    ↓
-  /pause-work (if stopping) ← → /start-work (resume later)
-    ↓
   /complete-work (when done) — /promote runs inside it for what deserves to survive
     ↓
   /release (when cutting a version)
@@ -284,7 +278,9 @@ Skills are independent, but they form a natural workflow:
   /maintenance (periodically)
 ```
 
-The chaining is a natural workflow, not enforced coupling: any skill can be invoked on its own. Four have a precondition worth knowing. `/complete-work` needs work to complete — an active session, or a task recorded on the chat. `/workspace-update` needs an initialized workspace, and says so if `/workspace-init` has not run. `/build-docs-site` needs an active work session. `/workspace-init` needs the payload the CLI stages at scaffold time.
+A legacy session adds two steps of its own to the middle of that: `/sync-work` for backup checkpoints, and `/pause-work` when stopping, with `/start-work` resuming it later.
+
+The chaining is a natural workflow, not enforced coupling: any skill can be invoked on its own. Four have a precondition worth knowing. `/complete-work` needs work to complete — a task recorded on the chat, or an active session. `/workspace-update` needs an initialized workspace, and says so if `/workspace-init` has not run. `/build-docs-site` needs work to have been started. `/workspace-init` needs the payload the CLI stages at scaffold time.
 
 ---
 
@@ -292,7 +288,7 @@ The chaining is a natural workflow, not enforced coupling: any skill can be invo
 
 - Skills are on-demand workflow commands. Only a skill's description is always loaded; its body is read when it is invoked.
 - The template ships seventeen skills: three capture, six lifecycle, seven admin, and one project.
-- Capture skills (/handoff, /braindump, /aside) turn conversation knowledge into files. The first two follow the lifecycle in play, and outside it write a local-only draft; /aside always writes a local-only draft.
+- Capture skills (/handoff, /braindump, /aside) turn conversation knowledge into files. The first two write to a legacy session's tracker, otherwise to the chat's drawer, and — in a chat with no drawer — a local-only draft; /aside always writes a local-only draft.
 - Lifecycle skills (/start-work, /pause-work, /complete-work, /sync-work, /migrate-sessions, /goal-driven-work) carry work from start to finish. /start-work and /complete-work serve both lifecycles; /pause-work and /sync-work belong to the session lifecycle.
 - Admin skills (/promote, /context-placement, /release, /maintenance, /setup-tracker, /workspace-init, /workspace-update) manage workspace context, configuration, maintenance and releases.
 - /build-docs-site builds a documentation site for a project repo.

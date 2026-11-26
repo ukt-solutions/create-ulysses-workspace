@@ -1,6 +1,6 @@
 # Solo Developer Guide
 
-You use Claude Code for your projects. Maybe you have one repo, maybe a few. You want your work to have structure — tracked sessions, captured decisions, clean releases — without the overhead of a team workflow. This guide walks you through setting up a workspace and running your first work session from start to finish.
+You use Claude Code for your projects. Maybe you have one repo, maybe a few. You want your work to have structure — tracked tasks, captured decisions, clean releases — without the overhead of a team workflow. This guide walks you through setting up a workspace and running your first task from start to finish.
 
 ---
 
@@ -46,29 +46,26 @@ claude
 /workspace-init
 ```
 
-The setup skill offers to clone any repo that is not on disk yet, asks which lifecycle new work should use, lets you activate any optional rules you want (you can skip these for now), and configures your user identity.
+The setup skill offers to clone any repo that is not on disk yet, lets you activate any optional rules you want (you can skip these for now), and configures your user identity. New work is always a task, so there is no lifecycle to choose.
 
-## Step 4: Start Your First Work Session
+## Step 4: Start Your First Task
 
 ```bash
 /start-work
 ```
 
-What happens next depends on the lifecycle you chose in the previous step. This walkthrough follows the session lifecycle. Under the task lifecycle, `/start-work` files or picks an issue and creates one worktree per repo instead; the [New Team Member Guide](new-team-member.md) shows both shapes.
-
-With no issue tracker configured, Claude first offers to set one up. Skip that for now and start a blank session. Claude asks what you are working on. Describe it — "Add user authentication" or "Fix the broken search endpoint." Claude generates a session name, proposes a branch, and asks you to confirm.
+With no issue tracker configured, Claude says tracking is off, then asks for a type (`feat`, `bug` or `chore`) and a one-line description. (With a tracker configured, you pick an issue from it or file a new one instead.) Describe it — "feat: add user authentication" or "bug: fix the broken search endpoint." Claude proposes a branch from the type and the description, `feature/add-auth`, and asks you to confirm.
 
 Once you confirm, the workspace creates:
-- A self-contained session folder at `work-sessions/add-auth/`
-- A workspace worktree at `work-sessions/add-auth/workspace/`
-- A nested project worktree at `work-sessions/add-auth/workspace/repos/my-app/`
-- A unified `session.md` tracker — frontmatter is machine state, body is human content
+- A branch, `feature/add-auth`
+- A worktree at `repos/my-app/.claude/worktrees/feature-add-auth/` — the branch name with `/` turned into `-`
+- An entry for the task on this chat's record, in `workspace-scratchpad/chats/`
 
-Claude tells you: "Work session started. Work from `work-sessions/add-auth/workspace/`."
+Claude tells you where the work happens. You stay in this chat at the workspace root and reach the worktree by path; the chat keeps the workspace's rules and hooks, which a chat started inside the worktree would not load.
 
 ## Step 5: Do Your Work
 
-Now you work normally. Make changes in the project worktree, commit as you go. Claude is aware of your session — it knows which branch you are on, which repos are involved, and where the worktrees are.
+Now you work normally. Make changes in the worktree, commit as you go. Claude is aware of your task — it knows which branch you are on and where the worktree is.
 
 As you work, you might make design decisions, encounter tradeoffs, or explore alternatives. When something worth preserving comes up, capture it:
 
@@ -76,17 +73,15 @@ As you work, you might make design decisions, encounter tradeoffs, or explore al
 /braindump
 ```
 
-Claude synthesizes the recent discussion into the session tracker. You do not lose this context when the conversation ends.
+Claude writes the reasoning into this chat's drawer, `workspace-scratchpad/chats/`, and asks when the task completes whether any of it should move into `workspace-context/`. You do not lose this context when the conversation ends.
 
-If you need to back up your work without any ceremony:
+If you need to back up your work, commit it and push the task branch:
 
+```bash
+git -C 'repos/my-app/.claude/worktrees/feature-add-auth' push -u origin 'feature/add-auth'
 ```
-/sync-work
-```
 
-This pushes your branches to the remote. No PRs, no lifecycle changes — just a checkpoint.
-
-## Step 6: Complete the Session
+## Step 6: Complete the Task
 
 When you are done:
 
@@ -94,35 +89,30 @@ When you are done:
 /complete-work
 ```
 
-Claude runs the full completion pipeline: rebases your branch, builds the PR body from everything the session accumulated (tracker, commits, any specs or plans), pushes the branch, creates a pull request, and asks if you want to merge.
+Claude runs the full completion pipeline: checks the worktree is clean, asks which drawer notes deserve to graduate into `workspace-context/`, rebases the worktree, writes a PR body from the commits and the captured thinking, pushes the branch, creates a pull request, and asks if you want to merge.
 
 ```
-Work session complete:
+Task complete:
 
-PROJECT: my-app
-  PR #42: feat: add user authentication
+PROJECT: you/my-app
+  PR: https://github.com/you/my-app/pull/42
+  Checks: none
   Branch: feature/add-auth → main
-  Changes:
-    - Added JWT-based auth middleware
-    - Login and registration endpoints
-
-WORKSPACE: my-workspace
-  PR #3: context: add-auth work session
-  Branch: feature/add-auth → main
+  Commits: 3
 
 Merge all? [Y/n]
 ```
 
-Type `y` and everything merges. The worktrees are cleaned up. You are back on main, ready for the next thing.
+Type `y` and it merges. The worktree is removed, the task leaves the chat's record, and you are back at the workspace root, ready for the next thing. With a tracker configured the linked issue would close here too; without one there is nothing to close.
 
 ## You Just Did a Full Cycle
 
-That is the core loop: `/start-work` → work → `/complete-work`. Along the way, `/braindump` and `/sync-work` keep your context captured and your work backed up.
+That is the core loop: `/start-work` → work → `/complete-work`. Along the way, `/braindump` keeps your reasoning in the chat's drawer until completion asks what to keep.
 
 When you are ready to cut a version, run `/release` — it bumps the version, merges the bump through a PR, tags it, and publishes a forge release whose notes are generated from the merged PRs.
 
 ## Where to Go Next
 
 - [Chapter 1: What Is a Workspace](../chapters/01-what-is-a-workspace.md) — understand the workspace model and why it works this way
-- [Chapter 2: Work Sessions](../chapters/02-work-sessions.md) — deep dive into sessions, worktrees, multi-repo, and parallel sessions
+- [Chapter 2: Work Sessions](../chapters/02-work-sessions.md) — the task model in depth, worktrees, multi-repo and parallel work, and the older session lifecycle
 - [Chapter 10: Installation and Upgrades](../chapters/10-installation-and-upgrades.md) — template versioning and staying current

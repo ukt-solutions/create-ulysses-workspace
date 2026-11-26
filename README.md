@@ -9,7 +9,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@ulysses-ai/create-workspace.svg)](https://www.npmjs.com/package/@ulysses-ai/create-workspace)
 
-> Rules, skills, and hooks that steer Claude Code through real work. Sessions you can pause and resume, multi-repo with versioning, shared context that survives chat boundaries.
+> Rules, skills, and hooks that steer Claude Code through real work. Tracked tasks from issue to pull request, multi-repo with versioning, shared context that survives chat boundaries.
 
 > **Beta.** Pre-1.0 releases ship under the `@beta` dist-tag — install with `@beta`, as every command below does. Release candidates for 1.0.0 will ship under `@rc`. `latest` is not maintained until 1.0.0 and may point to an older beta, so use `@beta` for now. Conventions and CLI flags are stable. Beta testers welcome — please [open an issue](https://github.com/ukt-solutions/create-ulysses-workspace/issues) if anything's confusing.
 
@@ -76,11 +76,11 @@ Rules say what's safe. Skills say how to do the recurring things. Hooks notice w
 
 Four things, in the order you'll touch them:
 
-1. **A workflow lifecycle that survives chat boundaries.** `/start-work` provisions the work — branch, worktree, tracker issue — and `/complete-work` rebases, opens PRs, merges, and tears down. Two lifecycles share those verbs. A **session** (the default) wraps a long effort in a self-contained folder with a tracker file, so `/pause-work` and `/sync-work` can checkpoint it and the same session resumes cleanly in a fresh chat. A **task** is one issue, one branch and one worktree per repo it touches, with the chat staying at the workspace root — it is the forward path for new work.
+1. **A workflow lifecycle that survives chat boundaries.** `/start-work` provisions the work — issue, branch, worktree — and `/complete-work` rebases, opens PRs, merges, and tears down. New work is always a **task**: one issue, one branch and one worktree per repo it touches, with the chat staying at the workspace root. The older **session** lifecycle — a long effort wrapped in a self-contained folder with a tracker file — starts nothing new; the sessions a workspace already has keep resuming and completing until `/migrate-sessions` drains them.
 
-2. **Parallel work you can run from separate terminals.** Each unit of work gets its own branch and its own git worktrees, so two can't collide on a branch or a working directory. A session lives in its own folder under `work-sessions/{name}/` with a workspace worktree and nested project worktrees; a task's worktrees live under each repo's `.claude/worktrees/{slug}/`.
+2. **Parallel work you can run from separate terminals.** Each unit of work gets its own branch and its own git worktrees, so two can't collide on a branch or a working directory. A task's worktrees live under each repo's `.claude/worktrees/{slug}/`; a legacy session keeps its worktrees in its own folder under `work-sessions/{name}/`.
 
-3. **Multi-repo support with versioning across repos.** A workspace wraps your project repos rather than replacing them. Each session can span one repo or many. `/release` cuts a versioned release per repo — bump, tag, forge release with notes generated from merged PRs.
+3. **Multi-repo support with versioning across repos.** A workspace wraps your project repos rather than replacing them. A task can span one repo or many. `/release` cuts a versioned release per repo — bump, tag, forge release with notes generated from merged PRs.
 
 4. **Shared context with a locked layer that stays in the window.** `workspace-context/shared/locked/` is loaded every turn and injected into subagents. Team truths arrive in the model's context window without anyone remembering to paste them.
 
@@ -94,7 +94,7 @@ A scaffolded workspace with:
 - **9 active rules** + **9 optional `.skip` rules** for behaviors you can opt into
 - **9 hooks** for SessionStart, SubagentStart, PreCompact, and the rest of the small set the conventions rely on
 - A **`workspace-context/`** memory system with three visibility levels: `shared/locked/` (team truths), `shared/` (team-visible ephemerals), `team-member/{user}/` (personal)
-- Conventions for **multi-repo work sessions** with isolated git worktrees, parallelizable from separate terminals
+- Conventions for **multi-repo tasks** with isolated git worktrees, parallelizable from separate terminals
 
 (Counts are static prose, but a `prepublishOnly` audit script verifies them against the template at publish time — they don't drift.)
 
