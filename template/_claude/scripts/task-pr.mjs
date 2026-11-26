@@ -38,9 +38,10 @@
 // be the root of a git worktree, it must belong to the same repository as
 // repos/{repo} (the launcher itself for "."), and it must be checked out on
 // --branch — anything else refuses. Every entry --create writes carries its
-// checkout as `worktree`, so --merge and --checks need only the PRs file;
-// the flag is accepted there too, and replaces the recorded checkout for the
-// repos it names.
+// checkout as `worktree`, which is all --checks and --merge need: they act
+// on the entries as the PRs file records them. The flag is --create's alone
+// — a path handed to one of the other two would go unchecked, so with either
+// it is an error that says so.
 //
 // Every repo of the task resolves to a merge mode (mergeModeFor below):
 // "forge" — its origin is forge-hosted (github.com, gitlab.com, or the
@@ -554,22 +555,6 @@ function loadPrs(path) {
   return prs;
 }
 
-// --worktree given to --merge or --checks: the flag beats the PRs file for
-// the repos it names. Neither command's git depends on a checkout — a local
-// entry merges in its source clone, from the branch ref that every worktree
-// of the repository shares — so the entry only records what was said. A repo
-// the file does not list is a typo, and refuses.
-function applyWorktreeOverrides(args, prs) {
-  for (const repo of args.worktrees.keys()) {
-    if (!prs.some((p) => p.repo === repo)) {
-      throw new Error(`--worktree names repo "${repo}", which the PRs file does not list`);
-    }
-  }
-  for (const p of prs) {
-    if (args.worktrees.has(p.repo)) p.worktree = args.worktrees.get(p.repo);
-  }
-}
-
 // Entries carry their repo's forge and host since GitLab support landed;
 // older files predate the fields and fall back to the workspace block —
 // the GitHub default those runs were built under.
@@ -677,7 +662,6 @@ async function mergePrs(args, deps) {
   const ws = readWorkspace(rootDir);
 
   const prs = loadPrs(args.prs);
-  applyWorktreeOverrides(args, prs);
   if (prs.some((p) => modeOfEntry(p) === 'forge')) assertForgeEnabled(ws);
 
   // State first, so a re-run knows what an earlier run already finished.
@@ -814,7 +798,6 @@ async function readChecks(args, deps) {
   const rootDir = resolve(args.root);
   const ws = readWorkspace(rootDir);
   const prs = loadPrs(args.prs);
-  applyWorktreeOverrides(args, prs);
   if (prs.some((p) => modeOfEntry(p) === 'forge')) assertForgeEnabled(ws);
   const checks = [];
   for (const p of prs) {
@@ -899,6 +882,11 @@ function parseArgs(argv) {
     if (args.approved) throw new Error('--approved is only valid with --merge');
   } else {
     if (!args.prs) throw new Error(`--${args.mode} requires --prs`);
+    // These two act on the entries as the PRs file records them. A checkout
+    // passed here would be stored unchecked, so it is refused, not taken.
+    if (args.worktrees.size > 0) {
+      throw new Error(`--worktree is only valid with --create — --${args.mode} uses the checkout recorded in the PRs file`);
+    }
     for (const flag of ['branch', 'chat']) {
       if (args[flag]) throw new Error(`--${flag} is only valid with --create`);
     }

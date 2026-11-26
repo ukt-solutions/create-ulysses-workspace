@@ -450,11 +450,15 @@ console.log('# parseArgs validation');
   const replace = parseArgs(['node', 's', '--create', '--root', '/w', '--branch', 'feature/x', '--repo', 'app',
     '--worktree', 'app=/first', '--worktree', 'app=/second']);
   assertEq([...replace.worktrees.entries()], [['app', '/second']], 'repeated --worktree for one repo keeps the last path');
-  // The flag is the same in the other two modes: the file's entries are what
-  // it applies to there.
+  // The flag is --create's alone: the other two act on the entries as the
+  // PRs file records them, and refuse a path they would otherwise store
+  // unchecked — naming where the checkout they use comes from.
   for (const mode of ['--merge', '--checks']) {
-    const again = parseArgs(['node', 's', mode, '--root', '/w', '--prs', 'x.json', '--worktree', 'app=/elsewhere']);
-    assertEq(again.worktrees.get('app'), '/elsewhere', `${mode} accepts --worktree`);
+    await rejects(
+      () => run(['node', 'task-pr.mjs', mode, '--root', '/w', '--prs', 'x.json', '--worktree', 'app=/elsewhere']),
+      `${mode} rejects --worktree`,
+      `--worktree is only valid with --create — ${mode} uses the checkout recorded in the PRs file`,
+    );
   }
   const waiting = parseArgs(['node', 's', '--merge', '--root', '/w', '--prs', 'x.json', '--wait', '--wait-timeout', '15', '--skip-checks', '--approved']);
   assertEq([waiting.mode, waiting.wait, waiting.waitTimeout, waiting.skipChecks, waiting.approved], ['merge', true, '15', true, true], 'merge flags parse');
@@ -1242,6 +1246,25 @@ console.log('# --worktree: a branch checked out outside the task layout is pushe
     const checks = await run(['node', 'task-pr.mjs', '--checks', '--root', fx.root, '--prs', file], deps);
     assertEq(checks.checks.map((c) => [c.repo, c.mode]), [['lone', 'local'], ['.', 'forge'], ['app', 'forge']],
       '--checks reads every entry from the file');
+
+    // The flag is --create's alone. The other two work from the checkout the
+    // file records and refuse a path of their own — before reading anything,
+    // so a merge given one merges nothing.
+    const refusedLog = [];
+    const refusedGit = gitWith();
+    for (const mode of ['--checks', '--merge']) {
+      await rejects(
+        () => run(['node', 'task-pr.mjs', mode, '--root', fx.root, '--prs', file, '--worktree', `app=${fx.appWt}`],
+          { gitFn: refusedGit, forgeFactory: fakeForgeFactory(refusedLog), trackerFactory: fakeTrackerFactory(refusedLog) }),
+        `${mode} refuses --worktree`,
+        `--worktree is only valid with --create — ${mode} uses the checkout recorded in the PRs file`,
+      );
+    }
+    assertEq(refusedLog.length, 0, 'the forge is asked nothing');
+    assert(refusedGit.calls.length === 0, 'and no git runs');
+    assertEq(git(join(fx.root, 'repos', 'lone'), ['log', '-1', '--format=%s']).trim(), 'init',
+      'so the merge given the flag merged nothing');
+
     const mergeLog = [];
     const merged = await run(['node', 'task-pr.mjs', '--merge', '--root', fx.root, '--prs', file],
       { gitFn: gitWith(), forgeFactory: fakeForgeFactory(mergeLog), trackerFactory: fakeTrackerFactory(mergeLog) });
@@ -1249,17 +1272,6 @@ console.log('# --worktree: a branch checked out outside the task layout is pushe
     assertEq(git(join(fx.root, 'repos', 'lone'), ['log', '-1', '--format=%s']).trim(), 'fix: the auth timeout',
       "a local entry still merges in its source clone, from the branch its checkout holds");
     assertEq(git(fx.loneWt, ['rev-parse', '--abbrev-ref', 'HEAD']).trim(), fx.branch, 'the checkout named by --worktree is left on the branch');
-
-    // The flag is accepted by the other two modes as well, where it replaces
-    // the recorded checkout for the repos it names — and a repo the file
-    // does not list refuses instead of being ignored.
-    const rechecked = await run(['node', 'task-pr.mjs', '--checks', '--root', fx.root, '--prs', file, '--worktree', `app=${fx.appWt}`], deps);
-    assertEq(rechecked.checks.length, 3, '--checks takes --worktree and still reads every entry');
-    await rejects(
-      () => run(['node', 'task-pr.mjs', '--checks', '--root', fx.root, '--prs', file, '--worktree', `ghost=${fx.appWt}`], deps),
-      'a repo the PRs file does not list refuses',
-      'which the PRs file does not list',
-    );
   } finally { clean(fx.root); fx.bares.forEach(clean); }
 }
 
