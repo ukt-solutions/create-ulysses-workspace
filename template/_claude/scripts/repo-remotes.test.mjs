@@ -464,14 +464,68 @@ withFixture((fx) => {
   assertEq(result, { ...EMPTY, adopted: ['repo-y'] }, 'reported as adopted');
   assertEq(remoteConfig(fx, 'repo-y'), managedConfig(fresh.bare), 'brought to the managed shape, origin included');
   assertEq(syncRepoRemotes(fx.root), EMPTY, 'and it settles there');
+  assertEq(run(fx.root, 'for-each-ref', '--format=%(refname)', 'refs/remotes/repo-y/'), '', 'the tracking refs the hand-made remote had fetched are gone: a managed remote owns none');
 
   // The refspec is gone in effect, not only in config: a fetch by name
-  // writes FETCH_HEAD and leaves the tracking ref where it was.
+  // writes FETCH_HEAD and creates no tracking ref.
   const fetched = tryRun(fx.root, 'fetch', 'repo-y');
   assertEq(fetched.status, 0, '`git fetch repo-y` still succeeds');
-  assertEq(run(fx.root, 'rev-parse', 'refs/remotes/repo-y/main'), stale, 'the tracking ref is not moved by it');
-  const head = run(fx.root, 'rev-parse', 'FETCH_HEAD');
-  check(head === run(fresh.seed, 'rev-parse', 'HEAD') && head !== stale, 'FETCH_HEAD is what the fetch wrote');
+  assertEq(run(fx.root, 'for-each-ref', '--format=%(refname)', 'refs/remotes/repo-y/'), '', 'and creates no tracking ref');
+  check(run(fx.root, 'rev-parse', 'FETCH_HEAD') === run(fresh.seed, 'rev-parse', 'HEAD'), 'FETCH_HEAD is what the fetch wrote');
+});
+
+console.log('# tracking refs: gone with the remote on every remove path, and only for managed remotes');
+withFixture((fx) => {
+  const app = makeOrigin(fx, 'app');
+  const api = makeOrigin(fx, 'api');
+  const other = makeOrigin(fx, 'other');
+  addClone(fx, 'app', app.bare);
+  addClone(fx, 'api', api.bare);
+  syncRepoRemotes(fx.root);
+  run(fx.root, 'commit', '-q', '--allow-empty', '-m', 'init');
+  const refsUnder = (remote) => run(fx.root, 'for-each-ref', '--format=%(refname)', `refs/remotes/${remote}/`);
+
+  // Tracking refs a managed remote should never hold: left by hand, nested,
+  // and a HEAD symref that points into another remote's branch.
+  run(fx.root, 'update-ref', 'refs/remotes/repo-app/main', 'HEAD');
+  run(fx.root, 'update-ref', 'refs/remotes/repo-app/feature/x', 'HEAD');
+  run(fx.root, 'update-ref', 'refs/remotes/repo-api/main', 'HEAD');
+  run(fx.root, 'remote', 'add', 'origin', other.bare);
+  run(fx.root, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+  run(fx.root, 'symbolic-ref', 'refs/remotes/repo-api/HEAD', 'refs/remotes/origin/main');
+  // Refs that merely look nearby: another remote's, and one whose name starts like a managed one.
+  run(fx.root, 'update-ref', 'refs/remotes/repo-apps/main', 'HEAD');
+  run(fx.root, 'update-ref', 'refs/remotes/unmanaged/main', 'HEAD');
+  assertEq(refsUnder('repo-app').split('\n').length, 2, 'control: the managed remote holds tracking refs to begin with');
+
+  // A clone gone takes its remote and its tracking refs.
+  rmSync(join(fx.root, 'repos', 'app'), { recursive: true, force: true });
+  assertEq(syncRepoRemotes(fx.root), { ...EMPTY, removed: ['repo-app'] }, 'the remote is removed');
+  assertEq(refsUnder('repo-app'), '', 'and leaves no tracking ref behind');
+  assertEq(refsUnder('repo-api').split('\n').sort(), ['refs/remotes/repo-api/HEAD', 'refs/remotes/repo-api/main'], 'the other managed remote keeps its refs until its own turn');
+
+  // The cleanup takes the rest, following no symref out of the remote.
+  assertEq(syncRepoRemotes(fx.root, { enabled: false }), { ...EMPTY, removed: ['repo-api'] }, 'the remote is removed');
+  assertEq(refsUnder('repo-api'), '', 'with its tracking refs');
+  assertEq(
+    run(fx.root, 'for-each-ref', '--format=%(refname)', 'refs/remotes/').split('\n'),
+    ['refs/remotes/origin/main', 'refs/remotes/repo-apps/main', 'refs/remotes/unmanaged/main'],
+    'every ref that is not under a managed remote is still there — the one the HEAD symref pointed at included',
+  );
+});
+
+console.log('# tracking refs: a remote the sync leaves alone keeps its tracking refs');
+withFixture((fx) => {
+  const x = makeOrigin(fx, 'x');
+  const other = makeOrigin(fx, 'other');
+  addClone(fx, 'x', x.bare);
+  run(fx.root, 'commit', '-q', '--allow-empty', '-m', 'init');
+  run(fx.root, 'remote', 'add', 'repo-x', x.bare);
+  run(fx.root, 'config', '--local', 'remote.repo-x.pushurl', other.bare);
+  run(fx.root, 'update-ref', 'refs/remotes/repo-x/main', 'HEAD');
+  const result = syncRepoRemotes(fx.root);
+  check(result.skipped[0]?.reason.startsWith('conflict: '), 'the clone is a conflict: the remote is not the sync\'s', JSON.stringify(result));
+  assertEq(run(fx.root, 'for-each-ref', '--format=%(refname)', 'refs/remotes/repo-x/'), 'refs/remotes/repo-x/main', 'so its tracking ref stays');
 });
 
 // === skips ===

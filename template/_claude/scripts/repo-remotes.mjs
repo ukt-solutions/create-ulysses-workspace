@@ -18,7 +18,11 @@
 //
 // and no fetch refspec. `git remote add` would write one, so the keys are set
 // with `git config` instead: without a refspec, `git fetch repo-<name>` writes
-// FETCH_HEAD alone, and no refs/remotes/repo-* branch ever appears.
+// FETCH_HEAD alone, and no refs/remotes/repo-* branch ever appears. A managed
+// remote therefore owns no tracking refs. The ones a hand-made remote had
+// already fetched are deleted when it is adopted, and deleted again on every
+// remove path, because `git remote remove` only takes the refs that match a
+// refspec and a managed remote has none.
 //
 // Usage:
 //   node .claude/scripts/repo-remotes.mjs --root <dir> [--json]
@@ -416,6 +420,13 @@ export function syncRepoRemotes(root, { gitFn = spawnSync, enabled = true } = {}
       if (applyWrites(gitFn, rootDir, remote, writes)) result.updated.push(remote);
       else result.skipped.push({ name: clone.name, reason: `writing remote ${remote} failed` });
     } else if ((fields.get('pushurl') ?? []).includes(NO_PUSH)) {
+      // The refs it fetched as a hand-made remote go before it is marked,
+      // for the same reason as on a removal: a run that stops in between
+      // adopts it again next time and finds nothing left to delete.
+      if (!deleteTrackingRefs(gitFn, rootDir, remote)) {
+        result.skipped.push({ name: clone.name, reason: `removing the tracking refs of remote ${remote} failed` });
+        continue;
+      }
       if (applyWrites(gitFn, rootDir, remote, writes)) result.adopted.push(remote);
       else result.skipped.push({ name: clone.name, reason: `writing remote ${remote} failed` });
     } else {
@@ -437,14 +448,41 @@ export function syncRepoRemotes(root, { gitFn = spawnSync, enabled = true } = {}
   return result;
 }
 
+// Delete every tracking ref under refs/remotes/<remote>/. Only that prefix
+// is listed, so no other remote's ref is ever a candidate, and --no-deref
+// deletes a HEAD symref itself instead of following it to the branch it
+// points at, which may belong to another remote. False when git could not
+// answer or a ref would not go, so that the caller leaves the remote in
+// place and the next run tries again.
+function deleteTrackingRefs(gitFn, rootDir, remote) {
+  // The prefix is a ref name, so only a name from this script's own
+  // alphabet is used as one.
+  if (!/^[A-Za-z0-9._-]+$/.test(remote)) return true;
+  const prefix = `refs/remotes/${remote}/`;
+  const listed = gitCall(gitFn, rootDir, ['for-each-ref', '--format=%(refname)', prefix]);
+  if (!listed.ok) return false;
+  for (const ref of listed.stdout.split('\n').map((line) => line.replace(/\r$/, ''))) {
+    if (ref === '') continue;
+    if (!ref.startsWith(prefix)) continue;
+    if (!gitCall(gitFn, rootDir, ['update-ref', '--no-deref', '-d', ref]).ok) return false;
+  }
+  return true;
+}
+
 // Remove the marked remotes in `config`, reporting each in `result.removed`.
-// A remote whose name `keep` holds stays: the clone it belongs to is still
-// there. With `prefix`, only names starting with it are candidates, which
+// A remote whose name `keep` holds stays: its directory is still under
+// repos/. With `prefix`, only names starting with it are candidates, which
 // keeps a sync from removing a marked remote it did not name.
 function removeMarked(gitFn, rootDir, result, config, { keep = new Set(), prefix = '' } = {}) {
   for (const [remote, fields] of config) {
     if (!isMarked(fields) || keep.has(remote)) continue;
     if (prefix !== '' && !remote.startsWith(prefix)) continue;
+    // The refs go first, while the remote is still there to be found again:
+    // a run that stops here retries the whole removal next time.
+    if (!deleteTrackingRefs(gitFn, rootDir, remote)) {
+      result.skipped.push({ name: remote, reason: `removing the tracking refs of remote ${remote} failed` });
+      continue;
+    }
     if (gitCall(gitFn, rootDir, ['remote', 'remove', remote]).ok) result.removed.push(remote);
     else result.skipped.push({ name: remote, reason: `removing remote ${remote} failed` });
   }
