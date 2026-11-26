@@ -60,12 +60,15 @@ const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArr
  * without a type (or a non-object in its place) is `invalid`, an absent
  * forge type leaves each repo's origin to pick its adapter, and `repos` that
  * isn't a plain object is `invalid` rather than a silent empty manifest.
- * sessionModel defaults to "session", matching how /start-work routes absent
- * config.
+ * sessionModel reads as "task" when the key is absent, empty or not a
+ * string: new work always starts as a task, so that is what an unset value
+ * means. The key no longer routes anything — it is reported because a
+ * workspace that still holds "session" should see what its file says.
  */
 export function configSummary(config) {
   const w = config?.workspace || {};
-  const model = typeof w.sessionModel === 'string' && w.sessionModel ? w.sessionModel : 'session';
+  const configured = typeof w.sessionModel === 'string' ? w.sessionModel.trim() : '';
+  const model = configured || 'task';
   const parts = [`sessionModel: ${model}`];
 
   let tracker;

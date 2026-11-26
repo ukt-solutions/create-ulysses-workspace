@@ -9,8 +9,8 @@
 // The config summary must state what workspace.json says — never a default the
 // scripts don't apply: broken tracker/forge/repos values surface as
 // `invalid`, an unset forge type surfaces as origin-picked, and only
-// sessionModel falls back ("session", matching how /start-work routes
-// absent config).
+// sessionModel falls back ("task": new work is always a task, so that is what
+// an unset value means — a workspace still holding "session" is told so).
 import { execFileSync, spawnSync } from 'child_process';
 import {
   cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync,
@@ -62,60 +62,71 @@ assertEq(
   'a fully configured workspace prints every field',
 );
 
-// 2. Fresh-scaffold shape: tracker null, forge typed, empty manifest
+// 2. Fresh-scaffold shape: the template's own values
 assertEq(
   configSummary({
-    workspace: { name: 'demo', sessionModel: 'session', tracker: null, forge: { type: 'github' } },
+    workspace: { name: 'demo', sessionModel: 'task', tracker: null, forge: { type: 'github' } },
     repos: {},
   }),
-  'sessionModel: session | tracker: off | forge: github | repos: none',
+  'sessionModel: task | tracker: off | forge: github | repos: none',
   'a fresh scaffold summarizes to its defaults',
 );
 
-// 3. Absent everything: sessionModel falls back to "session", an unset
-//    forge type leaves each repo's origin to pick its adapter
+// 3. Absent everything: sessionModel reads as "task", an unset forge type
+//    leaves each repo's origin to pick its adapter
 assertEq(
   configSummary({}),
-  'sessionModel: session | tracker: off | forge: auto (from origin) | repos: none',
+  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
   'an empty config degrades without inventing values',
 );
 assertEq(
-  configSummary({ workspace: { sessionModel: 'task', forge: {} } }),
+  configSummary({ workspace: { forge: {} } }),
   'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
   'a forge object without a type is origin-picked, not "github"',
 );
 
-// 4. sessionModel: a non-string value routes like absent config in
-//    /start-work, so it prints as the fallback rather than raw garbage
+// 4. sessionModel: the key routes nothing now — new work is always a task —
+//    so an empty or non-string value prints the task lifecycle rather than
+//    raw garbage, and the legacy value is reported as the file has it
+assertEq(
+  configSummary({ workspace: { sessionModel: '' } }),
+  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
+  'an empty sessionModel prints the task lifecycle',
+);
 assertEq(
   configSummary({ workspace: { sessionModel: 5 } }),
+  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
+  'a non-string sessionModel prints the task lifecycle',
+);
+assertEq(
+  configSummary({ workspace: { sessionModel: 'session' } }),
   'sessionModel: session | tracker: off | forge: auto (from origin) | repos: none',
-  'a non-string sessionModel prints the "session" fallback',
+  'a workspace still holding the legacy value is told what its file says',
 );
 
 // 5. Tracker without a type — the adapter would throw, so the line says so
 assertEq(
   configSummary({ workspace: { tracker: { repo: 'acme/monorepo' } } }),
-  'sessionModel: session | tracker: invalid (no type) | forge: auto (from origin) | repos: none',
+  'sessionModel: task | tracker: invalid (no type) | forge: auto (from origin) | repos: none',
   'a tracker object without a type is invalid (no type)',
 );
 
 // 6. A truthy non-object tracker — nothing createTracker could take
 assertEq(
   configSummary({ workspace: { tracker: 'github-issues' } }),
-  'sessionModel: session | tracker: invalid | forge: auto (from origin) | repos: none',
+  'sessionModel: task | tracker: invalid | forge: auto (from origin) | repos: none',
   'a non-object tracker is invalid',
 );
 
 // 7. Forge: false disables forge ops; a string forge is not a config
 assertEq(
   configSummary({ workspace: { forge: false } }),
-  'sessionModel: session | tracker: off | forge: off | repos: none',
+  'sessionModel: task | tracker: off | forge: off | repos: none',
   'forge: false prints off',
 );
 assertEq(
   configSummary({ workspace: { forge: 'gitlab' } }),
-  'sessionModel: session | tracker: off | forge: invalid | repos: none',
+  'sessionModel: task | tracker: off | forge: invalid | repos: none',
   'a string forge is invalid',
 );
 
@@ -123,22 +134,22 @@ assertEq(
 //    `Object.keys(repos || {})`); anything else non-object is invalid
 assertEq(
   configSummary({ repos: null }),
-  'sessionModel: session | tracker: off | forge: auto (from origin) | repos: none',
+  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
   'repos: null is an empty manifest, not invalid',
 );
 assertEq(
   configSummary({ repos: ['my-app'] }),
-  'sessionModel: session | tracker: off | forge: auto (from origin) | repos: invalid',
+  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: invalid',
   'an array repos value is invalid',
 );
 assertEq(
   configSummary({ repos: 'my-app' }),
-  'sessionModel: session | tracker: off | forge: auto (from origin) | repos: invalid',
+  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: invalid',
   'a string repos value is invalid',
 );
 assertEq(
   configSummary({ repos: { 'my-app': { primary: true }, 'my-api': {} } }),
-  'sessionModel: session | tracker: off | forge: auto (from origin) | repos: my-app (primary), my-api',
+  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: my-app (primary), my-api',
   'repos entries print with primary marked',
 );
 
