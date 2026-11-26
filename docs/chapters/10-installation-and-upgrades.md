@@ -187,7 +187,7 @@ The `/workspace-update` skill applies the staged changes interactively:
 
 5. **Verifies.** The context catalogs are rebuilt (`build-workspace-context.mjs --write`) and `--check` must pass clean, then the scripted maintenance audit runs once with the list of files this update touched — findings on those files are labeled `(from this update)` so new drift is distinguishable from pre-existing state.
 
-6. **Points at what is left to drain.** When the sessions directory still holds sessions under the old session lifecycle — counted from the directory alone — the report ends with a line pointing at `/migrate-sessions`. From this update on, new work starts as a task whatever `workspace.json` says, and the sessions already on disk stay exactly where they are until they are finished or archived.
+6. **Points at what is left to drain.** When the sessions directory still holds sessions under the old session lifecycle — counted from the directory alone, with `migrate-sessions.mjs --legacy-sessions` — the report ends with a line pointing at `/migrate-sessions`. From this update on, new work starts as a task whatever `workspace.json` says, and the sessions already on disk stay exactly where they are until they are finished or archived.
 
 The two-stage approach (CLI stages, skill applies) means upgrades are never automatic or silent. You see every change before it takes effect.
 

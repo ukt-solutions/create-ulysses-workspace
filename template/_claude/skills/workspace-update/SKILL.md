@@ -172,7 +172,7 @@ The other `migrate-*.mjs` in the payload are **one-shot, version-gated migration
 
 - `migrate-session-layout.mjs` — pre-v0.10.0 → v0.10.0: moves session content from launcher-side paths into each session's workspace worktree.
 - `migrate-to-workspace-context.mjs` — pre-v0.15.0 → v0.15.0: renames `shared-context/` to `workspace-context/` and rebuilds its structure.
-- `migrate-sessions.mjs` — pre-v0.18.0: drains session-model work sessions onto the task lifecycle. Not run inline — it has interactive inventory/backup/archive modes; `/migrate-sessions` drives it (Step 8 nudges whenever the workspace still holds sessions).
+- `migrate-sessions.mjs` — pre-v0.18.0: drains session-model work sessions onto the task lifecycle. Never run inline to drain — it has interactive inventory/backup/archive modes, and `/migrate-sessions` drives it. Its one read-only mode, `--legacy-sessions`, is the count Step 8 prints; `/workspace-update` runs nothing else of it.
 - `migrate-open-work.mjs` — manual, any version: converts the deprecated `open-work.md` into tracker issues. Takes the file path as an argument and needs a configured tracker; run it only if the workspace still carries an `open-work.md` and the user asks.
 
 Always run migrators with `--root .`. They resolve the workspace root from `--root` (default: the cwd) and never from their own location — a migrator invoked from the payload without `--root` would look for the workspace inside `.workspace-update/`.
@@ -240,13 +240,13 @@ Report: "Workspace updated to v{templateVersion}. Restart Claude Code if rules o
 
 ### Step 8: Legacy-session nudge
 
-After the update is applied, count the sessions the workspace still has under the old session model. New work is always a task now, so whatever is left in the sessions directory is work from before the task lifecycle. The count comes from the template's own detection, `listLegacySessions` in `hooks/_utils.mjs` — the same one the session-start hook and the maintenance audit use: the entries directly under the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) whose names do not start with a dot, so an archive under `.archived/` never counts. The directory alone decides; `workspace.sessionModel` plays no part, because the key selects nothing. Run it from the payload, whose copy is the one this update brings:
+After the update is applied, count the sessions the workspace still has under the old session model. New work is always a task now, so whatever is left in the sessions directory is work from before the task lifecycle. The count comes from the template's own detection — the same one the session-start hook and the maintenance audit use: the entries directly under the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) whose names do not start with a dot, so an archive under `.archived/` never counts. The directory alone decides; `workspace.sessionModel` plays no part, because the key selects nothing. The script prints it as JSON:
 
 ```bash
-node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { listLegacySessions } = await import(pathToFileURL("{payload}/.claude/hooks/_utils.mjs").href); console.log(listLegacySessions("{launcher}").length);'
+node {scripts}/migrate-sessions.mjs --legacy-sessions --root '{launcher}'
 ```
 
-`{launcher}` is the workspace root — `.` when the update was applied in place, the launcher's absolute path when it ran from the worktree. When the count is above zero, append one line to the report: "This workspace still has {N} work session(s) under the old session model — `/migrate-sessions` can inventory and drain them." Suggest only; the operator decides whether and when. Nothing needs switching for new work: it starts as a task whatever `workspace.json` holds.
+`{scripts}` resolves as in Step 1 — the payload's copy when the workspace lacks the script — with one thing to watch for here: a workspace copy installed before this release has the script but not the flag, so run the payload's copy for as long as the payload exists, and the workspace's own copy once Step 6 has deleted it. `{launcher}` is the workspace root — `.` when the update was applied in place, the launcher's absolute path when it ran from the worktree. The output is `{ "count": N, "sessions": [ … ] }`. When the count is above zero, append one line to the report: "This workspace still has {N} work session(s) under the old session model — `/migrate-sessions` can inventory and drain them." Suggest only; the operator decides whether and when. Nothing needs switching for new work: it starts as a task whatever `workspace.json` holds.
 
 ## Notes
 

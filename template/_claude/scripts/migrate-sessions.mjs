@@ -25,6 +25,17 @@
 //                 store — so the inventory stays read-only with respect
 //                 to the workspace's own state. Failures (offline, no
 //                 origin) are recorded, never fatal.
+//   --legacy-sessions
+//                 print { count, sessions }: how many sessions the
+//                 workspace still holds under the old session lifecycle,
+//                 and their names — the entries directly under the
+//                 sessions directory whose names do not start with a dot,
+//                 counted by listLegacySessions (hooks/_utils.mjs), the
+//                 one detection the session-start hook and the maintenance
+//                 audit report too. A missing directory is count 0, an
+//                 archive under .archived/ never counts, and
+//                 workspace.sessionModel is not read. /workspace-update
+//                 prints this count in its report; nothing here writes.
 //   --backup      tag each tip the session holds that no remote branch or
 //                 tag already points at — LOCAL tags only, nothing pushed
 //                 (--dry-run reports the plan with no side effects)
@@ -102,6 +113,7 @@ import { join, resolve, relative, dirname, sep, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readSessionFields } from '../lib/session-frontmatter.mjs';
+import { listLegacySessions } from '../hooks/_utils.mjs';
 import { managedRemoteNames } from './repo-remotes.mjs';
 import { defaultBranchFor, slugForBranch, WORKSPACE_REPO } from './task-worktree.mjs';
 
@@ -2222,7 +2234,7 @@ function renderTable(result) {
   return `${lines.join('\n')}\n`;
 }
 
-const MODE_FLAGS = new Set(['--inventory', '--backup', '--archive', '--enable-task-model', '--remove-shell']);
+const MODE_FLAGS = new Set(['--inventory', '--backup', '--archive', '--enable-task-model', '--remove-shell', '--legacy-sessions']);
 const VALUE_FLAGS = new Map([
   ['--root', 'root'],
   ['--session', 'session'],
@@ -2275,7 +2287,7 @@ function parseArgs(argv) {
     }
     throw new Error(`unknown argument: ${a}`);
   }
-  if (!args.mode) throw new Error('one of --inventory, --backup, --archive, --enable-task-model, --remove-shell is required');
+  if (!args.mode) throw new Error('one of --inventory, --backup, --archive, --enable-task-model, --remove-shell, --legacy-sessions is required');
   if ((args.mode === 'backup' || args.mode === 'archive' || args.mode === 'remove-shell') && !args.session) {
     throw new Error(`--${args.mode} requires --session`);
   }
@@ -2348,6 +2360,13 @@ function main() {
     });
   } else if (args.mode === 'remove-shell') {
     out = removeShell(rootDir, { session: args.session });
+  } else if (args.mode === 'legacy-sessions') {
+    // The boundary every mode keeps before it reads: a sessions directory
+    // configured outside the root is refused, never counted. The count
+    // itself is the shared detection's — the hook's and the audit's.
+    sessionsDirOf(rootDir);
+    const sessions = listLegacySessions(rootDir);
+    out = { count: sessions.length, sessions };
   } else {
     out = enableTaskModel(rootDir, { launcher: args.launcher });
   }

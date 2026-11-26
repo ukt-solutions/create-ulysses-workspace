@@ -1978,6 +1978,81 @@ console.log('# CLI: inventory table on stderr, refusals exit 1, errors exit 2');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 
+console.log('# CLI: --legacy-sessions prints the shared detection\'s count, and nothing else');
+{
+  // One run of the mode, with the JSON it printed (null when it did not exit 0).
+  const legacy = (root) => {
+    const r = spawnSync(process.execPath, [SCRIPT, '--legacy-sessions', '--root', root], { encoding: 'utf8' });
+    return { status: r.status, stderr: r.stderr, json: r.status === 0 ? JSON.parse(r.stdout) : null };
+  };
+  const setWorkspace = (root, fields) => {
+    const path = join(root, 'workspace.json');
+    const cfg = JSON.parse(readFileSync(path, 'utf-8'));
+    Object.assign(cfg.workspace, fields);
+    writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
+  };
+
+  // No sessions directory at all.
+  const missing = makeWorkspace();
+  try {
+    const out = legacy(missing.root);
+    assertEq([out.status, out.json], [0, { count: 0, sessions: [] }], 'a missing sessions directory is { count: 0, sessions: [] }, exit 0');
+    assertEq(out.stderr, '', 'and nothing goes to stderr');
+  } finally { clean(missing.root, missing.wsOrigin, missing.appOrigin); }
+
+  // A directory with only an archive and a dotfile in it: nothing counts.
+  const archived = makeWorkspace();
+  try {
+    mkdirSync(join(archived.root, 'work-sessions', '.archived', 'old--20260101T000000', 'workspace'), { recursive: true });
+    writeFileSync(join(archived.root, 'work-sessions', '.DS_Store'), '');
+    assertEq(legacy(archived.root).json, { count: 0, sessions: [] }, 'an archive alone does not count');
+  } finally { clean(archived.root, archived.wsOrigin, archived.appOrigin); }
+
+  // One real entry — the same whatever workspace.sessionModel says.
+  const one = makeWorkspace();
+  try {
+    mkdirSync(join(one.root, 'work-sessions', 'fix-auth', 'workspace'), { recursive: true });
+    assertEq(legacy(one.root).json, { count: 1, sessions: ['fix-auth'] }, 'one entry is { count: 1, sessions: ["fix-auth"] }');
+    for (const sessionModel of ['task', 'session', '']) {
+      setWorkspace(one.root, { sessionModel });
+      assertEq(legacy(one.root).json, { count: 1, sessions: ['fix-auth'] }, `sessionModel ${JSON.stringify(sessionModel)} changes nothing`);
+    }
+  } finally { clean(one.root, one.wsOrigin, one.appOrigin); }
+
+  // A custom workSessionsDir is the directory that counts — not the default
+  // name, which may exist beside it.
+  const custom = makeWorkspace();
+  try {
+    mkdirSync(join(custom.root, 'work-sessions', 'not-the-configured-directory'), { recursive: true });
+    setWorkspace(custom.root, { workSessionsDir: 'legacy-sessions' });
+    assertEq(legacy(custom.root).json, { count: 0, sessions: [] }, 'a custom directory that does not exist is count 0; the default name does not stand in for it');
+    for (const name of ['beta', 'alpha']) mkdirSync(join(custom.root, 'legacy-sessions', name), { recursive: true });
+    mkdirSync(join(custom.root, 'legacy-sessions', '.archived'), { recursive: true });
+    assertEq(legacy(custom.root).json, { count: 2, sessions: ['alpha', 'beta'] }, "the custom directory's entries are the count, sorted, dot entries aside");
+  } finally { clean(custom.root, custom.wsOrigin, custom.appOrigin); }
+
+  // The script's boundary holds for this read as for every other: a sessions
+  // directory configured outside the root is refused before it is counted.
+  const outside = makeWorkspace();
+  try {
+    setWorkspace(outside.root, { workSessionsDir: '../elsewhere' });
+    const out = legacy(outside.root);
+    assertEq(out.status, 2, 'a workSessionsDir outside the root exits 2');
+    assert(out.stderr.includes('resolves outside the workspace root'), `and the error says so: ${out.stderr.trim()}`);
+  } finally { clean(outside.root, outside.wsOrigin, outside.appOrigin); }
+
+  // The mode takes --root and nothing that belongs to another mode.
+  assertEq(parseArgs(['node', 's', '--legacy-sessions', '--root', '/w']).mode, 'legacy-sessions', '--legacy-sessions parses as a mode');
+  throws(() => parseArgs(['node', 's', '--legacy-sessions', '--session', 'x']), '--session is not valid with --legacy-sessions');
+  throws(() => parseArgs(['node', 's', '--legacy-sessions', '--launcher', '/w']), '--launcher is not valid with --legacy-sessions');
+  throws(() => parseArgs(['node', 's', '--legacy-sessions', '--root', '/w', '--fetch']), '--fetch is not valid with --legacy-sessions');
+  throws(() => parseArgs(['node', 's', '--legacy-sessions', '--inventory']), 'two modes rejected (legacy-sessions)');
+
+  // A root that is not a workspace is every mode's error.
+  const notWs = spawnSync(process.execPath, [SCRIPT, '--legacy-sessions', '--root', GIT_CFG], { encoding: 'utf8' });
+  assertEq(notWs.status, 2, 'a --root without workspace.json exits 2');
+}
+
 console.log('# R3: --backup --dry-run reports the plan with no side effects');
 {
   const fx = makeWorkspace();
