@@ -169,7 +169,15 @@ node .claude/scripts/chat-record.mjs --root . --owner "gh:42"
 
 The task lifecycle's pull-request step, in three commands. `--create` pushes each branch and opens one PR per repo, and writes a JSON description of the run to `--out`. `--checks` reads every PR's CI state without merging anything. `--merge` merges the PRs in order and closes the linked issue. The last two take that JSON file as `--prs`. A repo with no forge remote is neither pushed nor given a PR; `--merge` fast-forwards its default branch instead. [Chapter 2](02-work-sessions.md#the-task-model) has the full sequence, including merge approval.
 
+Each repo's branch is normally checked out in its task worktree, which `--create` derives from the branch name. `--worktree {repo}={path}` names a different checkout, repeatable once per repo: `/migrate-sessions` finishes a legacy session whose branch is checked out at `work-sessions/{name}/workspace/` for the workspace repo and at `work-sessions/{name}/workspace/repos/{repo}/` for each project repo. The path has to be the root of a git worktree of the same repository, checked out on `--branch`; anything else is refused before anything is pushed. Every entry in the JSON carries its checkout as `worktree`, so `--checks` and `--merge` need only the file. The flag is accepted there too, and replaces the recorded checkout for the repos it names.
+
 ```bash
+node .claude/scripts/task-pr.mjs --create --root . --branch "bugfix/fix-auth" --repo "." --repo "my-app" \
+  --worktree ".=work-sessions/fix-auth/workspace" \
+  --worktree "my-app=work-sessions/fix-auth/workspace/repos/my-app" \
+  --body-file ".=workspace-scratchpad/migrate-pr-fix-auth-workspace.md" \
+  --body-file "my-app=workspace-scratchpad/migrate-pr-fix-auth-my-app.md" \
+  --out "workspace-scratchpad/migrate-prs-fix-auth.json"
 node .claude/scripts/task-pr.mjs --checks --root . --prs "workspace-scratchpad/chats/fix-login/prs-bugfix-fix-auth.json"
 ```
 
@@ -212,7 +220,7 @@ The layers interact in a clear pattern:
 
 **Skills make decisions.** When Claude receives a hook's context injection, it uses skill knowledge to decide what to do. "There's an active session" leads to offering resume. "There's uncaptured work before compaction" leads to suggesting capture.
 
-**Scripts execute mechanics.** When a skill decides to create a session, it calls create-work-session.mjs. When it decides to clean up, it calls cleanup-work-session.mjs. The task lifecycle keeps the same split: `/start-work` calls task-worktree.mjs for each worktree and records the task with chat-record.mjs, and `/complete-work` hands the push, PR and merge sequence to task-pr.mjs. The skill handles the judgment; the script handles the git operations.
+**Scripts execute mechanics.** When a skill decides to create a session, it calls create-work-session.mjs. When it decides to clean up, it calls cleanup-work-session.mjs. The task lifecycle keeps the same split: `/start-work` calls task-worktree.mjs for each worktree and records the task with chat-record.mjs, and `/complete-work` hands the push, PR and merge sequence to task-pr.mjs — as `/migrate-sessions` does when it finishes a legacy session. The skill handles the judgment; the script handles the git operations.
 
 This separation means hooks are simple (detect and report), skills are expressive (decide and guide), and scripts are mechanical (execute and confirm). No layer tries to do another layer's job.
 

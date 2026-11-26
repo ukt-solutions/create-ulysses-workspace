@@ -58,10 +58,13 @@
 //                 nothing but empty directories, re-verified empty at
 //                 removal time; anything else refuses, touching nothing
 //   --enable-task-model
-//                 flip workspace.sessionModel to "task" (accepts a task
+//                 write workspace.sessionModel: "task" (accepts a task
 //                 worktree root — the one mode allowed off the launcher;
 //                 --launcher <root> counts the remaining sessions from
-//                 the launcher when --root is that worktree)
+//                 the launcher when --root is that worktree). Kept for
+//                 back-compat: new work is a task whatever the key holds,
+//                 so the write brings an older workspace.json in line with
+//                 the template and routes nothing.
 //
 // NOTHING HERE DELETES — with one deliberate exception: --remove-shell,
 // whose target is a folder provably empty of files and symlinks
@@ -413,9 +416,9 @@ function lsRemoteBranch(gitFn, cwd, remote, branch) {
 // remote commit is known locally, not-fetched when it is not. Every entry
 // carries the remote's URL (from local config, so it survives an
 // unreachable or never-fetched remote). This is what tells the operator
-// "finishing needs a force-push decision" BEFORE they choose Finish,
-// rather than after /complete-work's push bounces. A detached worktree
-// still lists its remotes — with state 'no-branch', never as "no remotes".
+// "finishing needs a force-push decision" BEFORE they choose Finish, rather
+// than after the push bounces. A detached worktree still lists its remotes —
+// with state 'no-branch', never as "no remotes".
 function remoteStatesFor(gitFn, wtPath, branch, head, remotesList, urls) {
   const out = {};
   if (!branch) {
@@ -739,7 +742,7 @@ function classify(session, activeDays, now = Date.now()) {
       reasons: [
         `last activity ${session.lastActivity}`,
         'no session.md tracker — /complete-work strips it before its final steps, so live worktrees without one are a session stopped mid-completion',
-        'finish it with /complete-work, or archive it if the operator knows it was abandoned there',
+        'finish it — the skill lands it through task-pr.mjs — or archive it if the operator knows it was abandoned there',
       ],
     };
   }
@@ -1926,7 +1929,7 @@ function archiveSession(root, { session, allowUncommitted = false, allowUnbacked
     }
     const insideOwned = owned.some((o) => insideDir(o.gitDir, admin));
     reasons.push(insideOwned
-      ? `${relative(rootDir, wtPath)} is a submodule checkout — moving it would break its link, and worktree repair cannot fix that; finish or keep this session instead`
+      ? `${relative(rootDir, wtPath)} is a submodule checkout — moving it would break its link, and worktree repair cannot fix that; finish this session instead (the skill lands it without moving anything), or reconcile the submodule by hand`
       : `${relative(rootDir, wtPath)} is a worktree of a repository outside this workspace (${admin}) — refusing to touch it; move or remove it manually`);
   }
   // Git is the authority on which worktrees exist: every one it has
@@ -2109,16 +2112,17 @@ function isLinkedWorktree(gitFn, rootDir) {
 }
 
 /**
- * Switch the workspace to the task model: flip workspace.sessionModel to
- * "task", keeping every other key untouched. From the launcher this also
- * reports the remaining sessions; from a task worktree (the S6 flow)
- * there is no sessions directory to read — pass `launcher` (CLI
- * `--launcher <root>`) to count them from the launcher anyway, or get
- * remainingSessions null with a note saying where the real list comes
- * from. The launcher is validated before anything is edited: it must be
- * the launcher of the SAME repository as --root (a different workspace's
- * launcher would happily count that workspace's sessions), and a --root
- * that is itself the launcher needs no launcher — only the same root
+ * Write workspace.sessionModel: "task", keeping every other key untouched.
+ * Kept for back-compat: new work is a task whatever the key holds, so the
+ * write brings an older workspace.json in line with the template and routes
+ * nothing. From the launcher this also reports the remaining sessions; from
+ * a task worktree (the S6 flow) there is no sessions directory to read —
+ * pass `launcher` (CLI `--launcher <root>`) to count them from the launcher
+ * anyway, or get remainingSessions null with a note saying where the real
+ * list comes from. The launcher is validated before anything is edited: it
+ * must be the launcher of the SAME repository as --root (a different
+ * workspace's launcher would happily count that workspace's sessions), and a
+ * --root that is itself the launcher needs no launcher — only the same root
  * spelled again is accepted.
  */
 function enableTaskModel(root, { gitFn = spawnSync, launcher = null } = {}) {

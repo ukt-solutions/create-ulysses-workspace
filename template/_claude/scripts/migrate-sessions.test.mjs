@@ -404,8 +404,10 @@ console.log('# inventory: a stripped tracker with live worktrees proposes READY_
     const s = byName(inventory(fx.root), 'prepped');
     assertEq(s.proposal, 'READY_TO_COMPLETE', 'a stripped tracker with live worktrees proposes READY_TO_COMPLETE');
     assertEq(s.status, null, 'no tracker means no status — never a crash');
-    assert(s.reasons.some((r) => r.includes('/complete-work')), 'the reasons say to finish with /complete-work');
-    assert(s.reasons.some((r) => r.includes('mid-completion')), 'and why: the strip step ran, the final steps did not');
+    assert(s.reasons.some((r) => r.includes('/complete-work strips it')), 'the reasons say where the state comes from: the strip step ran, the final steps did not');
+    const finish = s.reasons.find((r) => r.startsWith('finish it'));
+    assert(finish && finish.includes('task-pr.mjs') && !finish.includes('/complete-work'),
+      'the reasons finish through task-pr.mjs — /complete-work is named as the cause, never as the way to finish');
     assertEq(s.worktrees[0].remotes.origin.state, 'same', 'the pushed branch still shows its live remote state');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
@@ -1663,6 +1665,8 @@ console.log('# archive: a submodule checkout refuses with an accurate reason');
     const out = archiveSession(fx.root, { session: 'sub', cwd: fx.root });
     assertEq(out.refused, true, 'a submodule checkout refuses');
     assert(out.reasons.some((r) => r.includes('submodule')), 'the reason says submodule, not "outside repository"');
+    assert(out.reasons.some((r) => r.includes('finish this session instead')) && !out.reasons.join(' ').includes('keep'),
+      'the way out is Finish or a manual reconciliation — keeping the session is not offered');
     assert(existsSync(join(projWts.app, 'vendor', 'sub', 's.txt')), 'nothing was moved');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin, subSrc); }
 }

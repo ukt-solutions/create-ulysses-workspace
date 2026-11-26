@@ -11,7 +11,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { run, parseArgs, parseForgeRemote, mergeModeFor, mergeApprovalFor } from './task-pr.mjs';
 import { createGitlabAdapter } from './forges/gitlab.mjs';
 import { createTaskWorktree, taskWorktreePath } from './task-worktree.mjs';
@@ -425,6 +425,10 @@ console.log('# parseArgs validation');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--prs', 'x.json'])), '--prs rejected with --create');
   await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--force-with-lease']), '--force-with-lease rejected with --merge');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--body-file', 'nopath'])), '--body-file needs repo=path');
+  await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--worktree', 'nopath'])), '--worktree needs repo=path');
+  await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--worktree', 'app='])), '--worktree needs a path');
+  await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--worktree', '../x=/p'])), '--worktree needs a plain repo name');
+  await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--worktree', '..=/p'])), '".." is not the workspace repo');
   await rejects(() => run(['node', 'task-pr.mjs', '--merge', '--root', '/w', '--prs', 'x.json', '--out', 'y.json']), '--out rejected with --merge');
   await rejects(() => run(argvCreate(['--root', '/w', '--branch', 'b', '--repo', 'app', '--bogus'])), 'unknown flag rejected');
   // The check-gate flags are --merge's alone, and --wait-timeout rides on --wait.
@@ -439,6 +443,19 @@ console.log('# parseArgs validation');
     '--out', '/tmp/prs.json']);
   assertEq([ok.mode, ok.branch, ok.workItem, ok.repos, ok.out], ['create', 'feature/x', 'gh:163', ['app', '.'], '/tmp/prs.json'], 'repeated --repo accumulates');
   assertEq([...ok.bodyFiles.entries()], [['app', '/tmp/a.md'], ['.', '/tmp/w.md']], 'body files map repo to path');
+  const placed = parseArgs(['node', 's', '--create', '--root', '/w', '--branch', 'feature/x', '--repo', 'app',
+    '--worktree', 'app=sessions/x/workspace/repos/app', '--worktree', '.=sessions/x/workspace']);
+  assertEq([...placed.worktrees.entries()], [['app', 'sessions/x/workspace/repos/app'], ['.', 'sessions/x/workspace']],
+    '--worktree maps each repo to its checkout, "." included');
+  const replace = parseArgs(['node', 's', '--create', '--root', '/w', '--branch', 'feature/x', '--repo', 'app',
+    '--worktree', 'app=/first', '--worktree', 'app=/second']);
+  assertEq([...replace.worktrees.entries()], [['app', '/second']], 'repeated --worktree for one repo keeps the last path');
+  // The flag is the same in the other two modes: the file's entries are what
+  // it applies to there.
+  for (const mode of ['--merge', '--checks']) {
+    const again = parseArgs(['node', 's', mode, '--root', '/w', '--prs', 'x.json', '--worktree', 'app=/elsewhere']);
+    assertEq(again.worktrees.get('app'), '/elsewhere', `${mode} accepts --worktree`);
+  }
   const waiting = parseArgs(['node', 's', '--merge', '--root', '/w', '--prs', 'x.json', '--wait', '--wait-timeout', '15', '--skip-checks', '--approved']);
   assertEq([waiting.mode, waiting.wait, waiting.waitTimeout, waiting.skipChecks, waiting.approved], ['merge', true, '15', true, true], 'merge flags parse');
 }
@@ -1141,6 +1158,173 @@ console.log('# a missing task worktree refuses up front');
       'no task worktree',
     );
   } finally { clean(root); bares.forEach(clean); }
+}
+
+// The shape /migrate-sessions finishes: a legacy session's branch, checked
+// out in a worktree of the workspace repo at work-sessions/{name}/workspace
+// and in nested worktrees of the project repos under it — none of them at
+// the task worktree path --create derives from the branch. `lone` has no
+// origin, so it covers local mode: nothing pushed, merged in its clone.
+function makeSessionLauncher() {
+  const fx = makeLauncher({ app: 'git@github.com:acme/app.git', lone: 'none' }, { launcherOrigin: 'forge' });
+  const branch = 'bugfix/fix-auth';
+  const session = join(fx.root, 'work-sessions', 'fix-auth');
+  const wsWt = join(session, 'workspace');
+  const appWt = join(session, 'workspace', 'repos', 'app');
+  const loneWt = join(session, 'workspace', 'repos', 'lone');
+  // Sessions are gitignored in a real workspace, and the launcher has to stay
+  // clean for a local merge of ".".
+  writeFileSync(join(fx.root, '.gitignore'), '.claude/worktrees/\nrepos\nwork-sessions\n');
+  git(fx.root, ['commit', '-q', '-am', 'chore: ignore sessions']);
+  git(fx.root, ['worktree', 'add', '-q', '-b', branch, wsWt]);
+  for (const [repo, dir] of [['app', appWt], ['lone', loneWt]]) {
+    mkdirSync(dirname(dir), { recursive: true });
+    git(join(fx.root, 'repos', repo), ['worktree', 'add', '-q', '-b', branch, dir]);
+    writeFileSync(join(dir, 'work.txt'), 'fixed\n');
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-q', '-m', 'fix: the auth timeout']);
+  }
+  writeFileSync(join(wsWt, 'ctx.md'), 'promoted\n');
+  git(wsWt, ['add', '-A']);
+  git(wsWt, ['commit', '-q', '-m', 'context: promote thinking']);
+  writeFileSync(join(fx.root, 'body-app.md'), 'Summary.\n');
+  writeFileSync(join(fx.root, 'body-ws.md'), 'Summary.\n');
+  return { ...fx, branch, wsWt, appWt, loneWt };
+}
+
+console.log('# --worktree: a branch checked out outside the task layout is pushed and PR\'d from there');
+{
+  const fx = makeSessionLauncher();
+  try {
+    const file = join(fx.root, 'prs-session.json');
+    const taskArgs = [
+      '--root', fx.root, '--branch', fx.branch, '--repo', '.', '--repo', 'app', '--repo', 'lone',
+      '--body-file', `.=${join(fx.root, 'body-ws.md')}`, '--body-file', `app=${join(fx.root, 'body-app.md')}`,
+    ];
+    const where = ['--worktree', `.=${fx.wsWt}`, '--worktree', `app=${fx.appWt}`, '--worktree', `lone=${fx.loneWt}`];
+    const log = [];
+    const gitFn = gitWith([pushOk]);
+    const deps = { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) };
+    const out = await run(argvCreate([...taskArgs, ...where, '--out', file]), deps);
+
+    assertEq(out.empty, [], 'nothing is empty');
+    assertEq(out.pushed, ['.', 'app'], 'the two forge repos were pushed, the local one was not');
+    // The workspace branch is two commits over origin/main: the fixture's
+    // ignore line landed on main after the first push.
+    assertEq(out.prs.map((p) => [p.repo, p.mode, p.commits, p.worktree]), [
+      ['lone', 'local', 1, fx.loneWt],
+      ['.', 'forge', 2, fx.wsWt],
+      ['app', 'forge', 1, fx.appWt],
+    ], 'every entry counts its commits from its own checkout and records that checkout as `worktree`');
+    const pushes = gitFn.calls.filter((c) => c.args.includes('push'));
+    assertEq(pushes.map((c) => [c.args[1], c.args.at(-1)]), [[fx.wsWt, fx.branch], [fx.appWt, fx.branch]],
+      "each repo's git ran in the checkout --worktree named, not in a task worktree");
+    assertEq(log.filter((e) => e.op === 'prCreate').map((e) => [e.repo, e.head, e.base]),
+      [['acme/workspace', fx.branch, 'main'], ['acme/app', fx.branch, 'main']],
+      'one PR per forge repo, from the origin each checkout resolves');
+    assertEq(JSON.parse(readFileSync(file, 'utf8')), out, '--out records the same entries, checkout included');
+
+    // Without the flag the same task is refused: there is no task worktree
+    // for this branch, and --create does not guess where else to look.
+    const controlLog = [];
+    const controlGit = gitWith([pushOk]);
+    await rejects(
+      () => run(argvCreate(taskArgs), { gitFn: controlGit, forgeFactory: fakeForgeFactory(controlLog), trackerFactory: fakeTrackerFactory(controlLog) }),
+      'without --worktree the task worktree is required',
+      'no task worktree',
+    );
+    assert(controlGit.calls.every((c) => !c.args.includes('push')) && controlLog.length === 0,
+      'and that refusal pushed nothing and asked the forge nothing');
+
+    // --checks and --merge need only the file: the local entry fast-forwards
+    // its source clone, the forge entries merge, and the session's checkouts
+    // are left on their branch for the caller to deal with.
+    const checks = await run(['node', 'task-pr.mjs', '--checks', '--root', fx.root, '--prs', file], deps);
+    assertEq(checks.checks.map((c) => [c.repo, c.mode]), [['lone', 'local'], ['.', 'forge'], ['app', 'forge']],
+      '--checks reads every entry from the file');
+    const mergeLog = [];
+    const merged = await run(['node', 'task-pr.mjs', '--merge', '--root', fx.root, '--prs', file],
+      { gitFn: gitWith(), forgeFactory: fakeForgeFactory(mergeLog), trackerFactory: fakeTrackerFactory(mergeLog) });
+    assertEq(merged.merged.map((m) => m.repo), ['lone', 'app', '.'], '--merge finishes every entry, the workspace repo last');
+    assertEq(git(join(fx.root, 'repos', 'lone'), ['log', '-1', '--format=%s']).trim(), 'fix: the auth timeout',
+      "a local entry still merges in its source clone, from the branch its checkout holds");
+    assertEq(git(fx.loneWt, ['rev-parse', '--abbrev-ref', 'HEAD']).trim(), fx.branch, 'the checkout named by --worktree is left on the branch');
+
+    // The flag is accepted by the other two modes as well, where it replaces
+    // the recorded checkout for the repos it names — and a repo the file
+    // does not list refuses instead of being ignored.
+    const rechecked = await run(['node', 'task-pr.mjs', '--checks', '--root', fx.root, '--prs', file, '--worktree', `app=${fx.appWt}`], deps);
+    assertEq(rechecked.checks.length, 3, '--checks takes --worktree and still reads every entry');
+    await rejects(
+      () => run(['node', 'task-pr.mjs', '--checks', '--root', fx.root, '--prs', file, '--worktree', `ghost=${fx.appWt}`], deps),
+      'a repo the PRs file does not list refuses',
+      'which the PRs file does not list',
+    );
+  } finally { clean(fx.root); fx.bares.forEach(clean); }
+}
+
+console.log('# --worktree: anything but a worktree of that repo on the branch refuses before a push');
+{
+  const fx = makeSessionLauncher();
+  try {
+    const other = join(fx.root, 'scratch', 'other-branch');
+    mkdirSync(dirname(other), { recursive: true });
+    git(join(fx.root, 'repos', 'app'), ['worktree', 'add', '-q', '-b', 'feature/other', other]);
+    const detached = join(fx.root, 'scratch', 'detached');
+    git(join(fx.root, 'repos', 'app'), ['worktree', 'add', '-q', '--detach', detached, fx.branch]);
+    const nested = join(fx.appWt, 'nested');
+    mkdirSync(nested);
+
+    // Each case breaks one repo's override and leaves the other valid, so
+    // the refusal is the broken one's and nothing else gets in the way.
+    const valid = { app: `app=${fx.appWt}`, '.': `.=${fx.wsWt}` };
+    const cases = [
+      { what: 'another branch', bad: `app=${other}`, expected: `on feature/other, not ${fx.branch}`, keep: ['.'] },
+      { what: 'the source clone, on its default branch', bad: `app=${join(fx.root, 'repos', 'app')}`, expected: `on main, not ${fx.branch}`, keep: ['.'] },
+      { what: 'a detached HEAD', bad: `app=${detached}`, expected: `on a detached HEAD, not ${fx.branch}`, keep: ['.'] },
+      { what: 'a worktree of another repository', bad: `app=${fx.wsWt}`, expected: 'a worktree of a different repository than repos/app', keep: ['.'] },
+      { what: 'the workspace repo name on a project worktree', bad: `.=${fx.appWt}`, expected: 'a worktree of a different repository than the workspace repo', keep: ['app'] },
+      { what: 'a directory inside a worktree', bad: `app=${nested}`, expected: 'not the root of a git worktree', keep: ['.'] },
+      { what: 'a missing path', bad: `app=${join(fx.root, 'scratch', 'nope')}`, expected: 'not a directory', keep: ['.'] },
+    ];
+    for (const { what, bad, expected, keep } of cases) {
+      const log = [];
+      const gitFn = gitWith([pushOk]);
+      const overrides = [bad, ...keep.map((repo) => valid[repo])].flatMap((flag) => ['--worktree', flag]);
+      await rejects(
+        () => run(argvCreate([
+          '--root', fx.root, '--branch', fx.branch, '--repo', 'app', '--repo', '.', ...overrides,
+          '--body-file', `app=${join(fx.root, 'body-app.md')}`, '--body-file', `.=${join(fx.root, 'body-ws.md')}`,
+        ]), { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) }),
+        `--worktree naming ${what} refuses`,
+        expected,
+      );
+      assert(gitFn.calls.every((c) => !c.args.includes('push')) && log.length === 0,
+        `--worktree naming ${what} pushed nothing and asked the forge nothing`);
+    }
+
+    // An override for a repo outside the task is a typo, not a request.
+    await rejects(
+      () => run(argvCreate([
+        '--root', fx.root, '--branch', fx.branch, '--repo', 'app', '--worktree', `lone=${fx.loneWt}`,
+        '--body-file', `app=${join(fx.root, 'body-app.md')}`,
+      ]), { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory([]), trackerFactory: fakeTrackerFactory([]) }),
+      '--worktree for a repo that is not part of the task refuses',
+      'which is not part of this task',
+    );
+
+    // One checkout without the flag keeps the task layout: here there is no
+    // task worktree for the branch, so that repo is what refuses — the
+    // override for the other one is not an error.
+    await rejects(
+      () => run(argvCreate([
+        '--root', fx.root, '--branch', fx.branch, '--repo', 'app', '--repo', '.', '--worktree', `.=${fx.wsWt}`,
+        '--body-file', `app=${join(fx.root, 'body-app.md')}`, '--body-file', `.=${join(fx.root, 'body-ws.md')}`,
+      ]), { gitFn: gitWith([pushOk]), forgeFactory: fakeForgeFactory([]), trackerFactory: fakeTrackerFactory([]) }),
+      'a repo without an override still needs its task worktree',
+      'no task worktree',
+    );
+  } finally { clean(fx.root); fx.bares.forEach(clean); }
 }
 
 console.log('# an invalid branch name is refused before any other git call');
