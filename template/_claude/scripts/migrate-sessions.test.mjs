@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import {
   inventory, backupSession, archiveSession, removeShell, enableTaskModel, classify, parseArgs,
 } from './migrate-sessions.mjs';
+import { syncRepoRemotes } from './repo-remotes.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLAUDE_DIR = resolve(HERE, '..');
@@ -807,6 +808,72 @@ console.log('# ls-remote timeout degrades to unknown (S3, injected gitFn)');
     assertEq(wsWt.backedBy, null, 'unknown proves nothing');
     const warn = s.warnings.find((w) => w.kind === 'unbacked');
     assert(warn && warn.message.includes('origin:unknown'), 'the warning names the unknown remote');
+  } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
+}
+
+// A real workspace carries remotes the session-start hook adds for matching
+// pull requests: one per project clone, marked remote.<name>.ulyssesManaged.
+// Every workspace worktree shares them. They mirror another repository, so
+// the migrator must not list one, ask it anything, count it as a backup, or
+// ever pick it as a push target.
+console.log('# managed repo remotes: not listed, not asked, not a backup, never a push target');
+{
+  const fx = makeWorkspace();
+  try {
+    assertEq(syncRepoRemotes(fx.root).added, ['repo-app'], 'the hook\'s sync registered the project clone on the workspace repo');
+    // Unreachable, so that any question put to it would surface — as a
+    // call, a delay, or a blocker.
+    git(fx.root, 'remote set-url repo-app /nonexistent/remote.git');
+    assert(git(fx.root, 'remote').split('\n').includes('repo-app'), 'control: git itself still lists the managed remote');
+
+    makeSession(fx, { name: 'managed', branch: 'bugfix/managed', tracker: { status: 'active', branch: 'bugfix/managed', repos: ['app'], updated: daysAgoIso(40) } });
+    const wsWt = join(fx.root, 'work-sessions', 'managed', 'workspace');
+    writeFileSync(join(wsWt, 'NOTES.md'), 'content\n');
+    commitAll(wsWt, 'content', daysAgoIso(40));
+
+    // Inventory: the workspace worktree reports its own remote alone, and
+    // no ls-remote is sent to the managed one.
+    const asked = [];
+    const askingGitFn = (cmd, args, opts = {}) => {
+      if (args.includes('ls-remote')) asked.push(args.slice(args.indexOf('ls-remote') + 1).join(' '));
+      return gitFn(cmd, args, opts);
+    };
+    const inv = byName(inventory(fx.root, { gitFn: askingGitFn }), 'managed');
+    const wsInfo = inv.worktrees.find((w) => w.repo === '.');
+    assertEq(Object.keys(wsInfo.remotes), ['origin'], 'the workspace worktree lists only the remote that is its own');
+    assertEq(wsInfo.remoteUrls, { origin: fx.wsOrigin }, 'with that remote\'s URL alone');
+    assert(asked.some((q) => q.includes('origin ')), 'control: origin was asked, so the record of questions is real');
+    assert(!asked.some((q) => q.includes('repo-app')), `no ls-remote was sent to the managed remote (asked: ${JSON.stringify(asked)})`);
+    const table = spawnSync(process.execPath, [SCRIPT, '--root', fx.root, '--inventory'], { encoding: 'utf8' });
+    assert(!table.stderr.includes('no-push') && !table.stderr.includes('[repo-app'), 'the printed table does not show the managed remote or its sentinel pushurl');
+
+    // Archive: an ordinary remote that cannot be reached blocks the drain-tag
+    // check; the managed one, equally unreachable here, does not.
+    const out = archiveSession(fx.root, { session: 'managed', cwd: fx.root });
+    assertEq(out.refused, true, 'control: the archive still refuses a tip no remote backs');
+    assert(!out.reasons.some((r) => r.includes('repo-app')), `an unreachable managed remote raises no blocker: ${JSON.stringify(out.reasons)}`);
+    git(fx.root, 'remote add unreachable /nonexistent/remote.git');
+    const blocked = archiveSession(fx.root, { session: 'managed', cwd: fx.root });
+    assert(blocked.reasons.some((r) => r.includes('could not reach remote "unreachable"')), 'control: an unreachable ordinary remote of the same workspace repo does');
+    git(fx.root, 'remote remove unreachable');
+
+    // Backup: a managed remote is not a remote the operator may name, and —
+    // in a workspace whose own repo has no origin — is never the fallback.
+    const named = backupSession(fx.root, { session: 'managed', remote: true, remoteAllow: ['.=repo-app'] });
+    assert(named.refused === true && named.reasons.some((r) => r.includes('--remote-allow names remote "repo-app"')),
+      '--remote-allow cannot name a managed remote');
+    assertEq(git(fx.root, 'tag -l "drain/managed/*"').trim(), '', 'and that refusal tagged nothing');
+
+    git(fx.root, 'remote remove origin');
+    const noOrigin = byName(inventory(fx.root), 'managed').worktrees.find((w) => w.repo === '.');
+    assertEq(noOrigin.remotes, {}, 'with origin gone the workspace repo reports no remote of its own');
+    const plan = backupSession(fx.root, { session: 'managed', remote: true, dryRun: true });
+    const wsTarget = plan.targets.find((t) => t.repo === '.');
+    assertEq(wsTarget && wsTarget.remote, null, 'so the workspace tip has no push candidate');
+    assert(plan.reasons.some((r) => r.includes('the workspace repo has no remote')), `and the plan says so: ${JSON.stringify(plan.reasons)}`);
+    const refused = backupSession(fx.root, { session: 'managed', remote: true });
+    assertEq(refused.refused, true, 'push mode still refuses without an allow');
+    assertEq(gitArgv(fx.root, ['config', '--get', 'remote.repo-app.pushurl']).trim(), 'no-push', 'the managed remote is as the sync left it');
   } finally { clean(fx.root, fx.wsOrigin, fx.appOrigin); }
 }
 

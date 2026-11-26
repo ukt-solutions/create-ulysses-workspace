@@ -37,7 +37,7 @@ If all are present, report "Workspace already initialized and this machine is se
 
 ## Join flow
 
-A join sets up one person on one machine. It never touches tracked files, creates no branch and makes no commits — everything it writes is gitignored (`repos/`, `.claude/settings.local.json`, `CLAUDE.local.md`, the generated per-user index). It skips the template install, rule activation, knowledge extraction, tracker setup, root cleanup and remote setup: the teammate who initialized the workspace already did those, and their results arrived with the clone.
+A join sets up one person on one machine. It never touches tracked files, creates no branch and makes no commits — everything it writes is gitignored (`repos/`, `.claude/settings.local.json`, `CLAUDE.local.md`, the generated per-user index), apart from the git config of the workspace repo, where it registers the clones as remotes. It skips the template install, rule activation, knowledge extraction, tracker setup, root cleanup and the setup of the workspace's own remote: the teammate who initialized the workspace already did those, and their results arrived with the clone.
 
 1. **Report what is missing** — one line per piece from the join check, and say this run is a join, not an init.
 2. **User identity.** If `workspace.user` is unset, get the default from the team roster (`workspace.team`, gh:133):
@@ -50,6 +50,13 @@ A join sets up one person on one machine. It never touches tracked files, create
    ```
    If the workspace has a roster (`roster: true`) and the name is not one of its members, this is a new team member. A join writes no tracked file, so it doesn't add them itself. Tell them to add themselves in their first change, with `node .claude/scripts/team-roster.mjs --add '{name}' --detect --root .` (pass `--name '{display name}'` too). The session-start hook reminds them until they do.
 3. **Clone missing repos.** For each repo in `workspace.json` without `repos/{name}`: ask "Clone {name} from {remote}? [Y/n]", then `git clone -- '{remote}' 'repos/{name}'` (values go in single quotes, and a `'` inside a value is written `'\''`; the `--` keeps a remote that starts with `-` from being read as an option). If the entry names a `branch`, check that the clone is on it. A clone that fails (no access, wrong URL) is reported and skipped, never retried in a loop.
+
+   With the clones in place — all of them, not only the ones this run made — register each on the workspace repo:
+   ```bash
+   node .claude/scripts/repo-remotes.mjs --root .
+   ```
+   Claude Code Desktop matches a pull request to a chat through the remotes of the chat's folders, and a chat runs at the workspace root, so each clone needs a `repo-{name}` remote there carrying its origin. Without one, a PR opened in a project repo is not matched to the chat. A remote made this way cannot be pushed to, and no fetch reaches it. Report the lines the script prints, and name any clone it reports as a conflict.
+
 4. **Per-user folder.** If `workspace-context/team-member/{user}/` does not exist, create it. The generator in the next step builds an index only for folders that exist, so without it `CLAUDE.local.md` would import a missing file.
 5. **CLAUDE.local.md.** Run:
    ```bash
@@ -60,6 +67,7 @@ A join sets up one person on one machine. It never touches tracked files, create
    ```
    "Joined {workspace-name} as {user}.
    - Repos cloned: {list} (already present: {list}; failed: {list})
+   - Repo remotes: {repo-{name} list, "added" or "already in place" for each}{; no remote for: {list}}
    - User identity: {set now | already set}
    - Team roster: {listed | not listed yet — add yourself in your first change | no roster}
    - CLAUDE.local.md: {written | unchanged}
@@ -68,7 +76,7 @@ A join sets up one person on one machine. It never touches tracked files, create
    Restart Claude Code so CLAUDE.local.md and the hooks load, then run /start-work."
    ```
 
-A join changes nothing the team shares, so there is nothing to push. The new team member's first tracked file lands through ordinary work — `/start-work`, a `/braindump`, or `/handoff`.
+A join changes nothing the team shares, so there is nothing to push. The remotes are the one piece that every join has to redo: git config stays on the machine that wrote it, so a teammate's clone of the workspace arrives without them. The new team member's first tracked file lands through ordinary work — `/start-work`, a `/braindump`, or `/handoff`.
 
 The rest of this skill is the **Init** flow.
 
@@ -103,6 +111,12 @@ For each repo in `workspace.json`:
 - If missing: ask "Clone {name} from {remote}? [Y/n]"
 - If confirmed: `git clone -- '{remote}' 'repos/{name}'`
 - If exists: report "repos/{name} already present"
+
+With the clones in place — all of them, not only the ones this step made — register each on the workspace repo:
+```bash
+node .claude/scripts/repo-remotes.mjs --root .
+```
+Claude Code Desktop matches a pull request to a chat through the remotes of the chat's folders, and a chat runs at the workspace root, so each clone needs a `repo-{name}` remote there carrying its origin. Without one, a PR opened in a project repo is not matched to the chat. A remote made this way cannot be pushed to, and no fetch reaches it. Report the lines the script prints, and name any clone it reports as a conflict. Step 17 asks for `origin` alone, because from here on the repo's list of remotes is never empty.
 
 While workspace.json is open, confirm the work lifecycle. `workspace.sessionModel` selects where `/start-work` routes new work: `"task"` (one tracker issue + one branch + one worktree per touched repo; recommended for new workspaces) or `"session"` (self-contained `work-sessions/{name}/` folders; the template default — keep it for teams already mid-flight on sessions). Ask: "Which lifecycle should new work use — task (recommended for a new workspace) or session (default)?" and write the answer to `workspace.sessionModel` only if it differs from the current value. Never flip an existing non-default value silently.
 
@@ -427,14 +441,15 @@ The first writes `CLAUDE.local.md` from `workspace.user` and regenerates the ind
 
 ### Step 17: Set up workspace remote
 
-Check if the workspace git repo already has a remote:
+Check whether the workspace repo has an `origin` of its own:
 ```bash
-git remote -v
+git remote get-url origin
 ```
+It prints the URL and exits 0 when `origin` exists, and exits non-zero when there is none. Only `origin` counts. Step 2 gave the repo a `repo-{name}` remote per project clone, so a list of its remotes is never empty by this point; those exist so Claude Code Desktop can match a pull request to a chat, and none of them is the workspace's own.
 
-**If a remote already exists:** Report "Remote already configured: {url}" and skip to the next step.
+**If `origin` exists:** Report "Remote already configured: {url}" and skip to the next step.
 
-**If no remote but a team workspace repo already exists** (e.g., a teammate already initialized and pushed):
+**If there is no `origin` but a team workspace repo already exists** (e.g., a teammate already initialized and pushed):
 - Ask: "Does a workspace repo already exist that you want to connect to? Provide the URL, or say 'create new'."
 - If URL provided:
   ```bash
@@ -450,7 +465,7 @@ git remote -v
   - For rules: if both sides activated different optional rules, keep both.
   - For CLAUDE.md: use the remote version (it's the established one), add any local customizations the user wants.
 
-**If no remote and creating new:**
+**If there is no `origin` and no team repo to connect to:**
 - Detect the org from project repo remotes in workspace.json
 - Ask: "Create workspace repo as `{org}/workspace-{project}`? Or provide a different name/URL."
 - Create via `gh repo create '{org}/{name}' --private` and add as remote
@@ -470,7 +485,7 @@ git checkout '{default-branch}'
 git merge --squash chore/workspace-init
 git commit -m "chore: workspace initialization"
 ```
-If a remote is configured, push the default branch (`git push origin '{default-branch}'`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 17 rebase). Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
+If `origin` is configured (Step 17), push the default branch (`git push origin '{default-branch}'`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 17 rebase). The condition is `origin`, not "a remote": since Step 2 the repo has carried a `repo-{name}` remote per project clone, and none of those is the workspace's own, so with no `origin` there is nothing to push to. Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
 
 **Final report:**
 
@@ -481,6 +496,7 @@ Branch: chore/workspace-init (merged to {default-branch} as "chore: workspace in
 
 Summary:
 - {N} repos cloned
+- Repo remotes: {N} registered{; no remote for: {list}}
 - {R} rules created/activated
 - {P} template components installed
 - {M} locked context files ({size}KB / 10KB target)
@@ -510,6 +526,7 @@ If the merge was declined, replace the branch line with:
     git merge --squash chore/workspace-init
     git commit -m 'chore: workspace initialization'
     git push origin {default-branch}
+  (leave out the last line if Step 17 found or set no `origin`)
 
 This session is done. Start a fresh Claude Code session and run /start-work to begin."
 ```

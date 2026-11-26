@@ -112,6 +112,7 @@ The workspace configuration file declares which repos belong to the workspace an
     "sessionModel": "session",
     "tracker": null,
     "forge": { "type": "github" },
+    "repoRemotes": true,
     "mergeApproval": "ask"
   },
   "repos": {
@@ -129,7 +130,9 @@ The workspace configuration file declares which repos belong to the workspace an
 
 The `repos` object is the manifest of project repositories. Each entry names a repo, its remote URL, and its default branch. Skills use this manifest to create worktrees, push branches, and create pull requests. When you start work, you choose which repos to include — it can span one or many.
 
-The `workspace` object holds the directory locations and the template version, together with the settings the skills read: which lifecycle new work uses (`sessionModel`), the issue tracker and the forge, and the context budgets. `/workspace-init` sets most of them, and you rarely need to touch them again. [VERSIONING.md](../../VERSIONING.md) documents every field.
+The `workspace` object holds the directory locations and the template version, together with the settings the skills read: which lifecycle new work uses (`sessionModel`), the issue tracker and the forge, whether the project clones are registered as remotes of the workspace repo (`repoRemotes`), and the context budgets. `/workspace-init` sets most of them, and you rarely need to touch them again. [VERSIONING.md](../../VERSIONING.md) documents every field.
+
+`repoRemotes` is on unless it is `false`. On, every project clone is mirrored onto the workspace repo as a remote named `repo-{name}`, so that Claude Code Desktop can match a pull request in that project to a chat started at the workspace root; [Chapter 7](07-hooks-and-scripts.md#repo-remotesmjs) describes how. `false` removes what that added — the remotes the script created, and the hand-made ones it adopted — and leaves every other remote as it is.
 
 ## How Repos Relate to the Workspace
 
@@ -137,7 +140,7 @@ Your project code lives in its own repositories. The workspace does not contain 
 
 This means you can run several pieces of work in parallel, each with its own set of worktrees, each on its own branch, without any conflict. One terminal can be working on a feature while another terminal fixes a bug — both in the same workspace, neither blocking the other.
 
-The workspace repository and the project repositories are independent git repos. They share a branch name during the work for traceability (so you can find the corresponding workspace context for any project branch), but they have separate commit histories, separate remotes, and separate pull requests.
+The workspace repository and the project repositories are independent git repos. They share a branch name during the work for traceability (so you can find the corresponding workspace context for any project branch), but they have separate commit histories, separate origins, and separate pull requests. The one link git itself carries between them is a set of remotes on the workspace repo: each project clone appears there as `repo-{name}`, for pull-request matching only. Nothing is pushed to or fetched from those remotes.
 
 ## Convention Over Configuration
 

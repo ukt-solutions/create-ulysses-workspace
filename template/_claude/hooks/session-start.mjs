@@ -112,7 +112,10 @@ if (pointer) {
 
 // We're at the main workspace root — surface open sessions and context.
 
-// Fetch project repos in the background (best effort)
+// Fetch each project clone, then mirror the clones onto this repo as remotes
+// a pull request can be matched by (repo-remotes.mjs). Both are conveniences:
+// a failure in either changes what the session is told, never whether it
+// starts.
 const repoNames = Object.keys(config.repos || {});
 const missing = [];
 const existing = [];
@@ -126,6 +129,17 @@ for (const name of repoNames) {
   } else {
     missing.push(name);
   }
+}
+// The module is imported here rather than at the top of the file so that a
+// workspace whose update left the script out still starts: a module that
+// cannot be loaded is one more failure for this try to absorb.
+let repoRemotesNote = '';
+try {
+  const { syncRepoRemotes, repoRemotesLine } = await import('../scripts/repo-remotes.mjs');
+  repoRemotesNote = repoRemotesLine(syncRepoRemotes(root, { enabled: config.workspace?.repoRemotes !== false }));
+} catch {
+  // These remotes only help match pull requests to a chat. A session that
+  // starts without them has lost nothing it needs.
 }
 // A teammate's fresh clone of an initialized workspace has no repos/ and no
 // user identity; point it at /workspace-init's join flow (gh:130).
@@ -150,6 +164,9 @@ if (roster.present && localUser) {
   lines.push(...sessionStartLines(roster, { user: localUser, gitEmail: readGitEmail(root) }));
 }
 if (existing.length > 0) lines.push(`Repos synced: ${existing.join(', ')}`);
+// One line, and only when a remote changed or a clone could not get one:
+// every session pays for each line here.
+if (repoRemotesNote) lines.push(repoRemotesNote);
 
 // Surface active work sessions
 const trackers = getSessionTrackers(root);

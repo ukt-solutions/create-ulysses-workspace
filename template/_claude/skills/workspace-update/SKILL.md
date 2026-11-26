@@ -26,22 +26,24 @@ Apply a staged template update to an initialized workspace. The CLI (`npx @ulyss
 
 ### Step 1: Decide where the update lands
 
-Check the workspace repo for a remote:
+Check whether the workspace repo has an `origin`:
 
 ```bash
-git remote
+git remote get-url origin
 ```
 
-ANY remote — even one you cannot push to — routes the update through a worktree: a commit made directly on the launcher's local default branch diverges from `origin/<default>` (the push is refused on a protected default branch, and later task worktrees based on `origin/<default>` cannot fast-forward past it). Never commit or push the launcher's default branch directly.
+The decision turns on `origin` alone. An `origin` — even one you cannot push to — routes the update through a worktree: a commit made directly on the launcher's local default branch diverges from `origin/<default>` (the push is refused on a protected default branch, and later task worktrees based on `origin/<default>` cannot fast-forward past it). Never commit or push the launcher's default branch directly.
 
-- **A remote exists (the normal case)** — create a task worktree up front and treat it as the workspace root for Steps 2–6:
+The workspace repo also carries a `repo-{name}` remote for each project clone. `repo-remotes.mjs` keeps them so Claude Code Desktop can match a pull request to a chat, so a list of the repo's remotes is never empty — and those remotes are never pushed to. They are not the `origin` this step asks about.
+
+- **`origin` exists (the normal case)** — create a task worktree up front and treat it as the workspace root for Steps 2–6:
   ```bash
   node {scripts}/task-worktree.mjs --root . --create --repo . --branch 'chore/template-update-{version}'
   ```
   `{scripts}` is `.claude/scripts` when the workspace has the script, `{payload}/.claude/scripts` when it doesn't — pre-0.18 workspaces predate the task scripts entirely, and the payload always carries them (the same rule Step 2 already uses for the classifier). The payload is untracked, so it does not appear inside the worktree — keep referencing it at the launcher's absolute path (`{launcher}/.workspace-update`). Everything the update needs travels with the payload, including any `.template-baseline.reconstructed.json` the CLI staged for a pre-baseline workspace. Step 7 commits, pushes, and opens the PR/MR from the worktree.
-- **No remote** — apply in place. The Step 7 commit lands on the launcher's default branch: the one sanctioned launcher commit, because a repo with no remote has nowhere else for a template update to go. The payload path is `.workspace-update/`.
+- **No `origin`** — apply in place. The Step 7 commit lands on the launcher's default branch: the one sanctioned launcher commit, because a repo with no remote of its own has nowhere else for a template update to go. The payload path is `.workspace-update/`.
 
-In the commands below, `{payload}` is `.workspace-update` in the no-remote flow and `{launcher}/.workspace-update` in the worktree flow.
+In the commands below, `{payload}` is `.workspace-update` in the no-origin flow and `{launcher}/.workspace-update` in the worktree flow.
 
 ### Step 2: Classify the payload
 
@@ -51,7 +53,7 @@ Run the classifier — it compares every verbatim-installed payload file (`.clau
 node {payload}/.claude/scripts/classify-update.mjs --root . --payload {payload} --baseline {baseline}
 ```
 
-It runs from the payload precisely so workspaces that don't have it installed yet can use it; once installed, `node .claude/scripts/classify-update.mjs --root .` is equivalent. `{baseline}` is whichever baseline the classification root has — `.claude/.template-baseline.json` when it exists there, else `{payload}/.template-baseline.reconstructed.json`, the file `--upgrade` stages for a pre-baseline workspace. Pass the flag explicitly in the worktree flow: the worktree cannot see launcher-only files, and without a baseline it classifies two-way and asks about every changed file. An explicit path is authoritative, so never point it at a file that may not exist. In the no-remote flow the flag can be omitted — the default resolves the same order itself (root baseline first, then the payload's reconstructed one, a corrupt root file counting as absent). Output is JSON:
+It runs from the payload precisely so workspaces that don't have it installed yet can use it; once installed, `node .claude/scripts/classify-update.mjs --root .` is equivalent. `{baseline}` is whichever baseline the classification root has — `.claude/.template-baseline.json` when it exists there, else `{payload}/.template-baseline.reconstructed.json`, the file `--upgrade` stages for a pre-baseline workspace. Pass the flag explicitly in the worktree flow: the worktree cannot see launcher-only files, and without a baseline it classifies two-way and asks about every changed file. An explicit path is authoritative, so never point it at a file that may not exist. In the no-origin flow the flag can be omitted — the default resolves the same order itself (root baseline first, then the payload's reconstructed one, a corrupt root file counting as absent). Output is JSON:
 
 - `new` — no installed counterpart and no baseline entry; safe to batch-apply (Step 3) behind one confirmation
 - `identical` — installed file already equals the payload; skip silently
@@ -98,7 +100,7 @@ git ls-files | grep -E '^repos$'
 ```
 If found, untrack it: `git rm --cached repos`.
 
-Commit the fix **before** applying other template updates — on the task branch in the worktree flow (Step 1), in place in the no-remote flow. This runs ahead of Step 3 because applying other updates while the bug is still present could itself trigger the destruction on workspaces that still have the old layout.
+Commit the fix **before** applying other template updates — on the task branch in the worktree flow (Step 1), in place in the no-origin flow. This runs ahead of Step 3 because applying other updates while the bug is still present could itself trigger the destruction on workspaces that still have the old layout.
 
 ### Step 3: Selective update
 
@@ -210,12 +212,12 @@ Delete the `.workspace-update/` directory at the launcher — in the worktree fl
 
 Where the commit lands was decided in Step 1 — the launcher's default branch is never pushed directly.
 
-- **No remote:** commit in place on the launcher's default branch — the one sanctioned launcher commit:
+- **No `origin`:** commit in place on the launcher's default branch — the one sanctioned launcher commit:
   ```bash
   git add -A
   git commit -m 'chore: update workspace from template v{fromVersion} to v{templateVersion}'
   ```
-- **Remote exists:** from the task worktree created in Step 1, commit the applied update, push the branch, and open the PR/MR through `node {scripts}/task-pr.mjs` (`{scripts}` resolves as in Step 1 — the payload's copy whenever the workspace's own is missing). The workspace repo is addressed as `.`, so pass its PR body as `--body-file '.={path}'` (a repo with commits to merge but no body file is an error). If task-pr reports the forge unsupported, open the MR with the forge's own CLI (for GitLab, `glab mr create`) from the worktree and say so in the report. After the PR/MR merges, at the launcher and in this order:
+- **`origin` exists:** from the task worktree created in Step 1, commit the applied update, push the branch, and open the PR/MR through `node {scripts}/task-pr.mjs` (`{scripts}` resolves as in Step 1 — the payload's copy whenever the workspace's own is missing). The workspace repo is addressed as `.`, so pass its PR body as `--body-file '.={path}'` (a repo with commits to merge but no body file is an error). If task-pr reports the forge unsupported, open the MR with the forge's own CLI (for GitLab, `glab mr create`) from the worktree and say so in the report. After the PR/MR merges, at the launcher and in this order:
   1. Restore the bootstrapped skill — `--upgrade` replaced `.claude/skills/workspace-update/` in the launcher (a tracked modification) and the merged PR delivers the same content, so a dirty launcher blocks the pull. If `SKILL.md.local-backup` sits there (a customised skill the CLI backed up), move it somewhere safe first (e.g. `workspace-scratchpad/`), then:
      ```bash
      git -C {launcher} checkout -- .claude/skills/workspace-update
@@ -247,7 +249,7 @@ After the update is applied, read `workspace.json` (Step 4 just rewrote its `tem
 - Preserves local modifications, custom content, the workspace's own MCP servers and settings, existing `workspace.json` keys (the legacy `localFiles`/`templateModifications` keys excepted — they migrate to the registry with the operator's yes), and deliberately activated rules
 - `.claude/template-modifications.json` is the workspace's own registry of deliberate divergences — `localFiles` it owns outright (never offered), `modifications` it keeps with a reason (still updated, reason shown at each decision). The template never ships or overwrites the file; this skill reads it, offers to record a reason when the operator keeps an edit, migrates the legacy `workspace.json` keys into it, offers to drop entries that no longer describe the file, and stops on a registry that doesn't parse until the operator fixes the JSON
 - The template baseline (`.claude/.template-baseline.json`) is what separates `updated`, `differs`, and `localOnly`: entries hold the payload hash of the last-shipped content (unapplied updates keep the older entry), so a deliberately kept local edit stays visible across updates while an untouched file never prompts
-- The launcher's default branch takes a template-update commit only when the workspace repo has no remote; with ANY remote, the update lands through a task worktree, a branch, and a PR/MR — the default branch is never pushed directly
+- The launcher's default branch takes a template-update commit only when the workspace repo has no `origin`; with an `origin`, the update lands through a task worktree, a branch, and a PR/MR — the default branch is never pushed directly
 - Can be run multiple times safely (idempotent) — if `.workspace-update/` doesn't exist, it reports no payload and exits
 - Initial setup is handled by `npx @ulysses-ai/create-workspace@beta --init` + `/workspace-init` — this skill is for subsequent updates only
 - The `.sh` to `.mjs` hook migration is a one-time transition for workspaces created before hooks moved to JavaScript
