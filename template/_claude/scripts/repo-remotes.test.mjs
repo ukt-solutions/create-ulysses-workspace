@@ -365,6 +365,19 @@ withFixture((fx) => {
   }
 });
 
+console.log('# remove only when the directory is gone: a dot-directory is not a clone directory');
+withFixture((fx) => {
+  const other = makeOrigin(fx, 'other');
+  // A remote the sync would not have named itself, since it never registers a
+  // dot-entry, carrying the marker all the same.
+  run(fx.root, 'remote', 'add', 'repo-.stash', other.bare);
+  run(fx.root, 'config', '--local', 'remote.repo-.stash.pushurl', 'no-push');
+  run(fx.root, 'config', '--local', 'remote.repo-.stash.ulyssesManaged', 'true');
+  mkdirSync(join(fx.root, 'repos', '.stash'), { recursive: true });
+  assertEq(syncRepoRemotes(fx.root), { ...EMPTY, removed: ['repo-.stash'] }, 'the dot-directory does not keep a managed remote alive, and is not reported either');
+  assertEq(run(fx.root, 'remote'), '', 'nothing is left');
+});
+
 // === leave alone ===
 
 console.log('# leave alone: other remotes are untouched, and a blocked name is a conflict');
