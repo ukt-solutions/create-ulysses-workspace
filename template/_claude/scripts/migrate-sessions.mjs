@@ -9,9 +9,11 @@
 //   --inventory   read-only evidence + a proposal (ACTIVE / ABANDONED /
 //                 MERGEABLE / READY_TO_COMPLETE / UNKNOWN / ORPHAN_SHELL /
 //                 LEAVE) per session, listing every worktree's remotes by
-//                 name, fetch URL, and (when it differs) push URL(s); the
-//                 age of each repo's last fetch (FETCH_HEAD mtime) so the
-//                 operator can tell stale tracking refs from fresh ones;
+//                 name, fetch URL, and (when it differs) push URL(s) — the
+//                 repo-{name} remotes that only mirror the project clones
+//                 for pull-request matching excepted; the age of each
+//                 repo's last fetch (FETCH_HEAD mtime) so the operator
+//                 can tell stale tracking refs from fresh ones;
 //                 and every worktree the workspace's repos register
 //                 OUTSIDE the workspace (reported as external — never
 //                 pruned, moved, or removed by anything here)
@@ -97,6 +99,7 @@ import { join, resolve, relative, dirname, sep, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readSessionFields } from '../lib/session-frontmatter.mjs';
+import { managedRemoteNames } from './repo-remotes.mjs';
 import { defaultBranchFor, slugForBranch, WORKSPACE_REPO } from './task-worktree.mjs';
 
 function isMainModule(metaUrl) {
@@ -328,10 +331,15 @@ function countContentFiles(gitFn, path, defaultBranch) {
   return files.length;
 }
 
+// The remotes that can hold this repository's work. That leaves out the ones
+// repo-remotes.mjs keeps for matching pull requests: each of those is a label
+// for another repository, so it is never a source of remote state, a backup
+// target, or a place a push may land.
 function remotesOf(gitFn, path) {
   const res = run(gitFn, path, ['remote']);
   if (res.status !== 0) return [];
-  return okLines(res);
+  const managed = managedRemoteNames(gitFn, path);
+  return okLines(res).filter((remote) => !managed.has(remote));
 }
 
 // The URL of every configured remote, read from local config. This never
@@ -1193,8 +1201,7 @@ function makeSafety(gitFn, rootDir) {
     remotesCache: new Map(),
     remotes(repoDir) {
       if (!safety.remotesCache.has(repoDir)) {
-        const res = run(gitFn, repoDir, ['remote']);
-        safety.remotesCache.set(repoDir, res.status === 0 ? okLines(res) : []);
+        safety.remotesCache.set(repoDir, remotesOf(gitFn, repoDir));
       }
       return safety.remotesCache.get(repoDir);
     },
@@ -1450,21 +1457,24 @@ function tagOnPushUrls(gitFn, cwd, pushUrls, tag, commit) {
 // remote.pushDefault, then branch.<b>.remote, then origin, then the first
 // configured remote. What this resolves is only a CANDIDATE: push mode
 // acts on it solely where --remote-allow names it or --remote-allow-all
-// blesses every repo.
+// blesses every repo. A managed remote is dropped from the list here,
+// whatever the caller passed: the fallback below must never land on one.
 function resolvePushRemote(gitFn, repoDir, branch, remotes) {
   const cfg = (key) => {
     const res = run(gitFn, repoDir, ['config', '--get', key]);
     return res.status === 0 ? String(res.stdout).trim() : null;
   };
+  const managed = managedRemoteNames(gitFn, repoDir);
+  const candidates = remotes.filter((remote) => !managed.has(remote));
   const chain = branch
     ? [`branch.${branch}.pushRemote`, 'remote.pushDefault', `branch.${branch}.remote`]
     : ['remote.pushDefault'];
   for (const key of chain) {
     const value = cfg(key);
-    if (value && remotes.includes(value)) return { remote: value };
+    if (value && candidates.includes(value)) return { remote: value };
   }
-  if (remotes.includes('origin')) return { remote: 'origin' };
-  if (remotes.length > 0) return { remote: remotes[0] };
+  if (candidates.includes('origin')) return { remote: 'origin' };
+  if (candidates.length > 0) return { remote: candidates[0] };
   return { remote: null };
 }
 
