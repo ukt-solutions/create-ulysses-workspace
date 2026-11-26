@@ -575,16 +575,85 @@ withFixture((fx) => {
   assertEq(result, EMPTY, 'and nothing is reported or written');
 });
 
-// === the config flag ===
+// === turning it off ===
 
-console.log('# flag: enabled false returns without reading or writing anything');
+console.log('# turned off: enabled false removes exactly the managed remotes');
+withFixture((fx) => {
+  const app = makeOrigin(fx, 'app');
+  const api = makeOrigin(fx, 'api');
+  const ws = makeOrigin(fx, 'ws');
+  const other = makeOrigin(fx, 'other');
+  addClone(fx, 'app', app.bare);
+  addClone(fx, 'api', api.bare);
+  syncRepoRemotes(fx.root);
+  // Remotes that are not the sync's to remove: the workspace's own, a second
+  // one, and a repo-* name this sync did not make.
+  run(fx.root, 'remote', 'add', 'origin', ws.bare);
+  run(fx.root, 'remote', 'add', 'upstream', other.bare);
+  run(fx.root, 'remote', 'add', 'repo-x', other.bare);
+  run(fx.root, 'config', '--local', 'remote.repo-x.pushurl', other.bare);
+  const own = ['origin', 'upstream', 'repo-x'].map((name) => [name, remoteConfig(fx, name)]);
+  assertEq(run(fx.root, 'remote'), 'origin\nrepo-api\nrepo-app\nrepo-x\nupstream', 'control: all five remotes are there to begin with');
+
+  const result = syncRepoRemotes(fx.root, { enabled: false });
+  assertEq(result, { ...EMPTY, removed: ['repo-api', 'repo-app'] }, 'the two managed remotes are removed, and nothing else is reported');
+  assertEq(run(fx.root, 'remote'), 'origin\nrepo-x\nupstream', 'they are gone from the list');
+  assertEq(['origin', 'upstream', 'repo-x'].map((name) => [name, remoteConfig(fx, name)]), own, 'and the other three are exactly as they were');
+  assertEq(repoRemotesLine(result), 'Repo remotes: removed repo-api; removed repo-app', 'the hook has one line to say, a phrase per removal');
+
+  const before = localConfigList(fx);
+  const rec = recordingGitFn();
+  assertEq(syncRepoRemotes(fx.root, { gitFn: rec.gitFn, enabled: false }), EMPTY, 'a second run reports nothing');
+  assertEq(rec.writes(), [], 'and issues no write');
+  assertEq(localConfigList(fx), before, '`git config --list --local` is identical before and after');
+});
+
+console.log('# turned off: an adopted hand-made remote goes too, and the clones are not consulted');
+withFixture((fx) => {
+  const app = makeOrigin(fx, 'app');
+  const old = makeOrigin(fx, 'old');
+  addClone(fx, 'app', app.bare);
+  // A clone of the same name is what a hand-made remote is adopted for.
+  addClone(fx, 'hand', old.bare);
+  run(fx.root, 'remote', 'add', 'repo-hand', old.bare);
+  run(fx.root, 'config', '--local', 'remote.repo-hand.pushurl', 'no-push');
+  assertEq(syncRepoRemotes(fx.root), { ...EMPTY, added: ['repo-app'], adopted: ['repo-hand'] }, 'control: the hand-made remote is adopted');
+  rmSync(join(fx.root, 'repos'), { recursive: true, force: true });
+
+  const rec = recordingGitFn();
+  assertEq(syncRepoRemotes(fx.root, { gitFn: rec.gitFn, enabled: false }), { ...EMPTY, removed: ['repo-hand', 'repo-app'] }, 'both go, with repos/ already gone');
+  assertEq(rec.calls.filter((args) => args[0] === 'remote' && args[1] === 'get-url'), [], 'and no clone is asked for its origin');
+});
+
+console.log('# turned off: a marked remote of another name is kept by a sync and removed by a cleanup');
+withFixture((fx) => {
+  const other = makeOrigin(fx, 'other');
+  run(fx.root, 'remote', 'add', 'hand-marked', other.bare);
+  run(fx.root, 'config', '--local', 'remote.hand-marked.pushurl', 'no-push');
+  run(fx.root, 'config', '--local', 'remote.hand-marked.ulyssesManaged', 'yes');
+  assertEq(syncRepoRemotes(fx.root), EMPTY, 'a sync leaves a marked remote it did not name alone');
+  assertEq(remoteConfig(fx, 'hand-marked').ulyssesmanaged, 'yes', 'control: it is still there');
+  assertEq(syncRepoRemotes(fx.root, { enabled: false }), { ...EMPTY, removed: ['hand-marked'] }, 'the cleanup removes every marked remote, whatever its name');
+});
+
+console.log('# turned off: the same guards apply, so a cleanup removes only from the workspace root');
 withFixture((fx) => {
   const app = makeOrigin(fx, 'app');
   addClone(fx, 'app', app.bare);
-  const rec = recordingGitFn();
-  assertEq(syncRepoRemotes(fx.root, { gitFn: rec.gitFn, enabled: false }), EMPTY, 'reports nothing');
-  assertEq(rec.calls, [], 'and never calls git');
-  assertEq(run(fx.root, 'remote'), '', 'no remote was made');
+  syncRepoRemotes(fx.root);
+  const before = localConfigList(fx);
+  mkdirSync(join(fx.root, 'scratch'));
+  assertEq(syncRepoRemotes(join(fx.root, 'scratch'), { enabled: false }), EMPTY, 'a subdirectory removes nothing');
+  const plain = join(fx.base, 'not-a-repo');
+  mkdirSync(plain);
+  assertEq(syncRepoRemotes(plain, { enabled: false }), EMPTY, 'nor does a directory that is not a git repo');
+  const worktree = join(fx.base, 'worktree');
+  run(fx.root, 'commit', '-q', '--allow-empty', '-m', 'init');
+  run(fx.root, 'worktree', 'add', '-q', '-b', 'side', worktree);
+  assertEq(syncRepoRemotes(worktree, { enabled: false }), EMPTY, 'nor does a linked worktree');
+  const noGit = () => ({ status: null, error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) });
+  assertEq(syncRepoRemotes(fx.root, { gitFn: noGit, enabled: false }), EMPTY, 'nor does a git that cannot answer');
+  assertEq(localConfigList(fx), before, 'the managed remote is still there after all four');
 });
 
 // === the marker, for other scripts ===
@@ -656,27 +725,62 @@ withFixture((fx) => {
   assertEq(JSON.parse(here.stdout).added, ['repo-app'], 'and registers the clone there');
 });
 
-console.log('# CLI: workspace.repoRemotes false turns the sync off');
+console.log('# CLI: workspace.repoRemotes false cleans up instead of syncing');
 withFixture((fx) => {
   const app = makeOrigin(fx, 'app');
   addClone(fx, 'app', app.bare);
   const configPath = join(fx.root, 'workspace.json');
   const cli = (...args) => spawnSync(process.execPath, [SCRIPT, '--root', fx.root, ...args], { encoding: 'utf8' });
+  const setFlag = (value) => {
+    const workspace = { name: 'fixture' };
+    if (value !== undefined) workspace.repoRemotes = value;
+    writeFileSync(configPath, JSON.stringify({ workspace, repos: {} }));
+  };
 
-  writeFileSync(configPath, JSON.stringify({ workspace: { name: 'fixture', repoRemotes: false }, repos: {} }));
+  setFlag(false);
   const off = cli('--json');
   assertEq(off.status, 0, 'the run exits 0');
-  assertEq(JSON.parse(off.stdout), EMPTY, 'and reports nothing');
-  assertEq(run(fx.root, 'remote'), '', 'no remote was made');
+  assertEq(JSON.parse(off.stdout), EMPTY, 'with nothing marked there is nothing to remove');
+  assertEq(run(fx.root, 'remote'), '', 'and no remote is added');
 
-  writeFileSync(configPath, JSON.stringify({ workspace: { name: 'fixture', repoRemotes: true }, repos: {} }));
-  assertEq(JSON.parse(cli('--json').stdout).added, ['repo-app'], 'true turns it back on');
+  setFlag(true);
+  assertEq(JSON.parse(cli('--json').stdout).added, ['repo-app'], 'true syncs as usual');
 
-  writeFileSync(configPath, JSON.stringify({ workspace: { name: 'fixture' }, repos: {} }));
-  run(fx.root, 'remote', 'remove', 'repo-app');
+  setFlag(false);
+  const removed = cli();
+  assertEq(removed.stdout, 'Repo remotes: removed repo-app\n', 'false removes what the sync added, one line per change');
+  assertEq(run(fx.root, 'remote'), '', 'and leaves no remote behind');
+  assertEq(cli().stdout, '', 'a second run prints nothing');
+
+  setFlag(undefined);
   assertEq(JSON.parse(cli('--json').stdout).added, ['repo-app'], 'an absent key means on');
   writeFileSync(configPath, '{ not json');
   assertEq(JSON.parse(cli('--json').stdout), EMPTY, 'a workspace.json that cannot be parsed is treated as absent, not as a failure');
+});
+
+console.log('# CLI: --remove-all cleans up whatever workspace.json says');
+withFixture((fx) => {
+  const app = makeOrigin(fx, 'app');
+  const api = makeOrigin(fx, 'api');
+  const other = makeOrigin(fx, 'other');
+  addClone(fx, 'app', app.bare);
+  addClone(fx, 'api', api.bare);
+  run(fx.root, 'remote', 'add', 'origin', other.bare);
+  writeFileSync(join(fx.root, 'workspace.json'), JSON.stringify({ workspace: { name: 'fixture', repoRemotes: true }, repos: {} }));
+  const cli = (...args) => spawnSync(process.execPath, [SCRIPT, '--root', fx.root, ...args], { encoding: 'utf8' });
+  syncRepoRemotes(fx.root);
+  assertEq(run(fx.root, 'remote'), 'origin\nrepo-api\nrepo-app', 'control: the sync ran with the key on');
+
+  const json = cli('--remove-all', '--json');
+  assertEq(json.status, 0, '--remove-all --json exits 0');
+  assertEq(JSON.parse(json.stdout), { ...EMPTY, removed: ['repo-api', 'repo-app'] }, 'and reports the removals, though workspace.json says true');
+  assertEq(run(fx.root, 'remote'), 'origin', 'origin stays');
+  assertEq(cli('--remove-all').stdout, '', 'with nothing marked, --remove-all prints nothing');
+
+  assertEq(syncRepoRemotes(fx.root).added, ['repo-api', 'repo-app'], 'the next sync puts them back');
+  const human = cli('--remove-all');
+  assertEq(human.stdout, 'Repo remotes: removed repo-api\nRepo remotes: removed repo-app\n', 'one human line per removal');
+  assertEq(cli('--root', fx.root, '--remove-all').status, 0, 'it combines with an explicit --root');
 });
 
 console.log('');

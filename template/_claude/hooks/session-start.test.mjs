@@ -282,12 +282,19 @@ if (gitForHook.error || gitForHook.status !== 0) {
     assert(typeof second.context === 'string' && second.context.includes('Workspace: fixture'), 'the rest of the context is still there');
   });
 
-  // 14. workspace.repoRemotes: false keeps the hook from adding a remote
-  withRepoRemotesFixture({ repoRemotes: false }, (fx) => {
-    const r = runSessionStart(fx);
-    assertEq(r.status, 0, 'the hook exits 0');
-    assertEq(repoRemotesLines(r.context), [], 'and has nothing to say about remotes');
-    assertEq(String(fx.git(fx.ws, 'remote')).trim(), '', 'no remote was added');
+  // 14. workspace.repoRemotes: false makes the hook clean up instead: what an
+  // earlier start added is taken away, and said once.
+  withRepoRemotesFixture({}, (fx) => {
+    assertEq(repoRemotesLines(runSessionStart(fx).context), ['Repo remotes: added repo-app'], 'control: the first start adds the remote');
+    writeFileSync(join(fx.ws, 'workspace.json'), JSON.stringify({
+      workspace: { name: 'fixture', repoRemotes: false },
+      repos: { app: { remote: 'none', branch: 'main' } },
+    }, null, 2));
+    const off = runSessionStart(fx);
+    assertEq(off.status, 0, 'the hook exits 0');
+    assertEq(repoRemotesLines(off.context), ['Repo remotes: removed repo-app'], 'the remote is taken away, on one line');
+    assertEq(String(fx.git(fx.ws, 'remote')).trim(), '', 'and none is left');
+    assertEq(repoRemotesLines(runSessionStart(fx).context), [], 'the next start has nothing to say');
   });
 
   // 15. A workspace whose update left repo-remotes.mjs out still starts: the

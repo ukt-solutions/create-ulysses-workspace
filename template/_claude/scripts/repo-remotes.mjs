@@ -20,28 +20,34 @@
 // with `git config` instead: without a refspec, `git fetch repo-<name>` writes
 // FETCH_HEAD alone, and no refs/remotes/repo-* branch ever appears.
 //
-// One run does this, for every clone under <root>/repos/:
+// Usage:
+//   node .claude/scripts/repo-remotes.mjs --root <dir> [--json]
+//   node .claude/scripts/repo-remotes.mjs --root <dir> --remove-all [--json]
 //
-//   add     no repo-<name> remote yet, so one is created
-//   update  a managed remote whose url is no longer the clone's origin, that
-//           lacks one of the keys above, or that carries a fetch refspec
-//   remove  a managed remote whose clone is gone
-//   adopt   an unmarked repo-<name> remote whose pushurl is no-push: it was
-//           made by hand under this convention, so it is marked and brought
-//           to the shape above
+// A run keeps the remotes in step with the clones. For every clone under
+// <root>/repos/ it:
 //
-// Every other remote is left alone: origin, anything not named repo-*, and an
-// unmarked repo-<name> whose pushurl is something else. A clone facing that
-// last case gets no remote and is reported as a conflict.
+//   adds     a repo-<name> remote, when the clone has none yet
+//   updates  a managed remote whose url is no longer the clone's origin, that
+//            lacks one of the keys above, or that carries a fetch refspec
+//   adopts   an unmarked repo-<name> remote whose pushurl is no-push: it was
+//            made by hand under this convention, so it is marked and brought
+//            to the shape above
+//
+// and it removes a managed remote whose clone is gone. Every other remote is
+// left alone: origin, anything not named repo-*, and an unmarked repo-<name>
+// whose pushurl is something else. A clone facing that last case gets no
+// remote and is reported as a conflict.
+//
+// `workspace.repoRemotes: false` in <root>/workspace.json, or --remove-all on
+// the command line, makes the run a cleanup instead. It removes every remote
+// that carries the marker — the ones this script added and the ones it
+// adopted — and touches nothing else: no remote is added, and every unmarked
+// remote stays as it is. A second run finds nothing to remove.
 //
 // The sync runs only at the top level of the workspace repo — never from a
 // subdirectory, never from a linked worktree — and does nothing when <root>
-// is not a git repository.
-//
-// Usage:
-//   node .claude/scripts/repo-remotes.mjs --root <dir> [--json]
-//
-// `workspace.repoRemotes: false` in <root>/workspace.json turns it off.
+// is not a git repository. The cleanup runs under the same guards.
 //
 // The result is { added, updated, removed, adopted, skipped }, where the
 // first four hold remote names and skipped holds { name, reason } for each
@@ -321,21 +327,25 @@ export function repoRemotesLine(result) {
 }
 
 /**
- * Bring the workspace repo at `root` step with the clones under repos/:
+ * Bring the workspace repo at `root` in step with the clones under repos/:
  * one managed remote per clone, as described at the top of this file.
  *
- * `enabled: false` (workspace.repoRemotes: false) returns an unchanged
- * result without reading or writing anything, and leaves existing remotes
- * as they are.
+ * `enabled: false` (workspace.repoRemotes: false) makes the run a cleanup
+ * instead: every remote that carries the marker is removed, nothing is
+ * added, and the clones are not looked at.
  *
  * Never throws, and never fails: anything git cannot answer ends the run
  * with whatever was done up to that point reported.
  */
 export function syncRepoRemotes(root, { gitFn = spawnSync, enabled = true } = {}) {
   const result = emptyResult();
-  if (enabled === false) return result;
   const rootDir = resolve(root);
   if (!isMainWorktreeTop(gitFn, rootDir)) return result;
+  if (enabled === false) {
+    const marked = readRemoteConfig(gitFn, rootDir);
+    if (marked) removeMarked(gitFn, rootDir, result, marked);
+    return result;
+  }
   const reposDir = join(rootDir, 'repos');
   if (!isDirectory(reposDir)) return result;
 
@@ -379,16 +389,25 @@ export function syncRepoRemotes(root, { gitFn = spawnSync, enabled = true } = {}
     }
   }
 
-  for (const [remote, fields] of config) {
-    if (!remote.startsWith(REMOTE_PREFIX) || !isMarked(fields) || ownerOf.has(remote)) continue;
-    if (gitCall(gitFn, rootDir, ['remote', 'remove', remote]).ok) result.removed.push(remote);
-    else result.skipped.push({ name: remote, reason: `removing remote ${remote} failed` });
-  }
+  removeMarked(gitFn, rootDir, result, config, { keep: new Set(ownerOf.keys()), prefix: REMOTE_PREFIX });
   return result;
 }
 
+// Remove the marked remotes in `config`, reporting each in `result.removed`.
+// A remote whose name `keep` holds stays: the clone it belongs to is still
+// there. With `prefix`, only names starting with it are candidates, which
+// keeps a sync from removing a marked remote it did not name.
+function removeMarked(gitFn, rootDir, result, config, { keep = new Set(), prefix = '' } = {}) {
+  for (const [remote, fields] of config) {
+    if (!isMarked(fields) || keep.has(remote)) continue;
+    if (prefix !== '' && !remote.startsWith(prefix)) continue;
+    if (gitCall(gitFn, rootDir, ['remote', 'remove', remote]).ok) result.removed.push(remote);
+    else result.skipped.push({ name: remote, reason: `removing remote ${remote} failed` });
+  }
+}
+
 function parseArgs(argv) {
-  const args = { root: '.', json: false };
+  const args = { root: '.', json: false, removeAll: false };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
@@ -401,6 +420,10 @@ function parseArgs(argv) {
     }
     if (a === '--json') {
       args.json = true;
+      continue;
+    }
+    if (a === '--remove-all') {
+      args.removeAll = true;
       continue;
     }
     throw new Error(`unknown argument: ${a}`);
@@ -422,7 +445,9 @@ function repoRemotesEnabled(rootDir) {
 function main() {
   const args = parseArgs(process.argv);
   const rootDir = resolve(args.root);
-  const result = syncRepoRemotes(rootDir, { enabled: repoRemotesEnabled(rootDir) });
+  // --remove-all cleans up whatever workspace.json says.
+  const enabled = args.removeAll ? false : repoRemotesEnabled(rootDir);
+  const result = syncRepoRemotes(rootDir, { enabled });
   if (args.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     return;
