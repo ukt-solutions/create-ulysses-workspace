@@ -2156,9 +2156,9 @@ function enableTaskModel(root, { gitFn = spawnSync, launcher = null } = {}) {
   } catch (err) {
     throw new Error(`workspace.json unreadable: ${err.message}`);
   }
-  // Spread-then-set keeps an existing sessionModel in place and every
-  // other key untouched; 2-space JSON with a trailing newline is the
-  // file's house format.
+  // Spread-then-set changes sessionModel alone, leaving every other key
+  // and its place in the object untouched; 2-space JSON with a trailing
+  // newline is the file's house format.
   cfg.workspace = { ...(cfg.workspace || {}), sessionModel: 'task' };
   writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`);
   if (!linked) return { sessionModel: 'task', remainingSessions: listSessionNames(rootDir) };
