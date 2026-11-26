@@ -227,7 +227,7 @@ First-time workspace initialization, or joining a workspace a teammate already i
 
 **The init flow** sets up the workspace itself. It clones the repos in the manifest, installs the remaining template components from the staged payload, activates the optional rules you choose, and configures your identity. It asks which lifecycle new work should use. It then extracts team knowledge — from the documentation sources you point it at, and from prior Claude chat history — into `workspace-context/`, formalizes any in-progress git worktrees as work sessions, and offers to set up an issue tracker and to generate `CODEBASE.md`. Finally it cleans up the payload, checks the result for self-contradictions, sets up the workspace remote, and marks the workspace initialized. It works on a `chore/workspace-init` branch, and ends by offering to squash-merge that branch into the default branch, pushing if a remote is configured.
 
-**The join flow** runs when the workspace is already initialized — a teammate who has just cloned it. It sets up only that one machine: the user identity, the missing repo clones, the per-user context folder, and `CLAUDE.local.md`. It never touches tracked files, creates no branch, and makes no commits.
+**The join flow** runs when the workspace is already initialized — a teammate who has just cloned it. It sets up only that one machine: the user identity, the missing repo clones (each registered as a `repo-{name}` remote of the workspace repo), the per-user context folder, and `CLAUDE.local.md`. It never touches tracked files, creates no branch, and makes no commits.
 
 **When to use it:** Right after scaffolding, and once per machine for everyone who joins later. [Chapter 10](10-installation-and-upgrades.md) walks through both.
 
@@ -237,7 +237,7 @@ Applies a staged template update to an initialized workspace. The CLI's `--upgra
 
 **The flow**, in order:
 
-1. Decides where the update lands: in a task worktree and through a PR when the workspace repo has a remote, in place when it has none
+1. Decides where the update lands: in a task worktree and through a PR when the workspace repo has a remote of its own (`origin`), in place when it has none
 2. Classifies every file in the payload — new, updated, locally modified, activated, removed, and the rest
 3. Applies the changes with your confirmation, merging files you have customized three-way against the template you are upgrading from, and asking about anything it cannot merge
 4. Advances `templateVersion`, writes the template baseline, and runs the migrators

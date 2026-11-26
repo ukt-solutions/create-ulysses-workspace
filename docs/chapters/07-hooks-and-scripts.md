@@ -43,6 +43,8 @@ Inside a session's workspace worktree, it registers the chat in the session trac
 
 At the workspace root, it begins with the workspace name and a one-line summary of `workspace.json` (`Workspace config (workspace.json):` — session model, tracker, forge, repo names), which is why CLAUDE.md no longer imports workspace.json itself. It then names this chat's record (`Chat record:`) and the workspace root (`Workspace root:`), so skills never have to derive either. It points at `/workspace-init` when this machine is missing something that skill provides — repos that are not cloned yet, a user identity, or `CLAUDE.local.md`. When `workspace.json` has a team roster, it adds a `Team identity:` line for each way this machine disagrees with it. That covers a `workspace.user` that is an alias or missing from the roster, and git committing as another member. Each finding names its fix, and none needs the network. It fetches each cloned project repo (best effort) and reports `Repos synced:`.
 
+It then brings the workspace repo's `repo-{name}` remotes in step with the clones, through [repo-remotes.mjs](#repo-remotesmjs), so that a pull request opened in a project repo is matched to a chat at the workspace root. A `Repo remotes:` line follows only when a remote was added, updated, removed or adopted, or when a clone could not get one: every session pays for each line, and on an ordinary launch there is nothing to say.
+
 It then lists two kinds of prior work, so the conversation starts aware of them. Every work session that has a tracker under `work-sessions/` is listed with its status, description, branch, repos and worktree path, so Claude can offer to resume one; a session whose worktree is gone is marked orphaned. And the team-visible files under `workspace-context/shared/` are listed by topic, lifecycle and last update under a `Workspace context:` heading.
 
 If there is no `workspace.json`, it says so and points at `/workspace-init` instead.
@@ -185,6 +187,22 @@ node .claude/scripts/team-roster.mjs --merge-alias alicew [--apply] # merge an a
 ```
 
 `--add` edits `workspace.json` (a tracked change) and refuses a result that would give one login or email to two people. `--merge-alias` is a dry run until `--apply`. It moves tracked files with `git mv`, so history follows them, and moves symlinks as links without following them. It stops before moving anything if a path exists in both folders, even if only the case differs, or if a tracked file is missing from disk. A merge that fails part-way can be finished by running it again.
+
+### repo-remotes.mjs
+
+Gives the workspace repo one remote per project clone, named `repo-{name}` and carrying the clone's origin. Claude Code Desktop decides whether a pull request belongs to a chat by comparing the PR's `owner/name` with every git remote of the chat's folders. A chat runs at the workspace root, whose own remote is the workspace repo, so without these a pull request opened in a project repo is not matched to the chat.
+
+```bash
+node .claude/scripts/repo-remotes.mjs --root .               # bring the remotes in step with repos/
+node .claude/scripts/repo-remotes.mjs --root . --json        # the same, printing what changed as JSON
+node .claude/scripts/repo-remotes.mjs --root . --remove-all  # take the remotes away again
+```
+
+Such a remote exists to be matched, nothing more. Its push URL is the sentinel `no-push`, which no push can resolve. `git fetch --all` and `git remote update` skip it. It has no fetch refspec, so a fetch by name writes `FETCH_HEAD` alone and no `refs/remotes/repo-*` branch ever appears. `origin` and every other remote of the workspace repo are never touched.
+
+One run brings the remotes in step with `repos/`: it adds a remote for a clone that has none, updates one whose clone's origin has changed, adopts a `repo-{name}` remote that was made by hand with the same sentinel as its push URL, and removes one whose clone is gone. It is safe to run at any time, and a second run changes nothing. The session-start hook runs it at every launch, and `/workspace-init` runs it after cloning, so there is rarely a reason to run it yourself. Without `--json` it prints one line per change, and nothing when nothing changed.
+
+`workspace.repoRemotes: false` in `workspace.json` turns the feature off by undoing it: from then on the session-start hook removes every `repo-{name}` remote the script made or adopted, and adds none. Every other remote is left as it is. `--remove-all` does the same once, whatever `workspace.json` says.
 
 ## How Hooks and Scripts Work Together
 
