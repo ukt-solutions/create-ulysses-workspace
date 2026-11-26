@@ -1,11 +1,11 @@
 ---
 name: complete-work
-description: Finalize a work session — rebase, PR, merge, and close the linked issue. Handles all project repos and the workspace repo. Use when work on a session is done.
+description: Finalize a task or a work session — rebase, PR, merge, and close the linked issue. Handles all project repos and the workspace repo. Use when the work is done.
 ---
 
 # Complete Work
 
-Finalize the active work session. Handles all project repos (code changes, PRs) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval, then tears down the session folder.
+Finalize the active work — a task recorded on this chat, or a work session the workspace already has. Handles all project repos (code changes, PRs) and the workspace repo (context processing, PR). Presents a unified summary with a single merge approval, then tears down what the work created: a session's folder, or a task's worktrees and record entries.
 
 ## Flow
 

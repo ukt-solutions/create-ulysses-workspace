@@ -30,16 +30,17 @@
 // worktree derived from the branch — /migrate-sessions finishing a legacy
 // session, whose branch sits at work-sessions/{name}/workspace/ for the
 // workspace repo and work-sessions/{name}/workspace/repos/{repo}/ for a
-// project repo. Every git command the run makes for that repo — counting its
-// commits, reading its origin, pushing it — runs there, and the result is
-// what the task worktree would give: a repository's branches and remotes are
-// shared by all of its worktrees. The path is checked before anything is
-// pushed. It must be the root of a git worktree, it must belong to the same
-// repository as repos/{repo} (the launcher itself for "."), and it must be
-// checked out on --branch; anything else refuses. Every entry --create
-// writes carries its checkout as `worktree`, so --merge and --checks need
-// only the PRs file — the flag is accepted there too, and replaces the
-// recorded checkout for the repos it names.
+// project repo. A relative path is taken from the current directory. Every
+// git command the run makes for that repo — counting its commits, reading
+// its origin, pushing it — runs there, and the result is what the task
+// worktree would give: a repository's branches and remotes are shared by all
+// of its worktrees. The path is checked before anything is pushed: it must
+// be the root of a git worktree, it must belong to the same repository as
+// repos/{repo} (the launcher itself for "."), and it must be checked out on
+// --branch — anything else refuses. Every entry --create writes carries its
+// checkout as `worktree`, so --merge and --checks need only the PRs file;
+// the flag is accepted there too, and replaces the recorded checkout for the
+// repos it names.
 //
 // Every repo of the task resolves to a merge mode (mergeModeFor below):
 // "forge" — its origin is forge-hosted (github.com, gitlab.com, or the

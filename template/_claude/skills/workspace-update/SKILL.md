@@ -172,7 +172,7 @@ The other `migrate-*.mjs` in the payload are **one-shot, version-gated migration
 
 - `migrate-session-layout.mjs` — pre-v0.10.0 → v0.10.0: moves session content from launcher-side paths into each session's workspace worktree.
 - `migrate-to-workspace-context.mjs` — pre-v0.15.0 → v0.15.0: renames `shared-context/` to `workspace-context/` and rebuilds its structure.
-- `migrate-sessions.mjs` — pre-v0.18.0: drains session-model work sessions onto the task lifecycle. Not run inline — it has interactive inventory/backup/archive modes; `/migrate-sessions` drives it (Step 8 nudges when it applies).
+- `migrate-sessions.mjs` — pre-v0.18.0: drains session-model work sessions onto the task lifecycle. Not run inline — it has interactive inventory/backup/archive modes; `/migrate-sessions` drives it (Step 8 nudges whenever the workspace still holds sessions).
 - `migrate-open-work.mjs` — manual, any version: converts the deprecated `open-work.md` into tracker issues. Takes the file path as an argument and needs a configured tracker; run it only if the workspace still carries an `open-work.md` and the user asks.
 
 Always run migrators with `--root .`. They resolve the workspace root from `--root` (default: the cwd) and never from their own location — a migrator invoked from the payload without `--root` would look for the workspace inside `.workspace-update/`.
