@@ -16,7 +16,8 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
+  statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -281,6 +282,73 @@ withFixture((fx) => {
   assertEq(syncRepoRemotes(fx.root), { ...EMPTY, removed: ['repo-app'] }, 'the last clone going takes the last remote');
   assertEq(run(fx.root, 'remote'), '', 'no managed remote is left');
   assertEq(syncRepoRemotes(fx.root), EMPTY, 'an empty repos/ settles');
+});
+
+console.log('# remove only when the directory is gone: a clone that cannot be read keeps its remote');
+withFixture((fx) => {
+  const app = makeOrigin(fx, 'app');
+  const api = makeOrigin(fx, 'api');
+  const clone = addClone(fx, 'app', app.bare);
+  addClone(fx, 'api', api.bare);
+  syncRepoRemotes(fx.root);
+  const before = localConfigList(fx);
+
+  // git that hangs past its timeout when asked for one clone's origin.
+  const timedOut = (cmd, args, opts = {}) => (
+    args.includes('get-url') && args.some((a) => a.endsWith('app'))
+      ? { status: null, error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }) }
+      : spawnSync(cmd, args, { encoding: 'utf8', ...opts })
+  );
+  const result = syncRepoRemotes(fx.root, { gitFn: timedOut });
+  assertEq(result, { ...EMPTY, skipped: [{ name: 'app', reason: 'reading origin failed' }] }, 'the clone is reported skipped, and not removed');
+  assertEq(localConfigList(fx), before, 'and its managed remote is exactly as it was');
+
+  // A directory that is not a repository for the moment.
+  renameSync(join(clone, '.git'), join(clone, '.git-away'));
+  const notRepo = syncRepoRemotes(fx.root);
+  assertEq(notRepo, { ...EMPTY, skipped: [{ name: 'app', reason: 'not a git repository' }] }, 'a clone without .git is reported skipped, and not removed');
+  assertEq(localConfigList(fx), before, 'its managed remote stays');
+  renameSync(join(clone, '.git-away'), join(clone, '.git'));
+
+  // A repository whose origin is gone.
+  run(clone, 'remote', 'remove', 'origin');
+  assertEq(syncRepoRemotes(fx.root), { ...EMPTY, skipped: [{ name: 'app', reason: 'no origin remote' }] }, 'a clone without an origin is reported skipped, and not removed');
+  assertEq(localConfigList(fx), before, 'its managed remote stays');
+
+  // Only a directory that is no longer there takes its remote away.
+  rmSync(join(fx.root, 'repos', 'api'), { recursive: true, force: true });
+  assertEq(
+    syncRepoRemotes(fx.root),
+    { ...EMPTY, removed: ['repo-api'], skipped: [{ name: 'app', reason: 'no origin remote' }] },
+    'the deleted clone is removed while the one that cannot be read is still only skipped',
+  );
+  assertEq(run(fx.root, 'remote'), 'repo-app', 'repo-app is the one remote left');
+});
+
+console.log('# remove only when the directory is gone: a repos/ that cannot be listed removes nothing');
+withFixture((fx) => {
+  const app = makeOrigin(fx, 'app');
+  addClone(fx, 'app', app.bare);
+  syncRepoRemotes(fx.root);
+  const before = localConfigList(fx);
+  chmodSync(join(fx.root, 'repos'), 0o000);
+  let listable = true;
+  try {
+    readdirSync(join(fx.root, 'repos'));
+  } catch {
+    listable = false;
+  }
+  if (listable) {
+    chmodSync(join(fx.root, 'repos'), 0o755);
+    console.log('  (skip: this machine can list an unreadable directory — running as root, or Windows)');
+    return;
+  }
+  try {
+    assertEq(syncRepoRemotes(fx.root), EMPTY, 'nothing is reported');
+    assertEq(localConfigList(fx), before, 'and no managed remote is removed');
+  } finally {
+    chmodSync(join(fx.root, 'repos'), 0o755);
+  }
 });
 
 // === leave alone ===

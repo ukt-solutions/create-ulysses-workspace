@@ -34,8 +34,11 @@
 //            made by hand under this convention, so it is marked and brought
 //            to the shape above
 //
-// and it removes a managed remote whose clone is gone. Every other remote is
-// left alone: origin, anything not named repo-*, and an unmarked repo-<name>
+// and it removes a managed remote when the clone's directory is gone from
+// repos/ — only then. A directory that is still there but cannot be read at
+// that moment, because git timed out or its .git or its origin is missing,
+// keeps its remote and is reported as skipped. Every other remote is left
+// alone: origin, anything not named repo-*, and an unmarked repo-<name>
 // whose pushurl is something else. A clone facing that last case gets no
 // remote and is reported as a conflict.
 //
@@ -229,20 +232,30 @@ function isMainWorktreeTop(gitFn, rootDir) {
   return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
 
-// Every directory directly under repos/ that is a git repository with an
-// origin, sorted by name. Each one passed over is reported through
-// `skipped`; a dot-entry and a plain file are not candidates and are not.
-function findClones(gitFn, reposDir, skipped) {
-  let entries;
+// The entries directly under repos/ with the dot-entries left out, in name
+// order (readdirSync order is the filesystem's). Null when the directory
+// cannot be listed.
+function listRepos(reposDir) {
   try {
-    entries = readdirSync(reposDir, { withFileTypes: true })
+    return readdirSync(reposDir, { withFileTypes: true })
+      .filter((entry) => !entry.name.startsWith('.'))
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   } catch {
-    return []; // cannot be read: nothing to register
+    return null;
   }
+}
+
+// Whether an entry under repos/ is a directory, a link to one included.
+function isRepoDirectory(reposDir, entry) {
+  return entry.isDirectory() || isDirectory(join(reposDir, entry.name));
+}
+
+// Of the entries under repos/, the directories that are git repositories
+// with an origin. Each directory passed over is reported through `skipped`;
+// a plain file is not a candidate and is not.
+function findClones(gitFn, reposDir, entries, skipped) {
   const clones = [];
   for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue;
     // A link is not followed: where it points was not laid down under repos/.
     if (entry.isSymbolicLink()) {
       skipped.push({ name: entry.name, reason: 'a symlink, not followed' });
@@ -349,7 +362,11 @@ export function syncRepoRemotes(root, { gitFn = spawnSync, enabled = true } = {}
   const reposDir = join(rootDir, 'repos');
   if (!isDirectory(reposDir)) return result;
 
-  const clones = findClones(gitFn, reposDir, result.skipped);
+  const entries = listRepos(reposDir);
+  // Nothing can be told about the clones, so nothing may be removed either.
+  if (!entries) return result;
+
+  const clones = findClones(gitFn, reposDir, entries, result.skipped);
   const config = readRemoteConfig(gitFn, rootDir);
   if (!config) return result;
 
@@ -389,7 +406,14 @@ export function syncRepoRemotes(root, { gitFn = spawnSync, enabled = true } = {}
     }
   }
 
-  removeMarked(gitFn, rootDir, result, config, { keep: new Set(ownerOf.keys()), prefix: REMOTE_PREFIX });
+  // A managed remote goes only when no directory of its name is left under
+  // repos/. One that is there but cannot be read at the moment — git timed
+  // out, or its .git or its origin is missing — keeps the remote it has and
+  // is reported as skipped.
+  const present = new Set(
+    entries.filter((entry) => isRepoDirectory(reposDir, entry)).map((entry) => remoteNameFor(entry.name)),
+  );
+  removeMarked(gitFn, rootDir, result, config, { keep: present, prefix: REMOTE_PREFIX });
   return result;
 }
 
