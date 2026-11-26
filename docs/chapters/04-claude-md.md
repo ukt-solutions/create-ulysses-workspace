@@ -79,7 +79,7 @@ Each section has a purpose:
 
 **Quick Reference** gives Claude (and you) the essential rules at a glance. These are the constraints that apply on every turn — where work happens, what is writable from the root, where team knowledge lives — and one habit worth keeping: `/rename` a chat before `/clear`, so it stays findable in your CLI history once its context is gone.
 
-**Workspace Config** once imported `workspace.json` here; the import is gone. Most of that file exists for scripts (repo remotes, budgets, directory locations), and paying for all of it on every turn buys nothing. Instead, the SessionStart hook injects a one-line summary at the start of every chat — session model, tracker, forge, and the repo names — and skills read `workspace.json` itself when they need the details (the section keeps a plain pointer line, because ACP clients don't surface hook output). Beside the pointer, the section imports the machine-local template-freshness banner, `@local-only-template-freshness.md`, which the version-freshness-check hook keeps up to date.
+**Workspace Config** once imported `workspace.json` here; the import is gone. Most of that file exists for scripts (repo remotes, budgets, directory locations), and paying for all of it on every turn buys nothing. Instead, the SessionStart hook injects a one-line summary at the start of every chat — tracker, forge, and the repo names — and skills read `workspace.json` itself when they need the details (the section keeps a plain pointer line, because ACP clients don't surface hook output). The summary leaves out `sessionModel` on purpose: nothing routes on it, and an older workspace's file still says `"session"`, which echoed back would read as the lifecycle in use. Beside the pointer, the section imports the machine-local template-freshness banner, `@local-only-template-freshness.md`, which the version-freshness-check hook keeps up to date.
 
 **Team Knowledge** imports three files. `@workspace-context/canonical.md` carries the canonical truths verbatim: every file in `workspace-context/shared/locked/`, read on every turn. `@workspace-context/index.md` lists every file under `workspace-context/shared/`, one line each — the canonical files first, then the team-visible working documents — so Claude knows what exists. The working documents are never loaded as content; they are read on demand. `@CODEBASE.md` is an optional file-tree map that `/workspace-init` offers to generate, to help Claude navigate the code without exhaustive exploration. The two catalogs are generated from the files on disk — [Chapter 3](03-workspace-context.md) explains how.
 
@@ -91,7 +91,7 @@ Each section has a purpose:
 
 The `@` prefix tells Claude Code to include the contents of a file or a directory. The template imports single files: `@workspace-context/canonical.md` and `@workspace-context/index.md` each pull one generated file into every turn.
 
-This is how CLAUDE.md connects team knowledge into the context without duplicating content. Workspace config used to be pulled in the same way, via `@workspace.json` — but almost all of that file exists for scripts, so the import was replaced by a SessionStart hook line that summarizes it (session model, tracker, forge, repos) and by skills reading the file on demand.
+This is how CLAUDE.md connects team knowledge into the context without duplicating content. Workspace config used to be pulled in the same way, via `@workspace.json` — but almost all of that file exists for scripts, so the import was replaced by a SessionStart hook line that summarizes it (tracker, forge, repos) and by skills reading the file on demand.
 
 You can add your own @-references. If your project has a critical architecture document that Claude should always see, add `@docs/architecture.md` to CLAUDE.md. If you have a local-only file with temporary context that you want front-of-mind, import it by name, as the template does with `@local-only-template-freshness.md`. It has to be by name: the generated catalogs skip gitignored files, so a `local-only-` note is never loaded just because of where it sits.
 
@@ -116,7 +116,7 @@ The practical implication: do not put large documents in canonical context. A 5,
 When Claude processes a turn, configuration loads in a specific order. Understanding this order helps you know where to put things and what takes priority:
 
 1. **CLAUDE.md** — the entry point. Quick reference, @-references, skill listing.
-2. **SessionStart hook context** — the workspace summary line (session model, tracker, forge, repos), chat record, a line naming any work sessions still under the old session model, and the open sessions, injected when the chat begins.
+2. **SessionStart hook context** — the workspace summary line (tracker, forge, repos), chat record, a line naming any work sessions still under the old session model, and the open sessions, injected when the chat begins.
 3. **Rules** — the active `.md` files in `.claude/rules/`. Behavioral constraints. A rule with `paths:` joins the set when a matching file is read.
 4. **Canonical context** — through the `@workspace-context/canonical.md` import. Every file in `workspace-context/shared/locked/`.
 5. **Skills** — loaded on invocation, not on every turn.

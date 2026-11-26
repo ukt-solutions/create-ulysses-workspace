@@ -9,9 +9,9 @@
 //
 // The config summary must state what workspace.json says — never a default the
 // scripts don't apply: broken tracker/forge/repos values surface as
-// `invalid`, an unset forge type surfaces as origin-picked, and only
-// sessionModel falls back ("task": new work is always a task, so that is what
-// an unset value means — a workspace still holding "session" is told so).
+// `invalid`, and an unset forge type surfaces as origin-picked. sessionModel
+// is not in the line at all: nothing routes on it, and an older workspace
+// still holds "session", which printed would read as the lifecycle in use.
 //
 // The legacy-session nudge counts the sessions directory and nothing else:
 // an entry whose name does not start with a dot is a legacy session, so an
@@ -63,7 +63,7 @@ assertEq(
       'my-api': { remote: 'git@github.com:acme/my-api.git', branch: 'main' },
     },
   }),
-  'sessionModel: task | tracker: github-issues on acme/monorepo | forge: gitlab | repos: my-app (primary), my-api',
+  'tracker: github-issues on acme/monorepo | forge: gitlab | repos: my-app (primary), my-api',
   'a fully configured workspace prints every field',
 );
 
@@ -73,65 +73,57 @@ assertEq(
     workspace: { name: 'demo', sessionModel: 'task', tracker: null, forge: { type: 'github' } },
     repos: {},
   }),
-  'sessionModel: task | tracker: off | forge: github | repos: none',
+  'tracker: off | forge: github | repos: none',
   'a fresh scaffold summarizes to its defaults',
 );
 
-// 3. Absent everything: sessionModel reads as "task", an unset forge type
-//    leaves each repo's origin to pick its adapter
+// 3. Absent everything: an unset forge type leaves each repo's origin to
+//    pick its adapter
 assertEq(
   configSummary({}),
-  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
+  'tracker: off | forge: auto (from origin) | repos: none',
   'an empty config degrades without inventing values',
 );
 assertEq(
   configSummary({ workspace: { forge: {} } }),
-  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
+  'tracker: off | forge: auto (from origin) | repos: none',
   'a forge object without a type is origin-picked, not "github"',
 );
 
-// 4. sessionModel: the key routes nothing now — new work is always a task —
-//    so an empty or non-string value prints the task lifecycle rather than
-//    raw garbage, and the legacy value is reported as the file has it
-assertEq(
-  configSummary({ workspace: { sessionModel: '' } }),
-  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
-  'an empty sessionModel prints the task lifecycle',
-);
-assertEq(
-  configSummary({ workspace: { sessionModel: 5 } }),
-  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
-  'a non-string sessionModel prints the task lifecycle',
-);
-assertEq(
-  configSummary({ workspace: { sessionModel: 'session' } }),
-  'sessionModel: session | tracker: off | forge: auto (from origin) | repos: none',
-  'a workspace still holding the legacy value is told what its file says',
-);
+// 4. sessionModel is left out whatever it holds — the legacy value most of
+//    all, since printed it would say the workspace is on the session model
+const WITHOUT_SESSION_MODEL = 'tracker: off | forge: auto (from origin) | repos: none';
+for (const sessionModel of ['session', 'task', '', '   ', null, 5]) {
+  assertEq(
+    configSummary({ workspace: { sessionModel } }),
+    WITHOUT_SESSION_MODEL,
+    `sessionModel ${JSON.stringify(sessionModel)} is not in the line`,
+  );
+}
 
 // 5. Tracker without a type — the adapter would throw, so the line says so
 assertEq(
   configSummary({ workspace: { tracker: { repo: 'acme/monorepo' } } }),
-  'sessionModel: task | tracker: invalid (no type) | forge: auto (from origin) | repos: none',
+  'tracker: invalid (no type) | forge: auto (from origin) | repos: none',
   'a tracker object without a type is invalid (no type)',
 );
 
 // 6. A truthy non-object tracker — nothing createTracker could take
 assertEq(
   configSummary({ workspace: { tracker: 'github-issues' } }),
-  'sessionModel: task | tracker: invalid | forge: auto (from origin) | repos: none',
+  'tracker: invalid | forge: auto (from origin) | repos: none',
   'a non-object tracker is invalid',
 );
 
 // 7. Forge: false disables forge ops; a string forge is not a config
 assertEq(
   configSummary({ workspace: { forge: false } }),
-  'sessionModel: task | tracker: off | forge: off | repos: none',
+  'tracker: off | forge: off | repos: none',
   'forge: false prints off',
 );
 assertEq(
   configSummary({ workspace: { forge: 'gitlab' } }),
-  'sessionModel: task | tracker: off | forge: invalid | repos: none',
+  'tracker: off | forge: invalid | repos: none',
   'a string forge is invalid',
 );
 
@@ -139,22 +131,22 @@ assertEq(
 //    `Object.keys(repos || {})`); anything else non-object is invalid
 assertEq(
   configSummary({ repos: null }),
-  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: none',
+  'tracker: off | forge: auto (from origin) | repos: none',
   'repos: null is an empty manifest, not invalid',
 );
 assertEq(
   configSummary({ repos: ['my-app'] }),
-  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: invalid',
+  'tracker: off | forge: auto (from origin) | repos: invalid',
   'an array repos value is invalid',
 );
 assertEq(
   configSummary({ repos: 'my-app' }),
-  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: invalid',
+  'tracker: off | forge: auto (from origin) | repos: invalid',
   'a string repos value is invalid',
 );
 assertEq(
   configSummary({ repos: { 'my-app': { primary: true }, 'my-api': {} } }),
-  'sessionModel: task | tracker: off | forge: auto (from origin) | repos: my-app (primary), my-api',
+  'tracker: off | forge: auto (from origin) | repos: my-app (primary), my-api',
   'repos entries print with primary marked',
 );
 
@@ -354,7 +346,8 @@ if (gitForHook.error || gitForHook.status !== 0) {
     const r = runSessionStart(fx);
     assertEq(r.status, 0, `the hook exits 0 with no sessions directory (stderr: ${r.stderr.trim().slice(0, 200)})`);
     assertEq(nudgeLines(r.context), [], 'no sessions directory, no nudge');
-    assert(typeof r.context === 'string' && r.context.includes('sessionModel: task |'), 'an unset sessionModel reads as the task lifecycle');
+    assert(typeof r.context === 'string' && r.context.includes('Workspace config (workspace.json): tracker:'), 'the config line is still there');
+    assert(!r.context.includes('sessionModel'), 'and it does not mention sessionModel, though the fixture\'s file never set it');
   });
 
   // 18. Only an archive under work-sessions/: .archived/ and other dot
@@ -369,7 +362,8 @@ if (gitForHook.error || gitForHook.status !== 0) {
   });
 
   // 19. One real entry is the nudge — and the file's sessionModel changes
-  // nothing, in either direction.
+  // nothing, in either direction. Nor is it echoed: a downstream file that
+  // still says "session" must not read back as the lifecycle in use.
   withRepoRemotesFixture({}, (fx) => {
     mkdirSync(join(fx.ws, 'work-sessions', 'fix-auth', 'workspace'), { recursive: true });
     const first = runSessionStart(fx);
@@ -377,7 +371,13 @@ if (gitForHook.error || gitForHook.status !== 0) {
     assertEq(nudgeLines(first.context), [NUDGE.replace('{n}', 1)], 'one real entry is one line naming the count and /migrate-sessions');
     for (const sessionModel of ['task', 'session', '']) {
       writeWorkspaceJson(fx, { name: 'fixture', sessionModel, workSessionsDir: 'work-sessions' });
-      assertEq(nudgeLines(runSessionStart(fx).context), [NUDGE.replace('{n}', 1)], `sessionModel ${JSON.stringify(sessionModel)} in the file does not hide the session`);
+      const context = runSessionStart(fx).context;
+      assertEq(nudgeLines(context), [NUDGE.replace('{n}', 1)], `sessionModel ${JSON.stringify(sessionModel)} in the file does not hide the session`);
+      assertEq(
+        (context ?? '').split('\n').filter((line) => line.startsWith('Workspace config')),
+        ['Workspace config (workspace.json): tracker: off | forge: auto (from origin) | repos: app'],
+        `sessionModel ${JSON.stringify(sessionModel)} is not echoed in the config line`,
+      );
     }
     mkdirSync(join(fx.ws, 'work-sessions', 'second', 'workspace'), { recursive: true });
     assertEq(nudgeLines(runSessionStart(fx).context), [NUDGE.replace('{n}', 2)], 'a second entry is counted');

@@ -54,22 +54,22 @@ const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArr
 
 /**
  * The `Workspace config (workspace.json):` summary line session-start injects
- * (gh:196): sessionModel, tracker, forge, and the repo names (primary
- * marked). The labels mirror what the scripts reading workspace.json actually
- * do — no invented defaults: an absent tracker is `off`, a tracker object
- * without a type (or a non-object in its place) is `invalid`, an absent
- * forge type leaves each repo's origin to pick its adapter, and `repos` that
- * isn't a plain object is `invalid` rather than a silent empty manifest.
- * sessionModel reads as "task" when the key is absent, empty or not a
- * string: new work always starts as a task, so that is what an unset value
- * means. The key no longer routes anything — it is reported because a
- * workspace that still holds "session" should see what its file says.
+ * (gh:196): tracker, forge, and the repo names (primary marked). The labels
+ * mirror what the scripts reading workspace.json actually do — no invented
+ * defaults: an absent tracker is `off`, a tracker object without a type (or
+ * a non-object in its place) is `invalid`, an absent forge type leaves each
+ * repo's origin to pick its adapter, and `repos` that isn't a plain object
+ * is `invalid` rather than a silent empty manifest.
+ *
+ * sessionModel is deliberately absent. Nothing routes on it — new work is
+ * always a task — and a workspace made before that change still holds
+ * `"session"` in its file: printed, that would read as the lifecycle in
+ * use. Whether the old lifecycle still applies anywhere is a fact about the
+ * sessions directory, and it has its own line (listLegacySessions below).
  */
 export function configSummary(config) {
   const w = config?.workspace || {};
-  const configured = typeof w.sessionModel === 'string' ? w.sessionModel.trim() : '';
-  const model = configured || 'task';
-  const parts = [`sessionModel: ${model}`];
+  const parts = [];
 
   let tracker;
   if (!w.tracker) tracker = 'off';

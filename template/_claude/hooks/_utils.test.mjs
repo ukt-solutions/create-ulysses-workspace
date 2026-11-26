@@ -99,40 +99,35 @@ function fixture() {
   }
 }
 
-// configSummary leads with the lifecycle, and reports the task model for
-// every value that names none
+// configSummary leaves sessionModel out of the line, whatever the file holds
 {
-  // The rest of the line, which these cases do not vary.
-  const TAIL = 'tracker: off | forge: auto (from origin) | repos: none';
-  const line = (model) => `sessionModel: ${model} | ${TAIL}`;
+  // What the line says when tracker, forge and repos are all absent.
+  const BARE = 'tracker: off | forge: auto (from origin) | repos: none';
 
-  // The template ships "task", so this is what a fresh scaffold prints.
+  // The template ships "task", and a fresh scaffold's line is the bare one.
   assertEq(
     configSummary({ workspace: { sessionModel: 'task' }, repos: {} }),
-    line('task'),
-    'a scaffolded workspace reports task',
+    BARE,
+    'a scaffolded workspace prints tracker, forge and repos, and no sessionModel',
   );
-  // Nothing routes on the key any more: new work is always a task, so an
-  // unset value means the task lifecycle rather than the old default.
-  assertEq(configSummary({ workspace: {} }), line('task'), 'an absent sessionModel reports task');
-  assertEq(configSummary({}), line('task'), 'a config with no workspace object reports task');
-  assertEq(configSummary(null), line('task'), 'a null config reports task');
-  assertEq(configSummary({ workspace: { sessionModel: '' } }), line('task'), 'an empty sessionModel reports task');
-  assertEq(configSummary({ workspace: { sessionModel: '   ' } }), line('task'), 'a blank sessionModel reports task');
-  assertEq(configSummary({ workspace: { sessionModel: null } }), line('task'), 'a null sessionModel reports task');
-  assertEq(configSummary({ workspace: { sessionModel: 5 } }), line('task'), 'a non-string sessionModel reports task');
+  assertEq(configSummary({ workspace: {} }), BARE, 'an absent sessionModel changes nothing');
+  assertEq(configSummary({}), BARE, 'a config with no workspace object degrades to the same line');
+  assertEq(configSummary(null), BARE, 'a null config degrades to the same line');
 
-  // A workspace that still holds the legacy value is told what its file
-  // says: the value is reported, not rewritten and not hidden.
+  // Why the key is left out: nothing routes on it, and an older workspace
+  // still holds "session" — printed, that would be read as the lifecycle in
+  // use. The line never carries it, whatever the value.
+  for (const sessionModel of ['session', 'task', '', '   ', null, 5]) {
+    assertEq(
+      configSummary({ workspace: { sessionModel } }),
+      BARE,
+      `sessionModel ${JSON.stringify(sessionModel)} is not in the line`,
+    );
+  }
   assertEq(
-    configSummary({ workspace: { sessionModel: 'session' } }),
-    line('session'),
-    'an explicit legacy value is reported as written',
-  );
-  assertEq(
-    configSummary({ workspace: { sessionModel: ' task ' } }),
-    line('task'),
-    'surrounding whitespace is not part of the value',
+    configSummary({ workspace: { sessionModel: 'session', tracker: { type: 'github-issues' } } }),
+    'tracker: github-issues | forge: auto (from origin) | repos: none',
+    'a legacy value leaves the rest of the line untouched',
   );
 }
 
