@@ -485,7 +485,7 @@ git checkout '{default-branch}'
 git merge --squash chore/workspace-init
 git commit -m "chore: workspace initialization"
 ```
-If a remote is configured, push the default branch (`git push origin '{default-branch}'`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 17 rebase). Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
+If `origin` is configured (Step 17), push the default branch (`git push origin '{default-branch}'`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 17 rebase). The condition is `origin`, not "a remote": since Step 2 the repo has carried a `repo-{name}` remote per project clone, and none of those is the workspace's own, so with no `origin` there is nothing to push to. Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
 
 **Final report:**
 
@@ -526,6 +526,7 @@ If the merge was declined, replace the branch line with:
     git merge --squash chore/workspace-init
     git commit -m 'chore: workspace initialization'
     git push origin {default-branch}
+  (leave out the last line if Step 17 found or set no `origin`)
 
 This session is done. Start a fresh Claude Code session and run /start-work to begin."
 ```

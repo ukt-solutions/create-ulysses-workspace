@@ -68,7 +68,7 @@ It runs the whole setup in one pass, on a `chore/workspace-init` branch:
 - It installs the rest of the template, and asks which optional rules to activate.
 - It configures your identity, and offers to start the team roster with you as its first entry.
 - It offers to link an issue tracker, and creates the workspace's remote repository or connects one that already exists.
-- It ends by offering to merge the init branch into the default branch, pushing it if a remote is configured.
+- It ends by offering to merge the init branch into the default branch, pushing it if the workspace repo has an `origin`.
 
 [Chapter 10](../chapters/10-installation-and-upgrades.md) lists every step.
 
