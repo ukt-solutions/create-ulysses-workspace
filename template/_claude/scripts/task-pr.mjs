@@ -25,23 +25,30 @@
 //                    [--skip-checks] [--approved]
 //   node task-pr.mjs --checks --root <launcher> --prs <json-from-create>
 //
-// --worktree <repo>=<path> (repeatable; "." is the workspace repo) names the
-// checkout where a repo's --branch is checked out when that is not the task
-// worktree derived from the branch — /migrate-sessions finishing a legacy
-// session, whose branch sits at work-sessions/{name}/workspace/ for the
-// workspace repo and work-sessions/{name}/workspace/repos/{repo}/ for a
-// project repo. A relative path is taken from the current directory. Every
-// git command the run makes for that repo — counting its commits, reading
-// its origin, pushing it — runs there, and the result is what the task
-// worktree would give: a repository's branches and remotes are shared by all
-// of its worktrees. The path is checked before anything is pushed: it must
-// be the root of a git worktree, it must belong to the same repository as
-// repos/{repo} (the launcher itself for "."), and it must be checked out on
-// --branch — anything else refuses. Every entry --create writes carries its
-// checkout as `worktree`, which is all --checks and --merge need: they act
-// on the entries as the PRs file records them. The flag is --create's alone
-// — a path handed to one of the other two would go unchecked, so with either
-// it is an error that says so.
+// --worktree <repo>=<path> (repeatable, once per repo; "." is the workspace
+// repo) names the checkout where a repo's --branch is checked out when that
+// is not the task worktree derived from the branch — /migrate-sessions
+// finishing a legacy session, whose branch sits at
+// work-sessions/{name}/workspace/ for the workspace repo and at
+// work-sessions/{name}/workspace/repos/{repo}/ for a project repo. A
+// relative path is taken from the current directory. Every git command the
+// run makes for that repo — counting its commits, reading its origin,
+// pushing it — runs there, and the result is what the task worktree would
+// give: a repository's branches and remotes are shared by all of its
+// worktrees.
+//
+// The path is checked before anything is pushed. It must be the root of a
+// git worktree, it must belong to the same repository as repos/{repo} (the
+// launcher itself for "."), and it must be checked out on --branch;
+// anything else refuses. The comparison needs the repo's source clone, so
+// one that is missing, or is not a repository, is refused as that rather
+// than as a different repository. A second --worktree for a repo already
+// named is refused while the arguments are read.
+//
+// Every entry --create writes carries its checkout as `worktree`, which is
+// all --checks and --merge need: they act on the entries as the PRs file
+// records them. The flag is --create's alone — a path handed to one of the
+// other two would go unchecked, so with either it is an error that says so.
 //
 // Every repo of the task resolves to a merge mode (mergeModeFor below):
 // "forge" — its origin is forge-hosted (github.com, gitlab.com, or the
@@ -140,7 +147,7 @@
 
 import '../lib/require-node.mjs';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, statSync } from 'node:fs';
-import { resolve, dirname, sep } from 'node:path';
+import { resolve, dirname, join, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { taskWorktreePath, defaultBranchFor } from './task-worktree.mjs';
@@ -242,10 +249,17 @@ function samePath(a, b) {
  * The checkout a --worktree entry names, checked before anything is pushed.
  * It has to be the root of a git worktree (a directory inside one would run
  * git fine but says nothing about where the branch is), a worktree of the
- * same repository as repos/{repo} — the launcher itself for "." — so the
- * origin and default branch read here are the ones its source clone
- * resolves to, and checked out on {branch}. Each refusal names the flag as
- * given and what is wrong with the path.
+ * same repository as the repo's source clone — repos/{repo}, the launcher
+ * itself for "." — so the origin and default branch read here are the ones
+ * that clone resolves to, and checked out on {branch}.
+ *
+ * The comparison needs the source clone, and it has to be a repository of
+ * its own: one that is missing, or is a plain directory (which git would
+ * still answer for, by walking up to the launcher), is refused as that — "a
+ * different repository" would blame the checkout for something wrong on the
+ * other side, and matching against the wrong repository would let a worktree
+ * of the workspace repo pass for repos/{repo}. Each refusal names the flag
+ * as given and what is wrong.
  */
 function checkoutOverride(gitFn, rootDir, repo, given, branch) {
   const label = `--worktree ${repo}=${given}`;
@@ -264,10 +278,20 @@ function checkoutOverride(gitFn, rootDir, repo, given, branch) {
     const res = gitCheck(gitFn, cwd, ['rev-parse', '--git-common-dir']);
     return res.status === 0 ? resolve(cwd, String(res.stdout).trim()) : null;
   };
+  const home = repo === WORKSPACE_REPO ? 'the workspace repo' : `repos/${repo}`;
+  const sourceClone = repoDirFor(rootDir, repo);
+  let own = existsSync(sourceClone) ? commonDirOf(sourceClone) : null;
+  // The answer only counts when it is the clone's own repository. A plain
+  // directory there gets one too — git walks up and finds the launcher's —
+  // and matching the checkout against that would let a worktree of the
+  // workspace repo pass for repos/{repo}.
+  if (own && !samePath(own, join(sourceClone, '.git'))) own = null;
+  if (!own) {
+    const state = existsSync(sourceClone) ? 'is not a git repository' : 'is not cloned';
+    throw new Error(`${label}: ${home} ${state}, so the worktree cannot be checked against it — nothing was pushed`);
+  }
   const common = commonDirOf(dir);
-  const own = commonDirOf(repoDirFor(rootDir, repo));
-  if (!common || !own || !samePath(common, own)) {
-    const home = repo === WORKSPACE_REPO ? 'the workspace repo' : `repos/${repo}`;
+  if (!samePath(common, own)) {
     throw new Error(`${label}: a worktree of a different repository than ${home} — nothing was pushed`);
   }
   const on = gitCheck(gitFn, dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
@@ -847,6 +871,12 @@ function parseArgs(argv) {
       const shaped = path !== '' && (repo === WORKSPACE_REPO || (repo !== '..' && /^[A-Za-z0-9._-]+$/.test(repo)));
       if (!shaped) {
         throw new Error(`--worktree expects <repo>=<path> ("." is the workspace repo), got: ${v}`);
+      }
+      // One checkout per repo. A second flag for the same repo is two
+      // answers to one question, not a revision of the first: refused here,
+      // before any git runs.
+      if (args.worktrees.has(repo)) {
+        throw new Error(`--worktree names repo "${repo}" twice (${args.worktrees.get(repo)}, then ${path}) — give each repo one checkout`);
       }
       args.worktrees.set(repo, path);
       i += 1;

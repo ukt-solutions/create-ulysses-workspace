@@ -447,9 +447,14 @@ console.log('# parseArgs validation');
     '--worktree', 'app=sessions/x/workspace/repos/app', '--worktree', '.=sessions/x/workspace']);
   assertEq([...placed.worktrees.entries()], [['app', 'sessions/x/workspace/repos/app'], ['.', 'sessions/x/workspace']],
     '--worktree maps each repo to its checkout, "." included');
-  const replace = parseArgs(['node', 's', '--create', '--root', '/w', '--branch', 'feature/x', '--repo', 'app',
-    '--worktree', 'app=/first', '--worktree', 'app=/second']);
-  assertEq([...replace.worktrees.entries()], [['app', '/second']], 'repeated --worktree for one repo keeps the last path');
+  // One checkout per repo: a second flag for the same repo is refused while
+  // the arguments are read, naming both paths, not resolved to the last one.
+  await rejects(
+    () => parseArgs(['node', 's', '--create', '--root', '/w', '--branch', 'feature/x', '--repo', 'app',
+      '--worktree', 'app=/first', '--worktree', 'app=/second']),
+    'a repo named twice by --worktree is refused while parsing',
+    '--worktree names repo "app" twice (/first, then /second)',
+  );
   // The flag is --create's alone: the other two act on the entries as the
   // PRs file records them, and refuse a path they would otherwise store
   // unchecked — naming where the checkout they use comes from.
@@ -1336,7 +1341,58 @@ console.log('# --worktree: anything but a worktree of that repo on the branch re
       'a repo without an override still needs its task worktree',
       'no task worktree',
     );
+
+    // A repo named twice is two answers to one question, not a last one that
+    // wins: refused while the arguments are read, so no git runs at all.
+    const twiceLog = [];
+    const twiceGit = gitWith([pushOk]);
+    await rejects(
+      () => run(argvCreate([
+        '--root', fx.root, '--branch', fx.branch, '--repo', 'app',
+        '--worktree', `app=${fx.appWt}`, '--worktree', `app=${other}`,
+        '--body-file', `app=${join(fx.root, 'body-app.md')}`,
+      ]), { gitFn: twiceGit, forgeFactory: fakeForgeFactory(twiceLog), trackerFactory: fakeTrackerFactory(twiceLog) }),
+      'a repo named twice by --worktree refuses',
+      `--worktree names repo "app" twice (${fx.appWt}, then ${other})`,
+    );
+    assert(twiceGit.calls.length === 0 && twiceLog.length === 0,
+      'while the arguments are read — no git runs, and the forge is asked nothing');
   } finally { clean(fx.root); fx.bares.forEach(clean); }
+}
+
+console.log('# --worktree: a source clone that is missing, or is not a repository of its own, is named as that');
+{
+  // The checkout given is a perfectly good worktree — of the workspace repo —
+  // so what refuses is the state of repos/app, and the refusal has to say
+  // which: never "a different repository", which would blame the checkout.
+  const attempt = (fx, log, gitFn) => run(argvCreate([
+    '--root', fx.root, '--branch', fx.branch, '--repo', 'app', '--repo', '.',
+    '--worktree', `app=${fx.wsWt}`, '--worktree', `.=${fx.wsWt}`,
+    '--body-file', `app=${join(fx.root, 'body-app.md')}`, '--body-file', `.=${join(fx.root, 'body-ws.md')}`,
+  ]), { gitFn, forgeFactory: fakeForgeFactory(log), trackerFactory: fakeTrackerFactory(log) });
+
+  const gone = makeSessionLauncher();
+  try {
+    rmSync(join(gone.root, 'repos', 'app'), { recursive: true, force: true });
+    const log = [];
+    const gitFn = gitWith([pushOk]);
+    await rejects(() => attempt(gone, log, gitFn), 'a --worktree for a repo whose source clone is missing refuses',
+      'repos/app is not cloned, so the worktree cannot be checked against it');
+    assert(gitFn.calls.every((c) => !c.args.includes('push')) && log.length === 0, 'and pushed nothing, asked the forge nothing');
+  } finally { clean(gone.root); gone.bares.forEach(clean); }
+
+  // The directory is there but holds no repository of its own. git would
+  // still answer for it by walking up to the launcher, and a worktree of the
+  // workspace repo would then pass as app's — so that answer does not count.
+  const plain = makeSessionLauncher();
+  try {
+    rmSync(join(plain.root, 'repos', 'app', '.git'), { recursive: true, force: true });
+    const log = [];
+    const gitFn = gitWith([pushOk]);
+    await rejects(() => attempt(plain, log, gitFn), 'a --worktree for a repo whose source clone is not a repository refuses',
+      'repos/app is not a git repository, so the worktree cannot be checked against it');
+    assert(gitFn.calls.every((c) => !c.args.includes('push')) && log.length === 0, 'and pushed nothing, asked the forge nothing');
+  } finally { clean(plain.root); plain.bares.forEach(clean); }
 }
 
 console.log('# an invalid branch name is refused before any other git call');
