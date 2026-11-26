@@ -54,19 +54,22 @@ const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArr
 
 /**
  * The `Workspace config (workspace.json):` summary line session-start injects
- * (gh:196): sessionModel, tracker, forge, and the repo names (primary
- * marked). The labels mirror what the scripts reading workspace.json actually
- * do — no invented defaults: an absent tracker is `off`, a tracker object
- * without a type (or a non-object in its place) is `invalid`, an absent
- * forge type leaves each repo's origin to pick its adapter, and `repos` that
- * isn't a plain object is `invalid` rather than a silent empty manifest.
- * sessionModel defaults to "session", matching how /start-work routes absent
- * config.
+ * (gh:196): tracker, forge, and the repo names (primary marked). The labels
+ * mirror what the scripts reading workspace.json actually do — no invented
+ * defaults: an absent tracker is `off`, a tracker object without a type (or
+ * a non-object in its place) is `invalid`, an absent forge type leaves each
+ * repo's origin to pick its adapter, and `repos` that isn't a plain object
+ * is `invalid` rather than a silent empty manifest.
+ *
+ * sessionModel is deliberately absent. Nothing routes on it — new work is
+ * always a task — and a workspace made before that change still holds
+ * `"session"` in its file: printed, that would read as the lifecycle in
+ * use. Whether the old lifecycle still applies anywhere is a fact about the
+ * sessions directory, and it has its own line (listLegacySessions below).
  */
 export function configSummary(config) {
   const w = config?.workspace || {};
-  const model = typeof w.sessionModel === 'string' && w.sessionModel ? w.sessionModel : 'session';
-  const parts = [`sessionModel: ${model}`];
+  const parts = [];
 
   let tracker;
   if (!w.tracker) tracker = 'off';
@@ -173,6 +176,33 @@ export function getSessionTrackers(root) {
     }
   }
   return results;
+}
+
+/**
+ * The sessions a workspace still holds under the legacy session lifecycle:
+ * the names directly under the sessions directory that do not start with a
+ * dot, sorted. New work is always a task, so an entry here is work that
+ * predates the task lifecycle and waits to be drained with /migrate-sessions.
+ * This is the one place that decides whether a workspace "still has legacy
+ * sessions" — the session-start hook's nudge, the maintenance audit's info
+ * line and /workspace-update's report all count the same thing.
+ *
+ * Dot entries are the migration's own (.archived/) or tooling noise, and
+ * never count. Every other entry counts whatever it holds — a session
+ * folder, an orphan shell — because the inventory is what says which is
+ * which. The directory alone decides: a missing or unreadable one means
+ * none. workspace.sessionModel is never read — the key is kept for older
+ * workspaces and selects nothing.
+ */
+export function listLegacySessions(root) {
+  const { workSessionsDir } = getWorkspacePaths(root);
+  let entries;
+  try {
+    entries = readdirSync(workSessionsDir);
+  } catch {
+    return [];
+  }
+  return entries.filter((name) => !name.startsWith('.')).sort();
 }
 
 /**

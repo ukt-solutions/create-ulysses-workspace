@@ -78,7 +78,7 @@ Take a minute to look around. You do not need to memorize everything — it will
 
 **`workspace-context/shared/`** (the rest) holds working documents — braindumps, research, designs. Browse when you are curious; you do not need to read them all on day one.
 
-**`workspace-context/team-member/{you}/`** is yours. Personal braindumps and handoffs land here. Once they are tracked, they load only into your sessions.
+**`workspace-context/team-member/{you}/`** is yours. Personal braindumps and handoffs written as files land here. Once they are tracked, they load only into your sessions. The ones you capture during a task go to that chat's drawer first, and completion asks what should move here.
 
 **`.claude/rules/`** contains the behavioural rules Claude follows — git conventions, how to revise documents, when to push back. They apply automatically.
 
@@ -90,10 +90,9 @@ When you are ready to do actual work:
 /start-work
 ```
 
-What happens next depends on the lifecycle your team chose in `workspace.json` → `workspace.sessionModel`.
+You pick an issue from the team's tracker, or describe new work and it files one. You can also name the issue on the command line: `/start-work gh:42`. The workspace creates one branch and one worktree per repo the task touches, under `repos/{repo}/.claude/worktrees/{slug}/` (the branch name with `/` turned into `-`; `.claude/worktrees/{slug}/` when the task changes the workspace repo itself). Your chat stays at the workspace root and reaches the worktrees by path.
 
-- **Task lifecycle (`"task"`)**: you pick an issue from the team's tracker, or describe new work and it files one. The workspace creates one branch and one worktree per repo the task touches, under `repos/{repo}/.claude/worktrees/{slug}/` (the branch name with `/` turned into `-`). Your chat stays at the workspace root and reaches the worktrees by path.
-- **Session lifecycle (`"session"`)**: the workspace creates a self-contained folder at `work-sessions/{name}/` with its own workspace worktree and nested repo worktrees.
+If the workspace still has sessions from before tasks — work a teammate started under the older session lifecycle — `/start-work` offers them first, so one can be resumed instead of a task started. New work is always a task; nothing in `workspace.json` chooses.
 
 Either way, your work is isolated from everyone else's until it merges.
 
@@ -107,7 +106,7 @@ When you make a decision worth remembering — "we chose this approach because�
 
 Claude writes the reasoning down so it survives between conversations. `/handoff` captures where you are and what is next, so tomorrow's session picks up where today's stopped.
 
-## Step 6: Finish or Pause
+## Step 6: Finish
 
 When the work is done:
 
@@ -117,13 +116,7 @@ When the work is done:
 
 Claude rebases, opens pull requests with a description of the change, merges once you approve, and closes the linked issue.
 
-In the session lifecycle, if you need to stop but are not finished:
-
-```
-/pause-work
-```
-
-This pushes your work and opens draft pull requests. Resume any time with `/start-work`.
+If you need to stop before the work is done, `/handoff` captures where you are. The task stays open on your chat's record with its worktrees in place, and `/start-work` on the same issue finds it again. Only a session started under the older session lifecycle has `/pause-work`, which pushes its work and opens draft pull requests.
 
 ## You Are Set Up
 

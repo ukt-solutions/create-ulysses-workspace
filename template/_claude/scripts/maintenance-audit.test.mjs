@@ -811,8 +811,8 @@ console.log('# maintenance-audit');
 }
 
 // 12. CLI from a payload-like nested location honors --root and never audits
-//     its own directory. The payload carries the sibling scripts and lib/
-//     helpers the audit imports, so copy those alongside it.
+//     its own directory. The payload carries the sibling scripts, lib/ helpers
+//     and hooks/_utils.mjs the audit imports, so copy those alongside it.
 {
   const root = makeWorkspace({}, (r) => {
     writeFileSync(join(r, 'workspace-context', 'canonical.md'), 'hand edited\n');
@@ -827,6 +827,8 @@ console.log('# maintenance-audit');
   for (const f of ['freshness.mjs', 'registry-check.mjs', 'require-node.mjs', 'session-frontmatter.mjs', 'team-roster.mjs']) {
     writeFileSync(join(payloadClaude, 'lib', f), readFileSync(join(here, '..', 'lib', f), 'utf8'));
   }
+  mkdirSync(join(payloadClaude, 'hooks'), { recursive: true });
+  writeFileSync(join(payloadClaude, 'hooks', '_utils.mjs'), readFileSync(join(here, '..', 'hooks', '_utils.mjs'), 'utf8'));
   const r = spawnSync(
     process.execPath,
     [join(nestedScripts, 'maintenance-audit.mjs'), '--root', root, '--offline'],
@@ -1532,6 +1534,93 @@ function teamWorkspace(team = TEAM) {
   // Machine-local, never committed — written after the fixture's commit.
   writeFileSync(join(root, '.claude', 'settings.local.json'), JSON.stringify({ workspace: { user: 'alexw' } }));
   return root;
+}
+
+// 21. section 3 — sessions still under the legacy session lifecycle are one
+//     info line, decided by the sessions directory alone: an entry whose name
+//     does not start with a dot counts, an archive does not, a custom
+//     workSessionsDir is the directory that counts, and workspace.sessionModel
+//     is never consulted. The sessions live at the launcher, so an audit run
+//     from a task worktree still finds them.
+{
+  const legacy = (result) => bySection(result, 'structure').filter((f) => f.message.includes('old session model'));
+  const setWorkspace = (root, workspace) => {
+    const config = JSON.parse(readFileSync(join(root, 'workspace.json'), 'utf8'));
+    Object.assign(config.workspace, workspace);
+    writeFileSync(join(root, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
+  };
+
+  // No sessions directory: nothing, and the exit code is untouched.
+  const none = makeWorkspace();
+  assertEq(legacy(await audit(none)), [], 'a workspace with no sessions directory gets no legacy-session finding');
+  cleanup(none);
+
+  // Only an archive and a dotfile under work-sessions/.
+  const archived = makeWorkspace({}, (r) => {
+    mkdirSync(join(r, 'work-sessions', '.archived', 'old--20260101T000000', 'workspace'), { recursive: true });
+    writeFileSync(join(r, 'work-sessions', '.archived', 'old--20260101T000000', 'workspace', 'session.md'), '---\n---\n');
+    writeFileSync(join(r, 'work-sessions', '.DS_Store'), '');
+  });
+  assertEq(legacy(await audit(archived)), [], 'an archive alone is not a legacy session');
+  cleanup(archived);
+
+  // Two real entries: one info line naming both, the count and the way out.
+  const two = makeWorkspace({}, (r) => {
+    for (const name of ['fix-auth', 'migrate-tool']) mkdirSync(join(r, 'work-sessions', name), { recursive: true });
+  });
+  const result = await audit(two);
+  assertEq(legacy(result), [{
+    section: 'structure',
+    severity: 'info',
+    file: 'work-sessions',
+    message: '2 work session(s) under the old session model: fix-auth, migrate-tool — /migrate-sessions can inventory and drain them',
+  }], 'two entries are one info line under structure, naming the count, the sessions and /migrate-sessions');
+  assertEq(result.summary.exitCode, 0, 'a legacy session is info: it never changes the exit code');
+  assertEq(result.summary.issues, 0, 'and it is never counted as an issue');
+  assertTrue(renderReport(result).includes('2 work session(s) under the old session model: fix-auth, migrate-tool'),
+    'the human report carries the line');
+  cleanup(two);
+
+  // A custom workSessionsDir is the directory that counts: the default name
+  // does not stand in for it when it is missing, and its entries count when
+  // it exists.
+  const custom = makeWorkspace({}, (r) => {
+    setWorkspace(r, { workSessionsDir: 'legacy-sessions' });
+    mkdirSync(join(r, 'work-sessions', 'not-the-configured-directory'), { recursive: true });
+  });
+  assertEq(legacy(await audit(custom)), [], 'a missing custom directory is no finding, even with entries under the default name');
+  mkdirSync(join(custom, 'legacy-sessions', 'alpha'), { recursive: true });
+  assertEq(legacy(await audit(custom)).map((f) => [f.file, f.message]), [
+    ['legacy-sessions', '1 work session(s) under the old session model: alpha — /migrate-sessions can inventory and drain them'],
+  ], 'the custom directory is honoured, and the finding is filed against it');
+  cleanup(custom);
+
+  // workspace.sessionModel plays no part, in either direction.
+  for (const sessionModel of ['task', 'session', '']) {
+    const typed = makeWorkspace({}, (r) => {
+      setWorkspace(r, { sessionModel });
+      mkdirSync(join(r, 'work-sessions', 'fix-auth'), { recursive: true });
+    });
+    assertEq(legacy(await audit(typed)).length, 1, `sessionModel ${JSON.stringify(sessionModel)} does not hide a session that is there`);
+    cleanup(typed);
+  }
+
+  // From a task worktree of the workspace repo: the launcher's sessions are
+  // still found, as its cloned repos are (gh:183).
+  const fromWorktree = makeWorkspace({}, (r) => {
+    mkdirSync(join(r, 'work-sessions', 'fix-auth'), { recursive: true });
+    // a real file so the directory materializes in the worktree checkout
+    writeFileSync(join(r, '.claude', 'scripts', 'noop.mjs'), '// noop\n');
+  });
+  const wt = join(fromWorktree, '.claude', 'worktrees', 'chore-audit');
+  mkdirSync(dirname(wt), { recursive: true });
+  const added = git(fromWorktree, ['worktree', 'add', '-q', '-b', 'chore/audit', wt]);
+  assertEq(added.status, 0, `worktree created (stderr: ${added.stderr.trim().slice(0, 200)})`);
+  assertTrue(!existsSync(join(wt, 'work-sessions', 'fix-auth')), 'the worktree does not hold the gitignored session');
+  assertEq(legacy(await audit(wt)).map((f) => f.message), [
+    '1 work session(s) under the old session model: fix-auth — /migrate-sessions can inventory and drain them',
+  ], 'audited from a task worktree, the launcher\'s legacy session is still reported');
+  cleanup(fromWorktree);
 }
 
 // 8a. no roster → no findings, one ✓ line that says the checks are off

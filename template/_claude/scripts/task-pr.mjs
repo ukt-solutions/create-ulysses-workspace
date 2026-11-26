@@ -17,12 +17,38 @@
 // Usage:
 //   node task-pr.mjs --create --root <launcher> --branch <branch>
 //                    [--work-item gh:N|gl:N] [--chat <name> | --repo <r> ...]
+//                    [--worktree <r>=<path> ...]
 //                    --body-file <forge-repo>=<path> ... [--out <file>]
 //                    [--force-with-lease]
 //   node task-pr.mjs --merge --root <launcher> --prs <json-from-create>
 //                    [--work-item gh:N|gl:N] [--wait] [--wait-timeout <min>]
 //                    [--skip-checks] [--approved]
 //   node task-pr.mjs --checks --root <launcher> --prs <json-from-create>
+//
+// --worktree <repo>=<path> (repeatable, once per repo; "." is the workspace
+// repo) names the checkout where a repo's --branch is checked out when that
+// is not the task worktree derived from the branch — /migrate-sessions
+// finishing a legacy session, whose branch sits at
+// work-sessions/{name}/workspace/ for the workspace repo and at
+// work-sessions/{name}/workspace/repos/{repo}/ for a project repo. A
+// relative path is taken from the current directory. Every git command the
+// run makes for that repo — counting its commits, reading its origin,
+// pushing it — runs there, and the result is what the task worktree would
+// give: a repository's branches and remotes are shared by all of its
+// worktrees.
+//
+// The path is checked before anything is pushed. It must be the root of a
+// git worktree, it must belong to the same repository as repos/{repo} (the
+// launcher itself for "."), and it must be checked out on --branch;
+// anything else refuses. The comparison needs the repo's source clone, so
+// one that is missing, or is not a repository, is refused as that rather
+// than as a different repository. A second --worktree for a repo already
+// named is refused while the arguments are read.
+//
+// Every entry --create writes carries its checkout as `worktree`, which is
+// all --checks and --merge need: they act on the entries as the PRs file
+// records them. The flag is --create's alone — a path handed to one of the
+// other two would go unchecked, so with either it is an error that says so.
 //
 // Every repo of the task resolves to a merge mode (mergeModeFor below):
 // "forge" — its origin is forge-hosted (github.com, gitlab.com, or the
@@ -47,13 +73,15 @@
 // GitHub `owner/repo#N` reference cannot resolve on GitLab). Prints
 // `{ prs, empty, pushed }` — prs holds forge entries (mode "forge") and
 // local entries (mode "local") alike, every entry carrying its commit
-// count and its resolved merge-approval policy (mergeApprovalFor below:
-// "ask" or "operator", from repos.{repo}.mergeApproval /
-// workspace.mergeApproval, default "ask" — gh:202) so the skill reads it
-// instead of re-deriving — and, with --out, writes the same JSON to a
-// file — a mid-run failure still writes what has landed so far, so the
-// state survives the error. A repo that already has an open PR for the
-// branch gets it reused, so a re-run never opens a duplicate.
+// count, the checkout the run used (`worktree`: the task worktree, or the
+// path --worktree named) and its resolved merge-approval policy
+// (mergeApprovalFor below: "ask" or "operator", from
+// repos.{repo}.mergeApproval / workspace.mergeApproval, default "ask" —
+// gh:202), so the skill reads it instead of re-deriving. With --out the
+// same JSON goes to a file, and a mid-run failure still writes what has
+// landed so far, so the state survives the error. A repo that already has
+// an open PR for the branch gets it reused, so a re-run never opens a
+// duplicate.
 //
 // --merge finishes every entry in the file, all-or-nothing on CI (gh:201):
 // before the FIRST merge, the checks of every forge PR not already merged
@@ -118,8 +146,8 @@
 // there is no forge to ask.
 
 import '../lib/require-node.mjs';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, statSync } from 'node:fs';
+import { resolve, dirname, join, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { taskWorktreePath, defaultBranchFor } from './task-worktree.mjs';
@@ -204,6 +232,76 @@ function gitOut(gitFn, cwd, args) {
   return String(res.stdout || '').trim();
 }
 
+// .native resolves Windows 8.3 short names; the plain fallback covers
+// filesystems where the native binding is unavailable. Forward slashes on
+// both sides, so a root that reached us through a symlink or a Windows
+// drive still matches the path git prints.
+function samePath(a, b) {
+  const real = (p) => {
+    try { return realpathSync.native(p); } catch { /* fall through */ }
+    try { return realpathSync(p); } catch { /* fall through */ }
+    return resolve(p);
+  };
+  return real(a).split(sep).join('/') === real(b).split(sep).join('/');
+}
+
+/**
+ * The checkout a --worktree entry names, checked before anything is pushed.
+ * It has to be the root of a git worktree (a directory inside one would run
+ * git fine but says nothing about where the branch is), a worktree of the
+ * same repository as the repo's source clone — repos/{repo}, the launcher
+ * itself for "." — so the origin and default branch read here are the ones
+ * that clone resolves to, and checked out on {branch}.
+ *
+ * The comparison needs the source clone, and it has to be a repository of
+ * its own: one that is missing, or is a plain directory (which git would
+ * still answer for, by walking up to the launcher), is refused as that — "a
+ * different repository" would blame the checkout for something wrong on the
+ * other side, and matching against the wrong repository would let a worktree
+ * of the workspace repo pass for repos/{repo}. Each refusal names the flag
+ * as given and what is wrong.
+ */
+function checkoutOverride(gitFn, rootDir, repo, given, branch) {
+  const label = `--worktree ${repo}=${given}`;
+  const dir = resolve(given);
+  let st = null;
+  try { st = statSync(dir); } catch { /* absent — reported below */ }
+  if (!st || !st.isDirectory()) {
+    throw new Error(`${label}: not a directory (${dir}) — nothing was pushed`);
+  }
+  const top = gitCheck(gitFn, dir, ['rev-parse', '--show-toplevel']);
+  if (top.status !== 0 || !samePath(String(top.stdout).trim(), dir)) {
+    throw new Error(`${label}: not the root of a git worktree (${dir}) — nothing was pushed`);
+  }
+  // --git-common-dir is printed relative to the worktree it is asked in.
+  const commonDirOf = (cwd) => {
+    const res = gitCheck(gitFn, cwd, ['rev-parse', '--git-common-dir']);
+    return res.status === 0 ? resolve(cwd, String(res.stdout).trim()) : null;
+  };
+  const home = repo === WORKSPACE_REPO ? 'the workspace repo' : `repos/${repo}`;
+  const sourceClone = repoDirFor(rootDir, repo);
+  let own = existsSync(sourceClone) ? commonDirOf(sourceClone) : null;
+  // The answer only counts when it is the clone's own repository. A plain
+  // directory there gets one too — git walks up and finds the launcher's —
+  // and matching the checkout against that would let a worktree of the
+  // workspace repo pass for repos/{repo}.
+  if (own && !samePath(own, join(sourceClone, '.git'))) own = null;
+  if (!own) {
+    const state = existsSync(sourceClone) ? 'is not a git repository' : 'is not cloned';
+    throw new Error(`${label}: ${home} ${state}, so the worktree cannot be checked against it — nothing was pushed`);
+  }
+  const common = commonDirOf(dir);
+  if (!samePath(common, own)) {
+    throw new Error(`${label}: a worktree of a different repository than ${home} — nothing was pushed`);
+  }
+  const on = gitCheck(gitFn, dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const current = on.status === 0 ? String(on.stdout).trim() : '';
+  if (current !== branch) {
+    throw new Error(`${label}: on ${current && current !== 'HEAD' ? current : 'a detached HEAD'}, not ${branch} — nothing was pushed`);
+  }
+  return dir;
+}
+
 // The merge base for "is this branch empty" and for the fallback PR title.
 // A forge repo counts against origin/{default} — the truth the PR will
 // merge against — with the local branch as the fallback for a repo whose
@@ -273,10 +371,25 @@ async function createPrs(args, deps) {
   const rootDir = resolve(args.root);
   const ws = readWorkspace(rootDir);
 
-  const targets = resolveTaskRepos(rootDir, args).map((repo) => {
-    const worktree = taskWorktreePath(rootDir, repo, args.branch);
-    if (!existsSync(worktree)) {
-      throw new Error(`no task worktree at ${worktree} for repo "${repo}" — create it with task-worktree.mjs --create`);
+  // An override for a repo that is not part of the task is a typo, not a
+  // request: left alone it would fall back to that repo's task worktree, or
+  // to nothing. Named before any git runs.
+  const repos = resolveTaskRepos(rootDir, args);
+  for (const repo of args.worktrees.keys()) {
+    if (!repos.includes(repo)) {
+      throw new Error(`--worktree names repo "${repo}", which is not part of this task — pass --repo "${repo}" too, or drop the flag`);
+    }
+  }
+  const targets = repos.map((repo) => {
+    // Where the branch is checked out: the task worktree, unless --worktree
+    // named another checkout of the same repository (checkoutOverride
+    // checks it here, before anything is pushed).
+    const override = args.worktrees.get(repo);
+    const worktree = override
+      ? checkoutOverride(deps.gitFn, rootDir, repo, override, args.branch)
+      : taskWorktreePath(rootDir, repo, args.branch);
+    if (!override && !existsSync(worktree)) {
+      throw new Error(`no task worktree at ${worktree} for repo "${repo}" — create it with task-worktree.mjs --create, or name where its branch is checked out with --worktree ${repo}=<path>`);
     }
     return {
       repo, worktree, isWorkspace: repo === WORKSPACE_REPO,
@@ -305,7 +418,7 @@ async function createPrs(args, deps) {
     if (t.mode !== null) continue;
     const url = gitOut(deps.gitFn, t.worktree, ['remote', 'get-url', 'origin']);
     const setting = t.isWorkspace ? 'workspace.merge' : `repos.${t.repo}.merge`;
-    throw new Error(`repo "${t.repo}": origin (${url}) is not a forge-hosted repository — stopped before pushing anything. Set ${setting} to "local" in workspace.json to merge this repo without a forge, or complete it under the session model.`);
+    throw new Error(`repo "${t.repo}": origin (${url}) is not a forge-hosted repository — stopped before pushing anything. Set ${setting} to "local" in workspace.json to merge this repo without a forge, or push and merge it by hand.`);
   }
   const forgeActive = active.filter((t) => t.mode === 'forge');
   // Only the forge half of the task needs a forge; an all-local task must
@@ -365,6 +478,7 @@ async function createPrs(args, deps) {
         repo: t.repo, mode: 'forge', owner: t.owner, name: t.name,
         forge: t.forge, host: t.host, mergeApproval: t.mergeApproval,
         number: pr.number, id: pr.id, url: pr.url, isWorkspace: t.isWorkspace, commits: t.commits,
+        worktree: t.worktree,
       });
     }
   } catch (err) {
@@ -730,7 +844,7 @@ const VALUE_FLAGS = new Set(['--root', '--branch', '--work-item', '--chat', '--p
 function parseArgs(argv) {
   const args = {
     root: '.', mode: null, branch: null, workItem: null, chat: null,
-    repos: [], bodyFiles: new Map(), prs: null, out: null, forceWithLease: false,
+    repos: [], bodyFiles: new Map(), worktrees: new Map(), prs: null, out: null, forceWithLease: false,
     wait: false, waitTimeout: null, skipChecks: false, approved: false,
   };
   const rest = argv.slice(2);
@@ -747,6 +861,27 @@ function parseArgs(argv) {
       continue;
     }
     if (a === '--repo') { args.repos.push(value(i, a)); i += 1; continue; }
+    if (a === '--worktree') {
+      // <repo>=<path>, "." for the workspace repo, like --body-file. The repo
+      // is checked here because it becomes a key the entries are matched by.
+      const v = value(i, a);
+      const eq = v.indexOf('=');
+      const repo = eq > 0 ? v.slice(0, eq) : '';
+      const path = eq >= 0 ? v.slice(eq + 1) : '';
+      const shaped = path !== '' && (repo === WORKSPACE_REPO || (repo !== '..' && /^[A-Za-z0-9._-]+$/.test(repo)));
+      if (!shaped) {
+        throw new Error(`--worktree expects <repo>=<path> ("." is the workspace repo), got: ${v}`);
+      }
+      // One checkout per repo. A second flag for the same repo is two
+      // answers to one question, not a revision of the first: refused here,
+      // before any git runs.
+      if (args.worktrees.has(repo)) {
+        throw new Error(`--worktree names repo "${repo}" twice (${args.worktrees.get(repo)}, then ${path}) — give each repo one checkout`);
+      }
+      args.worktrees.set(repo, path);
+      i += 1;
+      continue;
+    }
     if (a === '--body-file') {
       const v = value(i, a);
       const eq = v.indexOf('=');
@@ -777,6 +912,11 @@ function parseArgs(argv) {
     if (args.approved) throw new Error('--approved is only valid with --merge');
   } else {
     if (!args.prs) throw new Error(`--${args.mode} requires --prs`);
+    // These two act on the entries as the PRs file records them. A checkout
+    // passed here would be stored unchecked, so it is refused, not taken.
+    if (args.worktrees.size > 0) {
+      throw new Error(`--worktree is only valid with --create — --${args.mode} uses the checkout recorded in the PRs file`);
+    }
     for (const flag of ['branch', 'chat']) {
       if (args[flag]) throw new Error(`--${flag} is only valid with --create`);
     }

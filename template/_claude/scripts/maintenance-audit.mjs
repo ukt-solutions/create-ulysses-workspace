@@ -20,11 +20,14 @@
 //                         no stale workspace-context/locked/ directory (older
 //                         scaffolds created it there; only shared/locked/ is
 //                         read — empty it is safe to delete, files in it never
-//                         load), and the template-modification registry sane:
+//                         load), the template-modification registry sane:
 //                         legacy workspace.json keys, keys that escape
 //                         .claude/, and registrations the workspace abandoned
 //                         are info, a registry that doesn't parse is a
-//                         warning (gh:194)
+//                         warning (gh:194) — and the sessions a workspace
+//                         still holds under the legacy session lifecycle are
+//                         one info line, decided by the sessions directory
+//                         alone
 //   4. git              — launcher on its default branch with a clean tracked
 //                         tree. Audited from a linked worktree (task or
 //                         session), the launcher-level questions — the
@@ -122,6 +125,7 @@ import { readTemplateModifications } from './template-modifications.mjs';
 import { refreshIfStale } from '../lib/freshness.mjs';
 import { channelOf } from '../lib/registry-check.mjs';
 import { parseSessionContent } from '../lib/session-frontmatter.mjs';
+import { listLegacySessions } from '../hooks/_utils.mjs';
 import {
   normalizeRoster,
   identityFindings,
@@ -419,6 +423,21 @@ export async function runAudit({
           }
         }
       }
+    }
+  }
+  // Sessions still under the legacy session lifecycle. New work is always a
+  // task, so an entry under the sessions directory is work that predates the
+  // task lifecycle and has yet to be drained — expected, not broken, hence
+  // one info line for the whole set, naming where to start. Dot entries
+  // (.archived/) are the migration's own and do not count, and
+  // workspace.sessionModel is never consulted: the key selects nothing. The
+  // sessions directory lives at the launcher, so an audit run from a task
+  // worktree reads it from there, like the cloned repos above.
+  {
+    const legacy = listLegacySessions(gitInfo.launcherRoot ?? absRoot);
+    if (legacy.length > 0) {
+      add('structure', 'info', sessionsDir,
+        `${legacy.length} work session(s) under the old session model: ${legacy.join(', ')} — /migrate-sessions can inventory and drain them`);
     }
   }
 

@@ -10,6 +10,7 @@ import {
   readStdin,
   respond,
   getSessionTrackers,
+  listLegacySessions,
   getActiveSessionPointer,
   readSessionTracker,
   updateSessionTracker,
@@ -167,6 +168,17 @@ if (existing.length > 0) lines.push(`Repos synced: ${existing.join(', ')}`);
 // One line, and only when a remote changed or a clone could not get one:
 // every session pays for each line here.
 if (repoRemotesNote) lines.push(repoRemotesNote);
+
+// Sessions left under the legacy session lifecycle. New work is always a
+// task now, so whatever is still under the sessions directory is work from
+// before the task lifecycle: one line says how many there are and where to
+// start draining them. The count is the directory's alone (listLegacySessions
+// in _utils.mjs) — dot entries such as .archived/ never count, and
+// workspace.sessionModel is not consulted, because the key selects nothing.
+const legacySessions = listLegacySessions(root);
+if (legacySessions.length > 0) {
+  lines.push(`This workspace still has ${legacySessions.length} work session(s) under the old session model — /migrate-sessions can inventory and drain them.`);
+}
 
 // Surface active work sessions
 const trackers = getSessionTrackers(root);

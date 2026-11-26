@@ -1184,10 +1184,11 @@ console.log('# classify-update');
 
 // 11. CLI --merge-claude-md — substitutes {{project-name}}, merges with the
 //     workspace's CLAUDE.md, and prints JSON { claudeMd, droppedIncludes,
-//     missingIncludes }: the merged text, the retired @-includes it dropped
-//     from the workspace's copy because this payload no longer ships them
-//     (gh:196), and every `@{path}` include it carries whose target is absent
-//     at the root, minus machine-local local-only-* targets (gh:190).
+//     droppedLines, missingIncludes }: the merged text; the retired @-includes
+//     and prose lines it dropped from the workspace's copy because this
+//     payload no longer ships them (gh:196); and every `@{path}` include the
+//     file carries whose target is absent at the root, minus machine-local
+//     local-only-* targets (gh:190).
 {
   const root = setupWorkspace();
   const payload = setupPayload(root);
@@ -1206,6 +1207,7 @@ console.log('# classify-update');
   assertTrue(parsed.claudeMd.includes('- `/acme-deploy` — ours'), 'workspace skill entries survive the CLI merge');
   assertEq(parsed.missingIncludes, [], 'no include lines in the merge, nothing missing');
   assertEq(parsed.droppedIncludes, [], 'nothing retired to drop when the workspace carries no retired include');
+  assertEq(parsed.droppedLines, [], 'nothing retired to drop when the workspace carries no retired prose');
   assertTrue(readFileSync(join(root, 'CLAUDE.md'), 'utf8').includes('## Workspace: acme'),
     'the mode prints only — the workspace file is untouched until the skill writes it');
 
@@ -1287,6 +1289,106 @@ console.log('# classify-update');
   assertTrue(!parsed5.claudeMd.includes('@workspace.json'), 'the retired include is gone under CRLF as well');
   rmSync(retired, { recursive: true, force: true });
   rmSync(crlf, { recursive: true, force: true });
+
+  // retired prose: the workspace carries a bullet exactly as an earlier
+  // template shipped it, this payload's template no longer does, and the
+  // bullet is no longer true. The merge would keep it as a line of the
+  // workspace's own — contradicting the line that replaced it, at the end of
+  // its own section — so it is dropped and named instead. Only a false line
+  // is retired: the bullet describing a session's folder is not shipped by
+  // this template either, but it still holds for the sessions a workspace
+  // has, so the merge keeps it as the workspace's, once. A reworded copy of
+  // the retired line is the workspace's too, and stays.
+  const launcherLine = '- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`';
+  const sessionLine = '- Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker';
+  const reworded = launcherLine.replace('all work happens', 'most work happens');
+  const taskTemplate = [
+    '## Workspace: {{project-name}}',
+    '',
+    '## Quick Reference',
+    '- This root is the launcher — all work happens in task worktrees',
+    '- From root: only `local-only-*` is writable',
+    '',
+  ].join('\n');
+  const prose = setupWorkspace();
+  const prosePayload = setupPayload(prose);
+  writeFileSync(join(prosePayload, 'CLAUDE.md.tmpl'), taskTemplate);
+  writeFileSync(join(prose, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
+  writeFileSync(
+    join(prose, 'CLAUDE.md'),
+    [
+      '## Workspace: acme',
+      '',
+      '## Quick Reference',
+      launcherLine,
+      '  ' + launcherLine, // indentation is not part of the line
+      sessionLine,
+      reworded,
+      '- From root: only `local-only-*` is writable',
+      '',
+    ].join('\n'),
+  );
+  const r6 = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', prose, '--payload', prosePayload, '--merge-claude-md'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r6.status, 0, `--merge-claude-md with retired prose exits 0 (stderr: ${r6.stderr.trim().slice(0, 200)})`);
+  const parsed6 = JSON.parse(r6.stdout);
+  assertEq(parsed6.droppedLines, [launcherLine],
+    'the retired line the workspace still carries is named once, however often it appears');
+  const merged6 = parsed6.claudeMd.split('\n');
+  assertTrue(!merged6.includes(launcherLine) && !merged6.includes('  ' + launcherLine),
+    'the retired bullet is gone, indented copy included');
+  assertEq(merged6.filter((l) => l === sessionLine).length, 1,
+    'the bullet that still holds for the sessions a workspace has is kept, once, and not retired');
+  assertTrue(merged6.includes(reworded), 'a copy the workspace reworded is its own line and survives');
+  assertTrue(merged6.includes('- This root is the launcher — all work happens in task worktrees'),
+    "the template's replacement is what remains");
+
+  // a payload whose template still ships the line merges it like any other
+  // template line: retiring is the template's statement, not this script's
+  const older = setupWorkspace();
+  const olderPayload = setupPayload(older);
+  writeFileSync(
+    join(olderPayload, 'CLAUDE.md.tmpl'),
+    ['## Workspace: {{project-name}}', '', '## Quick Reference', launcherLine, ''].join('\n'),
+  );
+  writeFileSync(join(older, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
+  writeFileSync(join(older, 'CLAUDE.md'), ['## Workspace: acme', '', '## Quick Reference', launcherLine, ''].join('\n'));
+  const r7 = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', older, '--payload', olderPayload, '--merge-claude-md'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r7.status, 0, `--merge-claude-md against a payload that still ships the line exits 0 (stderr: ${r7.stderr.trim().slice(0, 200)})`);
+  const parsed7 = JSON.parse(r7.stdout);
+  assertEq(parsed7.droppedLines, [], 'a line this payload still ships is never dropped');
+  assertTrue(parsed7.claudeMd.includes(launcherLine), 'it merges like any other template line');
+  rmSync(prose, { recursive: true, force: true });
+  rmSync(older, { recursive: true, force: true });
+
+  // retired prose under CRLF: the drop leaves the file's other EOLs alone
+  const proseCrlf = setupWorkspace();
+  const proseCrlfPayload = setupPayload(proseCrlf);
+  writeFileSync(join(proseCrlfPayload, 'CLAUDE.md.tmpl'), taskTemplate);
+  writeFileSync(join(proseCrlf, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
+  writeFileSync(
+    join(proseCrlf, 'CLAUDE.md'),
+    ['## Workspace: acme', '', '## Quick Reference', launcherLine, '- Ours, kept.', ''].join('\r\n'),
+  );
+  const r8 = spawnSync(
+    process.execPath,
+    [join(here, 'classify-update.mjs'), '--root', proseCrlf, '--payload', proseCrlfPayload, '--merge-claude-md'],
+    { cwd: tmpdir(), encoding: 'utf8' },
+  );
+  assertEq(r8.status, 0, `--merge-claude-md with retired prose under CRLF exits 0 (stderr: ${r8.stderr.trim().slice(0, 200)})`);
+  const parsed8 = JSON.parse(r8.stdout);
+  assertEq(parsed8.droppedLines, [launcherLine], 'CRLF retires the prose too');
+  assertTrue(!parsed8.claudeMd.includes(launcherLine), 'the retired bullet is gone under CRLF as well');
+  assertTrue(!/[^\r]\n/.test(parsed8.claudeMd), 'no bare LF sneaks into the CRLF result');
+  assertTrue(parsed8.claudeMd.includes('- Ours, kept.'), 'the workspace line beside it survives');
+  rmSync(proseCrlf, { recursive: true, force: true });
 
   // no template in the payload → named error
   const bare = setupWorkspace();

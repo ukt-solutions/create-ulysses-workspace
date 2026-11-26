@@ -10,15 +10,15 @@
 
 ## Worktrees
 
-Both lifecycles are built on worktrees; `workspace.sessionModel` in `workspace.json` routes new work to one of them.
+Work happens in worktrees, never in the source clones. New work is always a task, so the task layout is the one new work uses; the session layout remains only for sessions that predate the task lifecycle, and no new session starts.
 
-**Task model** (`"task"`): one worktree per repo the task touches, created and removed with `.claude/scripts/task-worktree.mjs` (the chat stays at the workspace root):
+**Task model** (the default, and the only lifecycle new work uses): one worktree per repo the task touches, created and removed with `.claude/scripts/task-worktree.mjs` (the chat stays at the workspace root):
 
 - Project repos: `repos/{repo}/.claude/worktrees/{slug}/`, where `{slug}` is the branch with `/` replaced by `-`
 - The workspace repo itself, addressed as `.`: `.claude/worktrees/{slug}/` — Claude Code's native worktree location
 - Source clones at `repos/{repo}/` stay on their default branch; `/complete-work` tears each worktree down with `task-worktree.mjs --remove` (worktree first, then the branch)
 
-**Session model** (default): N+1 worktrees in one self-contained folder at `work-sessions/{session-name}/`:
+**Session model** (legacy — still supported for the sessions a workspace already has, and drained with `/migrate-sessions`): N+1 worktrees in one self-contained folder at `work-sessions/{session-name}/`:
 
 - `work-sessions/{session-name}/workspace/` — workspace worktree
 - `work-sessions/{session-name}/workspace/repos/{repo-name}/` — project worktrees nested inside it (no symlink)

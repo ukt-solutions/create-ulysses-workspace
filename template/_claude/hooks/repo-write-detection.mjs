@@ -192,7 +192,7 @@ async function main() {
   const isTemplateWrite = judged.includes('.claude/') && !judged.includes(scratchpadName);
 
   if (isRepoWrite || isContextWrite || isTemplateWrite) {
-    respond("You're on main. All work should happen in a workspace worktree. Run /start-work to create or resume a work session.");
+    respond("You're on main. All work should happen in a task worktree — repos/{repo}/.claude/worktrees/{slug}/, or .claude/worktrees/{slug}/ for the workspace repo itself. Run /start-work to start a task.");
     process.exit(0);
   }
 

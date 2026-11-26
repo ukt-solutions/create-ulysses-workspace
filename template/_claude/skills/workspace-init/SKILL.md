@@ -71,7 +71,7 @@ A join sets up one person on one machine. It never touches tracked files, create
    - User identity: {set now | already set}
    - Team roster: {listed | not listed yet — add yourself in your first change | no roster}
    - CLAUDE.local.md: {written | unchanged}
-   - Work lifecycle: {workspace.sessionModel}
+   - Work lifecycle: task
 
    Restart Claude Code so CLAUDE.local.md and the hooks load, then run /start-work."
    ```
@@ -118,7 +118,7 @@ node .claude/scripts/repo-remotes.mjs --root .
 ```
 Claude Code Desktop matches a pull request to a chat through the remotes of the chat's folders, and a chat runs at the workspace root, so each clone needs a `repo-{name}` remote there carrying its origin. Without one, a PR opened in a project repo is not matched to the chat. A remote made this way cannot be pushed to, and no fetch reaches it. Report the lines the script prints, and name any clone it reports as a conflict. Step 17 asks for `origin` alone, because from here on the repo's list of remotes is never empty.
 
-While workspace.json is open, confirm the work lifecycle. `workspace.sessionModel` selects where `/start-work` routes new work: `"task"` (one tracker issue + one branch + one worktree per touched repo; recommended for new workspaces) or `"session"` (self-contained `work-sessions/{name}/` folders; the template default — keep it for teams already mid-flight on sessions). Ask: "Which lifecycle should new work use — task (recommended for a new workspace) or session (default)?" and write the answer to `workspace.sessionModel` only if it differs from the current value. Never flip an existing non-default value silently.
+While workspace.json is open, note the work lifecycle — there is nothing to choose. New work always starts as a task: one tracker issue, one branch and one worktree per touched repo, with the chat at the workspace root. The template ships `"task"` in `workspace.sessionModel`; a workspace.json made before that default keeps whatever it holds, because the key selects nothing now and is never rewritten behind the operator's back. `work-sessions/` entries the workspace arrived with are sessions from the session lifecycle: they stay where they are, resuming and completing as before, until `/migrate-sessions` drains them.
 
 ### Step 3: Identify documentation sources
 
@@ -507,6 +507,7 @@ Summary:
 - {V} self-contradictions found and fixed
 - Template version: {version}
 - Remote: {status}
+- Work lifecycle: task — new work starts with /start-work
 - All init commits are on {default-branch}
 
 Issues encountered:

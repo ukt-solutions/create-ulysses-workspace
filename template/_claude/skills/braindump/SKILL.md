@@ -17,7 +17,9 @@ Capture discussion reasoning, exploration results, and design rationale into wor
 
 > **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
 
-When called within an active work session (the active-session pointer at `.claude/.active-session.json` exists inside the current worktree):
+Where the capture goes follows from where this chat is working, in this order.
+
+**Inside a legacy session's worktree** — the active-session pointer at `.claude/.active-session.json` exists inside the current worktree:
 
 - Default behavior: append reasoning and decisions to the session tracker body at `work-sessions/{session-name}/workspace/session.md`
 - Add a new section to the tracker body (Context, Exploration, Decisions, Implications) — do NOT touch the frontmatter
@@ -28,16 +30,15 @@ When called within an active work session (the active-session pointer at `.claud
   git commit -m 'braindump: update {session-name} tracker'
   ```
 
-Under the task model — `workspace.sessionModel` is `"task"` (the SessionStart hook's `Workspace config (workspace.json):` line carries it; read `workspace.json` when that line is not in context) AND the SessionStart hook injected a `Chat record:` line (`{chat}` is its name):
+**Everywhere else, with a chat drawer** — the default. It needs only the `Chat record:` line the SessionStart hook injects (`{chat}` is its name); `workspace.sessionModel` plays no part, so a workspace whose file still says `"session"` writes here too:
 
 - Default behavior: write `braindump_{topic}.md` directly into that chat's drawer at `workspace-scratchpad/chats/{chat}/` — the drawer sits outside `workspace-context/`, so `capture-context.mjs` is not involved
 - No commit for drawer writes: the drawer is gitignored and machine-local; `/complete-work` lists it and asks what to promote into `workspace-context/`
 - While a task is active, add `workItem: {id}` to the file's frontmatter: `/complete-work` offers a drawer item only to the task that owns it, so the tag keeps this capture out of another task's promotion list
 
-When called from the workspace root with no active session — every other case, including a `sessionModel: "session"` workspace (the `Chat record:` line is injected in every chat, so it alone does not select the drawer):
+**With no session and no drawer** — the `Chat record:` line is absent (compaction can drop it). Say the drawer destination is unavailable for that reason rather than guessing a chat name, and:
 
 - Use `--local-only` so the captured file is gitignored (the root only allows local-only writes), landing in `team-member/{user}/`
-- If the task model applies but the `Chat record:` line is absent, say the drawer destination is unavailable for that reason
 - Suggest starting work (`/start-work`) if the braindump is about actionable work
 
 The flows below apply when NOT in an active work session, or when the user explicitly asks for a standalone braindump file.

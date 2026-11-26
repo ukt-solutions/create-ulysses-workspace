@@ -1,19 +1,20 @@
 ---
 name: start-work
-description: Begin or resume a work session. Creates a self-contained work-sessions/{name}/ folder containing the workspace worktree and nested project worktrees. Accepts optional parameter "handoff" or "blank".
+description: Start new work as a task — one tracker issue, one branch, one worktree per repo the work touches, with the chat staying at the workspace root — or resume a work-sessions/ session the workspace already has. Accepts an optional issue id, "handoff" or "blank".
 ---
 
 # Start Work
 
-Two lifecycles share this skill. `workspace.sessionModel` in `workspace.json` selects for new work: `"task"` routes new work to **Flow: Task** (session model v2 — no session folder, no `session.md`); absent or `"session"` keeps the existing flows below, unchanged. Resuming an existing `work-sessions/` session always uses the existing Resume flow regardless of the setting. CLAUDE.md no longer imports `workspace.json`: take `sessionModel`, `tracker`, and the repo names from the SessionStart hook's `Workspace config (workspace.json):` line when it is in context, else read `workspace.json`.
+New work always starts as a task, through **Flow: Task** below: one tracker issue, one branch, one worktree per repo the work touches, and no session folder or `session.md`. Nothing selects the lifecycle any more — `workspace.sessionModel` in `workspace.json` is a key older workspaces keep, not a setting this skill reads. The session flows further down (Resume, Blank, Retroactive) stay for the `work-sessions/` sessions a workspace already has: those resume and complete as before, until they are drained with `/migrate-sessions`. CLAUDE.md does not import `workspace.json`: take `tracker` and the repo names from the SessionStart hook's `Workspace config (workspace.json):` line when it is in context, else read the file.
 
-Begin or resume a persistent work session. Each session lives in its own `work-sessions/{name}/` folder containing one workspace worktree, nested project worktrees, and a unified `session.md` tracker. Sessions can run in parallel from separate terminals.
+A legacy session is a self-contained `work-sessions/{name}/` folder holding one workspace worktree, nested project worktrees and a unified `session.md` tracker, and sessions can run in parallel from separate terminals. No new one is created from here.
 
 ## Parameters
-- `/start-work` (no param) — list your active sessions, then resume or start new
-- `/start-work blank` — start new work from scratch
-- `/start-work handoff` — list shared context to resume from
-- `/start-work all` — list active sessions across all users (for shared debugging or multi-user workspaces)
+- `/start-work` (no param) — start new work as a task; a workspace that still has `work-sessions/` sessions is offered them first, so one can be resumed instead
+- `/start-work gh:42` — start a task on that issue (`#42` and an issue URL mean the same)
+- `/start-work blank` — start new work as a task, without offering the session list
+- `/start-work handoff` — list the handoff files and resume from the one the operator picks: the work item it names is the task to start or resume
+- `/start-work all` — offer the workspace's sessions across all users when listing them (for shared debugging or multi-user workspaces)
 
 ## Flow: Task (session model v2)
 
@@ -22,6 +23,8 @@ New work as a task: one tracker issue, one branch, one worktree per repo the wor
 If `workspace.tracker` is absent (the hook's `Workspace config` line reads `tracker: off`), say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. What that costs: without a tracker there is no `workItem` and no issue to close at completion — the task is still recorded on the chat record (with no work item, keyed by repo + branch), so `/complete-work` finds it from the launcher like any other task.
 
 > **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
+**Invoked as `/start-work handoff`: settle the work from a handoff before step 1.** List the handoff files for the operator to pick from — every `handoff_*.md` in the chat drawers under `workspace-scratchpad/chats/*/` (each chat has its own drawer, so one is usually in an earlier chat's), and every `handoff_*.md` under `workspace-context/team-member/{user}/` and `workspace-context/shared/`, the `local-only-` drafts among them. With none to list, say so and take step 1 as though `handoff` had not been given. Read the one picked. When its frontmatter names a work item (`workItem: {id}`), the invocation is now `/start-work {id}`: step 1's issue-named path starts that issue's task, or resumes it when a chat already has one — adopting it into this chat, leaving it with its owner, or continuing your own. When it names none, its `## Next Steps` is the work at hand: take the issue from step 1's list, or describe something new, and let the branch and repo it mentions default steps 2 and 3. Either way the flow continues from step 1.
 
 1. **Identify or create the tracker issue and claim it.** If the invocation's arguments already name an issue — `gh:N`, `#N`, or an issue URL — normalize it to the adapter's id (`#42` and a `.../issues/42` URL both mean `gh:42`) and fetch it with `tracker.getIssue(id)`. Then check whether the issue already has a task before claiming anything — another chat may have started it (gh:188):
 
@@ -36,36 +39,80 @@ If `workspace.tracker` is absent (the hook's `Workspace config` line reads `trac
 
    Notes another chat will need to continue the task never go in this chat's drawer — the drawer is per-chat and machine-local. Put them on the issue as a comment (`await tracker.comment("{workItem}", body)`), where any chat can read them.
 
-   When the invocation's arguments name no issue, list the candidates — the same adapter calls as Flow: Blank steps 3–6 (an issue picked from the list gets the same `--owner` check once its id is known):
+   When the invocation's arguments name no issue, the issue is picked or created here instead:
 
-   ```javascript
-   import { createTracker } from './.claude/scripts/trackers/interface.mjs';
-   import { readFileSync } from 'node:fs';
-   const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
-   const tracker = createTracker(ws.workspace.tracker);
-   const assigned = await tracker.listAssignedToMe();
-   const candidates = assigned.length > 0 ? assigned : await tracker.listUnassigned();
-   ```
+   1. **Fetch the candidate list through the adapter** — the issues assigned to the current user first, falling back to all unassigned issues when that list is empty:
+      ```javascript
+      import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+      import { readFileSync } from 'node:fs';
+      const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+      const tracker = createTracker(ws.workspace.tracker);
+      const assigned = await tracker.listAssignedToMe();
+      const candidates = assigned.length > 0 ? assigned : await tracker.listUnassigned();
+      const fallbackNote = assigned.length === 0 ? '(fallback — no issues assigned to you; showing unassigned)' : '';
+      ```
+   2. **Present the list.** Group by milestone when the adapter provides one; sort by priority label (P1 before P2 before P3) within each group:
+      ```
+      {fallbackNote}
+      Backlog:
+        1. [P1 bug] Auth timeout on mobile (gh:3)
+        2. [P1 feat] JWT refresh logic (gh:8)
 
-   Present the list as Flow: Blank step 4 does. When the pick came from the unassigned fallback, claim it atomically and re-fetch on `ALREADY_ASSIGNED` exactly as Blank step 5 shows; for "something new", create and self-assign per Blank step 6:
+      v0.1:
+        3. [P2 feat] Full-text search (gh:5)
 
-   ```javascript
-   const newIssue = await tracker.createIssue({
-     title: description,
-     body: `Created at /start-work by ${user}.`,
-     labels: [type, priority],
-     milestone: milestone || null,
-   });
-   await tracker.claim(newIssue.id);
-   ```
+        [N] Something new
 
-   The epic flow from Blank step 6 applies here too — `tracker.listEpics()` read before the create (a failure there is reported and skipped, never fatal), the picker offered only when it is non-empty.
+      Which one, or describe something new?
+      ```
+      Accept a number or "N".
+   3. **The operator picked an existing issue.** Its id is known now, so run the same `--owner` check as above and follow the same three outcomes — another chat may already have a task for it. When the task is this chat's to start, take the issue over:
+      - If it came from the unassigned fallback list, claim it atomically:
+        ```javascript
+        try {
+          await tracker.claim(issue.id);
+        } catch (e) {
+          if (e.code === 'ALREADY_ASSIGNED') {
+            console.log(`${issue.id} was just claimed by ${e.assignees.join(', ')}. Refreshing list.`);
+            // Back to the candidate list — someone else grabbed the ticket between fetch and claim.
+            return restart();
+          }
+          throw e;
+        }
+        ```
+      - If it came from the assigned-to-me list, skip the claim call (already mine).
+   4. **The operator described something new.** Ask for the type (`bug` / `feat` / `chore`), priority (`P1` / `P2` / `P3`), and an optional milestone. Read the epic list first — a tracker or epic failure must surface before anything is created, and it never blocks issue creation — then create the issue and self-assign:
+      ```javascript
+      let epics = [];
+      try {
+        epics = await tracker.listEpics();
+      } catch (e) {
+        console.log(`Skipping the epic picker — could not list epics: ${e.message}`);
+      }
+
+      const newIssue = await tracker.createIssue({
+        title: description,
+        body: `Created at /start-work by ${user}.`,
+        labels: [type, priority],
+        milestone: milestone || null,
+      });
+      await tracker.claim(newIssue.id);
+
+      // Offered only when epics already exist; teams without them see
+      // nothing new. Present a numbered menu: the existing epics, "[0] No
+      // epic", and "[N] New epic…". Create only on the explicit new-epic
+      // choice (tracker.createEpic({ name })), then assign the pick:
+      if (epics.length > 0) {
+        await tracker.setIssueEpic(newIssue.id, chosenName /* or null for no epic */);
+      }
+      ```
+      `setIssueEpic` replaces any epic the issue already carries, and an unknown name throws — never invent epic names to satisfy it. If it itself fails after the issue exists, report that and continue: the issue is already created and claimed, and nothing after that point is worth aborting over.
 
    Remember `workItem: {issue.id}`.
 
-2. **Pick repo(s)** — the same numbered multi-select as Blank step 7 (e.g. `1,3` or `all`), defaulting to the repo marked `"primary": true` under `repos` in `workspace.json`, falling back to the first entry when none is marked. The list also offers the **workspace repo itself**, shown as `workspace (this repo)` and addressed as `.`. Include it when the task changes anything tracked in the workspace repo — `workspace-context/`, the workspace's own `.claude/` (rules, hooks, scripts, skills), or, in a dogfood workspace, mirrors of template changes. Steps 4 and 5 take `.` like any other repo name (`--repo "."`).
+2. **Pick repo(s)** — a numbered list from `repos` in `workspace.json` with multi-select (`1,3` or `all`), defaulting to the repo marked `"primary": true`, falling back to the first entry when none is marked. The list also offers the **workspace repo itself**, shown as `workspace (this repo)` and addressed as `.`. Include it when the task changes anything tracked in the workspace repo — `workspace-context/`, the workspace's own `.claude/` (rules, hooks, scripts, skills), or, in a dogfood workspace, mirrors of template changes. Steps 4 and 5 take `.` like any other repo name (`--repo "."`).
 
-3. **Propose the branch** — `{prefix}/{slug}` with the prefix from type (`feature/`, `bugfix/`, `chore/`), per the branch-naming step in Flow: Blank.
+3. **Propose the branch** — `{prefix}/{slug}`, where the prefix comes from the type (`feature/` for `feat`, `bugfix/` for `bug`, `chore/` for `chore`) and `{slug}` is a kebab-case slug of the issue title, or of the description when there is no issue. Wait for confirmation.
 
 4. **Create one worktree per repo the work touches:**
    ```bash
@@ -83,23 +130,27 @@ If `workspace.tracker` is absent (the hook's `Workspace config` line reads `trac
 
 ## Flow: No Parameter
 
-1. Read the current user from `.claude/settings.local.json` → `workspace.user`. If unset, behave as `/start-work all` (no user filter). If the user invoked `/start-work all`, also skip filtering.
-2. Walk `work-sessions/` — each `work-sessions/{name}/workspace/session.md` is one session. Read frontmatter for `status`, `description`, `branch`, `repos`, and `user`.
-3. Filter to sessions whose `status` is `active` or `paused`. When a current user is known and the user did not pass `all`, additionally filter to sessions whose `user` field matches the current user (or is missing — unscoped legacy sessions stay visible to everyone).
-4. If matching sessions exist, present them:
-   ```
-   Your active work sessions:
-     1. migrate-tool (active, last chat ended 2h ago)
-        "Rewriting the migration module"
-        Branch: bugfix/migrate-rewrite | Repos: my-app
+New work is a task whatever this flow finds in `work-sessions/`. Looking there only adds the chance to resume a session that is still in flight instead; once the last one is drained there is nothing to offer, and step 1 is silent.
 
-     [N] Start something new
+1. **Offer the sessions the workspace already has:**
+   1. Read the current user from `.claude/settings.local.json` → `workspace.user`. If unset, behave as `/start-work all` (no user filter). If the user invoked `/start-work all`, also skip filtering.
+   2. Walk `work-sessions/` — each `work-sessions/{name}/workspace/session.md` is one session. Read frontmatter for `status`, `description`, `branch`, `repos`, and `user`.
+   3. Filter to sessions whose `status` is `active` or `paused`. When a current user is known and the user did not pass `all`, additionally filter to sessions whose `user` field matches the current user (or is missing — unscoped legacy sessions stay visible to everyone).
+   4. If matching sessions exist, present them:
+      ```
+      Your active work sessions:
+        1. migrate-tool (active, last chat ended 2h ago)
+           "Rewriting the migration module"
+           Branch: bugfix/migrate-rewrite | Repos: my-app
 
-   Which one?
-   ```
-5. User picks one → resume flow
-6. User picks "new" → blank flow
-7. If no matching sessions exist but other users have active/paused sessions, note it briefly before falling through to `blank`: "No active sessions for you. {N} session(s) belong to other users — run `/start-work all` to see them." If no sessions exist at all, proceed silently as `blank`.
+        [N] Start something new
+
+      Which one?
+      ```
+   5. User picks a session → **Flow: Resume**, and this flow ends there
+   6. User picks "Start something new" → continue with step 2
+   7. If no matching sessions exist but other users have active/paused sessions, note it briefly before continuing: "No active sessions for you. {N} session(s) belong to other users — run `/start-work all` to see them." If no sessions exist at all, continue silently.
+2. **Start the new work with Flow: Task.**
 
 ## Flow: Resume
 
@@ -144,6 +195,8 @@ On resume, check for uncaptured work from previous chats:
 If no gap is found, skip silently.
 
 ## Flow: Blank (new session)
+
+Legacy: this is how a session was started before the task lifecycle. Nothing routes here — new work goes through **Flow: Task** — and the flow stays in the file only so the session lifecycle can be removed in one piece by a later release.
 
 1. **Check for a configured tracker.** Read `workspace.tracker` from `workspace.json`.
 
@@ -362,11 +415,35 @@ If not: ask "Ready to start implementing, or want to brainstorm first?"
 
 ## Flow: Retroactive (called mid-session)
 
-When /start-work is called after work has already begun:
+Work that began without `/start-work` is formalized as a task, like any other new work: run **Flow: Task** for the issue, the branch and the worktrees, then carry the uncommitted changes over into the new worktrees. The numbered steps at the end are the legacy session shape of the same recovery, and stay for the sessions a workspace already has.
+
+**Carry changes over by the stash entry's SHA, never with a bare pop.** Every worktree of a repository shares one stash stack, so another chat's entry can be `stash@{0}` by the time a pop runs — a pop would apply that one and drop it. Take one repository at a time, wherever its changes sit. `{source}` is where they are — `repos/{repo}/` for a project repo, the workspace root (`.`) for the workspace repo itself — `{worktree}` is the task worktree step 4 of **Flow: Task** created for that repository, and `{slug}` is the branch's slug, so the entry is recognizable in the list:
+
+1. **Stash the changes where they are**, tracked edits and untracked files alike:
+   ```bash
+   git -C '{source}' stash push -u -m 'start-work-{slug}'
+   ```
+2. **Capture the new entry's SHA** from the list — the line whose message is yours, and the newest such line if an earlier attempt left one:
+   ```bash
+   git -C '{source}' stash list --format='%gd %H %gs'
+   ```
+3. **Apply that entry, by SHA, in the new worktree.** A SHA names one entry however many are pushed after it:
+   ```bash
+   git -C '{worktree}' stash apply '{sha}'
+   ```
+4. **Drop the entry only once the apply is confirmed** — the changes are in the worktree's status, and any conflict the apply reported is resolved. Read the list again first: another chat may have pushed an entry since and shifted the numbers. Drop the `stash@{n}` whose message and SHA are both yours:
+   ```bash
+   git -C '{source}' stash list --format='%gd %H %gs'
+   git -C '{source}' stash drop 'stash@{n}'
+   ```
+
+Until step 4 the entry stays in the stack, so an interruption before it loses nothing: the changes are in the worktree and still in the stash. A repository with no uncommitted changes gets no entry — `stash push` says there is nothing to save — and is skipped.
+
+The legacy session shape, for the sessions a workspace already has:
 
 1. Detect uncommitted changes in `repos/` or `workspace-context/`
 2. "It looks like you've already been working. Let me formalize this."
-3. If changes are on a default branch: stash → create session → pop stash
+3. If changes are on a default branch: stash → create session → apply the stash in the session's worktrees, by the carry-over above and never a bare pop
 4. If changes are already on a feature branch: create workspace worktree and nest the existing project worktree(s) under it, or create a fresh session if the work is small enough to re-apply
 5. Summarize: "Formalized as work session: {name}. Work from `work-sessions/{name}/workspace/`."
 

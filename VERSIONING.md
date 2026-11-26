@@ -72,7 +72,7 @@ The fields under `workspace`, and what they mean. An absent field behaves as its
 | `name` | The workspace's name, shown at session start. |
 | `templateVersion` | The template version the workspace is on. Scaffolding sets it and `/workspace-update` advances it. |
 | `initialized` | `true` once `/workspace-init` has finished. `/workspace-update` requires it. |
-| `sessionModel` | The lifecycle for new work: `"session"`, the default, or `"task"`. |
+| `sessionModel` | Selects nothing. New work is always a task. The template ships `"task"`, and an older workspace keeps whatever it holds, because a field is never removed. |
 | `tracker` | The issue tracker, or `null` for none. `type` is `github-issues` or `gitlab-issues`. `repo` is the slug, or `"auto"` to take it from the git remote. `host` names a self-managed GitLab. `epics: "native"` selects GitLab group epics, and absent means label mode. `epicLabelPrefix` defaults to `epic:`. |
 | `forge` | The code host for pull requests and releases. `type` is `github` or `gitlab`, and with no `type` the host is read from each repo's origin. `repo` and `host` read as they do in `tracker`. `false` turns forge operations off. |
 | `merge` | `"local"` finishes tasks for the workspace repo without pushing or opening a PR. |
@@ -111,7 +111,7 @@ Three forms, and one flag, are the contract:
 
 - `workspace-context/` and its three levels: `shared/locked/` for canonical team truths, which every session loads through `canonical.md`; `shared/` for team-visible working documents; `team-member/{user}/` for one person's context.
 - `repos/{repo}/`, the source clones, each kept on its default branch.
-- Worktrees. The session lifecycle keeps its worktrees at `work-sessions/{name}/workspace/`, with a project repo's at `work-sessions/{name}/workspace/repos/{repo}/`. The task lifecycle keeps a project repo's worktree at `repos/{repo}/.claude/worktrees/{slug}/` and the workspace repo's at `.claude/worktrees/{slug}/`. `{slug}` is the branch name with `/` replaced by `-`.
+- Worktrees. A task keeps a project repo's worktree at `repos/{repo}/.claude/worktrees/{slug}/` and the workspace repo's own at `.claude/worktrees/{slug}/`. `{slug}` is the branch name with `/` replaced by `-`. A session, the legacy lifecycle, keeps its worktrees at `work-sessions/{name}/workspace/`, with a project repo's at `work-sessions/{name}/workspace/repos/{repo}/`.
 
 ### `.claude/template-modifications.json`
 
@@ -130,7 +130,7 @@ Paths are relative to `.claude/`. `localFiles` lists files the workspace owns ou
 
 ### Lifecycles
 
-Two lifecycles: **session**, the default, and **task**, the forward path for new work. `workspace.sessionModel` selects the one new work uses.
+One lifecycle starts work: **task**. Every piece of new work is a task, whatever `workspace.json` holds. **session** is the legacy lifecycle. No new session starts, and the sessions a workspace already has keep resuming and completing until `/migrate-sessions` drains them: finished through the task lifecycle's pull-request script, archived, or, for an empty orphan shell, removed. `workspace.sessionModel` remains a field because fields are never removed. It no longer selects anything.
 
 ## Major (breaking)
 

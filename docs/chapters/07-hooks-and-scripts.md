@@ -41,9 +41,11 @@ The hooks below follow that table, so each entry can be checked against `setting
 
 Inside a session's workspace worktree, it registers the chat in the session tracker's `chatSessions` frontmatter and names the active session and the main workspace root.
 
-At the workspace root, it begins with the workspace name and a one-line summary of `workspace.json` (`Workspace config (workspace.json):` — session model, tracker, forge, repo names), which is why CLAUDE.md no longer imports workspace.json itself. It then names this chat's record (`Chat record:`) and the workspace root (`Workspace root:`), so skills never have to derive either. It points at `/workspace-init` when this machine is missing something that skill provides — repos that are not cloned yet, a user identity, or `CLAUDE.local.md`. When `workspace.json` has a team roster, it adds a `Team identity:` line for each way this machine disagrees with it. That covers a `workspace.user` that is an alias or missing from the roster, and git committing as another member. Each finding names its fix, and none needs the network. It fetches each cloned project repo (best effort) and reports `Repos synced:`.
+At the workspace root, it begins with the workspace name and a one-line summary of `workspace.json` (`Workspace config (workspace.json):` — tracker, forge, repo names), which is why CLAUDE.md no longer imports workspace.json itself. The summary leaves out `sessionModel` on purpose: nothing routes on it, since new work is always a task, and a workspace made before that change still holds `"session"` in its file — echoed into every chat, that would read as the lifecycle in use. It then names this chat's record (`Chat record:`) and the workspace root (`Workspace root:`), so skills never have to derive either. It points at `/workspace-init` when this machine is missing something that skill provides — repos that are not cloned yet, a user identity, or `CLAUDE.local.md`. When `workspace.json` has a team roster, it adds a `Team identity:` line for each way this machine disagrees with it. That covers a `workspace.user` that is an alias or missing from the roster, and git committing as another member. Each finding names its fix, and none needs the network. It fetches each cloned project repo (best effort) and reports `Repos synced:`.
 
 It then brings the workspace repo's `repo-{name}` remotes in step with the clones, through [repo-remotes.mjs](#repo-remotesmjs), so that a pull request opened in a project repo is matched to a chat at the workspace root. A `Repo remotes:` line follows only when a remote was added, updated, removed or adopted, or when a clone could not get one: every session pays for each line, and on an ordinary launch there is nothing to say.
+
+Whether the old lifecycle still applies anywhere is a fact about the sessions directory, not about that key, and the hook reports it as such. When the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) holds an entry whose name does not start with a dot, one line says how many work sessions still sit under the old session model, and that `/migrate-sessions` can inventory and drain them. Whatever is in that directory is work from before the task lifecycle, and an archive under `.archived/` does not count. `migrate-sessions.mjs --legacy-sessions` prints the same count for `/workspace-update`.
 
 It then lists two kinds of prior work, so the conversation starts aware of them. Every work session that has a tracker under `work-sessions/` is listed with its status, description, branch, repos and worktree path, so Claude can offer to resume one; a session whose worktree is gone is marked orphaned. And the team-visible files under `workspace-context/shared/` are listed by topic, lifecycle and last update under a `Workspace context:` heading.
 
@@ -115,6 +117,8 @@ Two of these files are adapter layers rather than command sequences: `.claude/sc
 
 The tracker adapters also share an epic surface — `listEpics()`, `getEpic()`, `createEpic()`, `setIssueEpic()`, `listEpicIssues()` — the same method surface on both backends. By default an epic is the label `epic:{name}` carried by every issue in it (the prefix is configurable via `workspace.tracker.epicLabelPrefix`); GitLab Premium instances can instead set `workspace.tracker.epics: "native"` to use group epics — and when those endpoints answer 403/404 (no Premium licence, no group access), the adapter throws an error pointing back at label mode rather than silently downgrading. `/start-work` reads the epic list before creating a new issue and offers an epic picker once any epic exists.
 
+The three scripts that follow belong to the session lifecycle, which is legacy: nothing starts a new session, and they serve the sessions a workspace already has.
+
 ### create-work-session.mjs
 
 Creates everything a work session needs: the `work-sessions/{name}/` folder, workspace branch and worktree, project branches and nested worktrees (one per repo) inside the workspace worktree's real `repos/` directory, settings copy, active-session pointer, and the unified `session.md` tracker.
@@ -169,7 +173,15 @@ node .claude/scripts/chat-record.mjs --root . --owner "gh:42"
 
 The task lifecycle's pull-request step, in three commands. `--create` pushes each branch and opens one PR per repo, and writes a JSON description of the run to `--out`. `--checks` reads every PR's CI state without merging anything. `--merge` merges the PRs in order and closes the linked issue. The last two take that JSON file as `--prs`. A repo with no forge remote is neither pushed nor given a PR; `--merge` fast-forwards its default branch instead. [Chapter 2](02-work-sessions.md#the-task-model) has the full sequence, including merge approval.
 
+Each repo's branch is normally checked out in its task worktree, which `--create` derives from the branch name. `--worktree {repo}={path}` names a different checkout, repeatable once per repo — a repo named twice is refused while the arguments are read: `/migrate-sessions` finishes a legacy session whose branch is checked out at `work-sessions/{name}/workspace/` for the workspace repo and at `work-sessions/{name}/workspace/repos/{repo}/` for each project repo. A relative path is taken from the current directory. The path has to be the root of a git worktree of the same repository as the repo's source clone, checked out on `--branch`; anything else is refused before anything is pushed, and a repo whose source clone is missing or is not a repository is named as that rather than as a different one. Every entry in the JSON carries its checkout as `worktree`, which is all `--checks` and `--merge` need: they act on the entries as the file records them. The flag is `--create`'s alone — with either of the other two it is an error.
+
 ```bash
+node .claude/scripts/task-pr.mjs --create --root . --branch "bugfix/fix-auth" --repo "." --repo "my-app" \
+  --worktree ".=work-sessions/fix-auth/workspace" \
+  --worktree "my-app=work-sessions/fix-auth/workspace/repos/my-app" \
+  --body-file ".=workspace-scratchpad/migrate-pr-fix-auth-workspace.md" \
+  --body-file "my-app=workspace-scratchpad/migrate-pr-fix-auth-my-app.md" \
+  --out "workspace-scratchpad/migrate-prs-fix-auth.json"
 node .claude/scripts/task-pr.mjs --checks --root . --prs "workspace-scratchpad/chats/fix-login/prs-bugfix-fix-auth.json"
 ```
 
@@ -208,11 +220,11 @@ One run brings the remotes in step with `repos/`: it adds a remote for a clone t
 
 The layers interact in a clear pattern:
 
-**Hooks detect conditions.** session-start lists the existing sessions and this chat's record. pre-compact notices a session tracker that has gone stale. repo-write-detection detects out-of-scope writes.
+**Hooks detect conditions.** session-start counts the legacy sessions, lists the existing sessions and names this chat's record. pre-compact notices a session tracker that has gone stale. repo-write-detection detects out-of-scope writes.
 
-**Skills make decisions.** When Claude receives a hook's context injection, it uses skill knowledge to decide what to do. "There's an active session" leads to offering resume. "There's uncaptured work before compaction" leads to suggesting capture.
+**Skills make decisions.** When Claude receives a hook's context injection, it uses skill knowledge to decide what to do. "There's an active session" leads to offering resume. "This workspace still has work sessions under the old session model" leads to suggesting `/migrate-sessions`. "There's uncaptured work before compaction" leads to suggesting capture.
 
-**Scripts execute mechanics.** When a skill decides to create a session, it calls create-work-session.mjs. When it decides to clean up, it calls cleanup-work-session.mjs. The task lifecycle keeps the same split: `/start-work` calls task-worktree.mjs for each worktree and records the task with chat-record.mjs, and `/complete-work` hands the push, PR and merge sequence to task-pr.mjs. The skill handles the judgment; the script handles the git operations.
+**Scripts execute mechanics.** When one of the legacy session flows decides to create a session, it calls create-work-session.mjs. When it decides to clean up, it calls cleanup-work-session.mjs. The task lifecycle keeps the same split: `/start-work` calls task-worktree.mjs for each worktree and records the task with chat-record.mjs, and `/complete-work` hands the push, PR and merge sequence to task-pr.mjs — as `/migrate-sessions` does when it finishes a legacy session. The skill handles the judgment; the script handles the git operations.
 
 This separation means hooks are simple (detect and report), skills are expressive (decide and guide), and scripts are mechanical (execute and confirm). No layer tries to do another layer's job.
 

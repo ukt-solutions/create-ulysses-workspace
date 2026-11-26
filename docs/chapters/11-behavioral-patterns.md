@@ -60,11 +60,11 @@ The pressure valve is admission, not distillation. The memory-guidance rule carr
 
 ## Discussion Sessions Don't Need /start-work
 
-**The practice:** If you are starting a conversation just to think through a problem — design exploration, architecture brainstorming, scope discussion — you do not need to formalize it as a work session. Just talk. If something worth capturing emerges, run `/braindump` at the end.
+**The practice:** If you are starting a conversation just to think through a problem — design exploration, architecture brainstorming, scope discussion — you do not need to formalize it as a task. Just talk. If something worth capturing emerges, run `/braindump` at the end.
 
-**Why it matters:** `/start-work` provisions a session because work needs structure: a branch, a worktree, a tracker, eventually a PR. Discussion produces none of those — it produces understanding. Forcing a discussion through the session lifecycle creates a session folder, a branch, and a tracker that will never be merged anywhere. The system formalizes the *capture*, not the start.
+**Why it matters:** `/start-work` provisions a task because work needs structure: an issue, a branch, a worktree, eventually a PR. Discussion produces none of those — it produces understanding. Forcing a discussion through the task lifecycle creates an issue, a branch and a worktree that will never be merged anywhere. The system formalizes the *capture*, not the start.
 
-**What goes wrong:** You run `/start-work` for a 30-minute architecture chat and end up with a `feature/discuss-auth-strategy` branch and a worktree you do not need. At the end you either run `/complete-work` on a session with no commits (awkward) or abandon the session and clean it up later (annoying). Easier path: skip the lifecycle, talk freely, capture what is worth keeping.
+**What goes wrong:** You run `/start-work` for a 30-minute architecture chat and end up with a `feature/discuss-auth-strategy` branch, a worktree you do not need, and a task on the chat's record with nothing to complete. Easier path: skip the lifecycle, talk freely, capture what is worth keeping.
 
 ## Don't Skip Capture on Discussion Sessions
 
@@ -74,15 +74,15 @@ The pressure valve is admission, not distillation. The memory-guidance rule carr
 
 **What goes wrong:** A 45-minute architecture discussion produces no artifact. The next session starts with "what did we decide about the data model?" and nobody can reconstruct the reasoning. The discussion repeats.
 
-## One Chat Session, One Work Session
+## One Chat Session, One Piece of Work
 
-**The practice:** Start a work session, do the work, complete or pause the session, end the conversation. Do not chain multiple work sessions in a single conversation. Finish one, start fresh.
+**The practice:** Start one piece of work, do it, complete it, end the conversation. Do not chain several pieces of work in a single conversation. Finish one, start fresh.
 
-**Why it matters:** Claude's context window has a fixed size. As a conversation grows, older messages are compacted — summaries replace the original content. A long conversation that chains multiple work sessions means the context from the first session is compressed or lost by the time you start the second. The session tracker captures key state, but the nuanced reasoning and discussion context degrades.
+**Why it matters:** Claude's context window has a fixed size. As a conversation grows, older messages are compacted — summaries replace the original content. A long conversation that chains several pieces of work means the context from the first is compressed or lost by the time you start the second. The chat's record and drawer capture key state, but the nuanced reasoning and discussion context degrades.
 
-**What goes wrong:** You complete one feature and immediately start another in the same conversation. By the time you are deep into the second feature, Claude's memory of the first feature's decisions is compressed summaries. If something from the first session is relevant to the second, Claude may miss it or misremember it.
+**What goes wrong:** You complete one feature and immediately start another in the same conversation. By the time you are deep into the second feature, Claude's memory of the first feature's decisions is compressed summaries. If something from the first is relevant to the second, Claude may miss it or misremember it.
 
-The SessionStart hook surfaces active sessions and handoffs at the beginning of each conversation. Let it do its job — start a fresh conversation for fresh work.
+The SessionStart hook surfaces open tasks and shared context at the beginning of each conversation. Let it do its job — start a fresh conversation for fresh work.
 
 ## Let PreCompact Nudge You
 
@@ -100,5 +100,5 @@ The SessionStart hook surfaces active sessions and handoffs at the beginning of 
 - Capture decisions when they happen — "we decided..." is the trigger.
 - Keep locked context under 10KB. Admission is the pressure valve: apply the canonical test before anything goes in.
 - Always capture discussion sessions, even if no code was written.
-- One chat session, one work session. Start fresh for fresh work.
+- One chat session, one piece of work. Start fresh for fresh work.
 - When PreCompact nudges you, stop and capture. It is your last chance.
