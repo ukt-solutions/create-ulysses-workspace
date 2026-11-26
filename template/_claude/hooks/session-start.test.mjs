@@ -1,16 +1,36 @@
 #!/usr/bin/env node
-// Unit tests for the session-start hook's configSummary line (gh:196).
+// Tests for the session-start hook.
 // Run: node .claude/hooks/session-start.test.mjs
 //
-// The summary must state what workspace.json says — never a default the
+// Two kinds of case. Most call the hook's helpers directly. The repo-remotes
+// cases at the end run the hook itself, against a real workspace built in a
+// temp directory the way session-end.test.mjs builds its fixture.
+//
+// The config summary must state what workspace.json says — never a default the
 // scripts don't apply: broken tracker/forge/repos values surface as
 // `invalid`, an unset forge type surfaces as origin-picked, and only
 // sessionModel falls back ("session", matching how /start-work routes
 // absent config).
+import { execFileSync, spawnSync } from 'child_process';
+import {
+  cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
+import { join, dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { configSummary, setupHint } from './_utils.mjs';
 
 let failed = 0;
 let passed = 0;
+
+function assert(cond, msg) {
+  if (cond) {
+    passed++;
+  } else {
+    failed++;
+    console.error(`  FAIL: ${msg}`);
+  }
+}
 
 function assertEq(actual, expected, msg) {
   const a = JSON.stringify(actual);
@@ -151,6 +171,152 @@ assertEq(
   'Setup incomplete (missing repos: my-app). Run /workspace-init to initialize this workspace.',
   'an uninitialized workspace is told to initialize, not join',
 );
+
+console.log('# session-start hook: repo remotes');
+
+// Each case builds a real workspace in a temp directory (a workspace repo, a
+// project repo with a bare origin, a copy of .claude/) and runs the hook as a
+// subprocess with a SessionStart payload on stdin. The fixture copies .claude/
+// rather than symlinking it: the hook derives the workspace root from
+// import.meta.url, and a symlink would resolve it to the template's real path
+// instead of the fixture. HOME is pointed into the fixture as well, because
+// the hook reads the session registry from there.
+const gitForHook = spawnSync('git', ['--version'], { encoding: 'utf-8' });
+if (gitForHook.error || gitForHook.status !== 0) {
+  console.log('  (skip: git is not available on this machine)');
+} else {
+  const CLAUDE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+  // repoRemotes, when given, is written to workspace.json as-is.
+  function makeRepoRemotesFixture({ repoRemotes } = {}) {
+    // realpath: macOS tmpdir() is a /var → /private/var symlink, while the
+    // hook's root comes from import.meta.url, which Node resolves.
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'ss-remotes-')));
+    const ws = join(base, 'ws');
+    const cwd = join(base, 'cwd');
+    const home = join(base, 'home');
+    writeFileSync(join(base, 'gitconfig'), '');
+    mkdirSync(ws);
+    mkdirSync(cwd);
+    mkdirSync(home);
+    // Hermetic git: a fixed identity and an empty global config, so the
+    // user's signing, hooks, or default-branch settings cannot change the
+    // outcome.
+    const env = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      GIT_CONFIG_GLOBAL: join(base, 'gitconfig'),
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@t',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@t',
+    };
+    const git = (dir, ...args) => execFileSync('git', args, { cwd: dir, env, encoding: 'utf-8', stdio: 'pipe' });
+
+    git(ws, 'init', '-q', '-b', 'main');
+    cpSync(CLAUDE_DIR, join(ws, '.claude'), { recursive: true });
+    const workspace = { name: 'fixture', scratchpadDir: 'workspace-scratchpad', workSessionsDir: 'work-sessions' };
+    if (repoRemotes !== undefined) workspace.repoRemotes = repoRemotes;
+    writeFileSync(join(ws, 'workspace.json'), JSON.stringify({
+      workspace,
+      repos: { app: { remote: 'none', branch: 'main' } },
+    }, null, 2));
+    writeFileSync(join(ws, '.gitignore'), '.claude\nrepos\nwork-sessions\nworkspace-scratchpad\n');
+    writeFileSync(join(ws, 'README.md'), '# fixture\n');
+    git(ws, 'add', '-A');
+    git(ws, 'commit', '-q', '-m', 'init');
+
+    const origin = join(base, 'origins', 'app.git');
+    const repo = join(ws, 'repos', 'app');
+    mkdirSync(origin, { recursive: true });
+    mkdirSync(repo, { recursive: true });
+    git(origin, 'init', '-q', '--bare', '-b', 'main');
+    git(repo, 'init', '-q', '-b', 'main');
+    writeFileSync(join(repo, 'README.md'), '# app\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'init');
+    git(repo, 'remote', 'add', 'origin', origin);
+    git(repo, 'push', '-q', 'origin', 'main');
+    return { base, ws, cwd, env, git, origin };
+  }
+
+  function runSessionStart(fx) {
+    const r = spawnSync(process.execPath, [join(fx.ws, '.claude', 'hooks', 'session-start.mjs')], {
+      cwd: fx.cwd,
+      env: fx.env,
+      encoding: 'utf-8',
+      input: JSON.stringify({ session_id: 'session-1', hook_event_name: 'SessionStart', source: 'startup' }),
+    });
+    let context = null;
+    try { context = JSON.parse(r.stdout).additionalContext ?? ''; } catch {}
+    return { status: r.status, context, stderr: r.stderr };
+  }
+
+  function repoRemotesLines(context) {
+    return (context ?? '').split('\n').filter((line) => line.startsWith('Repo remotes:'));
+  }
+
+  function withRepoRemotesFixture(opts, fn) {
+    const fx = makeRepoRemotesFixture(opts);
+    try {
+      fn(fx);
+    } finally {
+      try { rmSync(fx.base, { recursive: true, force: true, maxRetries: 3 }); } catch {}
+    }
+  }
+
+  // 13. The clone is registered as a remote of the workspace repo, and a
+  // session is told once.
+  withRepoRemotesFixture({}, (fx) => {
+    const first = runSessionStart(fx);
+    assertEq(first.status, 0, `the hook exits 0 (stderr: ${first.stderr.trim().slice(0, 200)})`);
+    assert(typeof first.context === 'string' && first.context.startsWith('Workspace: fixture'), 'and injects its context as before');
+    assertEq(repoRemotesLines(first.context), ['Repo remotes: added repo-app'], 'the new remote is announced on one line');
+    assertEq(String(fx.git(fx.ws, 'config', '--get', 'remote.repo-app.url')).trim(), fx.origin, 'the remote carries the clone\'s origin');
+
+    const second = runSessionStart(fx);
+    assertEq(second.status, 0, 'a second start exits 0');
+    assertEq(repoRemotesLines(second.context), [], 'with nothing changed, nothing is said');
+    assert(typeof second.context === 'string' && second.context.includes('Workspace: fixture'), 'the rest of the context is still there');
+  });
+
+  // 14. workspace.repoRemotes: false keeps the hook from adding a remote
+  withRepoRemotesFixture({ repoRemotes: false }, (fx) => {
+    const r = runSessionStart(fx);
+    assertEq(r.status, 0, 'the hook exits 0');
+    assertEq(repoRemotesLines(r.context), [], 'and has nothing to say about remotes');
+    assertEq(String(fx.git(fx.ws, 'remote')).trim(), '', 'no remote was added');
+  });
+
+  // 15. A workspace whose update left repo-remotes.mjs out still starts: the
+  // hook must never fail over this.
+  withRepoRemotesFixture({}, (fx) => {
+    rmSync(join(fx.ws, '.claude', 'scripts', 'repo-remotes.mjs'));
+    const r = runSessionStart(fx);
+    assertEq(r.status, 0, `the hook exits 0 without the script (stderr: ${r.stderr.trim().slice(0, 200)})`);
+    assert(typeof r.context === 'string' && r.context.startsWith('Workspace: fixture'), 'and still injects its context');
+    assertEq(repoRemotesLines(r.context), [], 'with no remote line');
+  });
+
+  // 16. A clone that cannot get its remote, because a remote of that name
+  // exists and was not made by the sync, is worth a line.
+  withRepoRemotesFixture({}, (fx) => {
+    const other = join(fx.base, 'origins', 'other.git');
+    mkdirSync(other, { recursive: true });
+    fx.git(other, 'init', '-q', '--bare', '-b', 'main');
+    fx.git(fx.ws, 'remote', 'add', 'repo-app', other);
+    fx.git(fx.ws, 'config', '--local', 'remote.repo-app.pushurl', other);
+    const before = fx.git(fx.ws, 'config', '--local', '--get-regexp', '^remote\\.repo-app\\.');
+    const r = runSessionStart(fx);
+    assertEq(r.status, 0, 'the hook exits 0');
+    const lines = repoRemotesLines(r.context);
+    assertEq(lines.length, 1, 'the conflict is announced');
+    assert(lines[0]?.startsWith('Repo remotes: conflict repos/app: '), `and says which clone: ${lines[0]}`);
+    assertEq(fx.git(fx.ws, 'config', '--local', '--get-regexp', '^remote\\.repo-app\\.'), before, 'the remote it collided with is untouched');
+  });
+}
 
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
