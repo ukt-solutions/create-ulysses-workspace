@@ -706,21 +706,25 @@ function linkRemovedHooks(result, absRoot) {
 // ---------- CLAUDE.md merge ----------
 
 // What the template has retired: @-includes and prose lines it shipped in an
-// earlier version and no longer carries. The merge keeps "lines the template
-// doesn't have" — a workspace's `@workspace.json` line, or a bullet the
-// template itself wrote, would otherwise survive every update forever beside
-// the line that replaced it. Something retired is dropped only when THIS
-// payload no longer ships it; an older payload whose template still carries
-// the line merges it like any other template line. The config include was
-// retired because the SessionStart hook now supplies its summary (gh:196).
+// earlier version, no longer carries, and that are no longer true. The merge
+// keeps "lines the template doesn't have" — a workspace's `@workspace.json`
+// line, or a bullet the template itself wrote, would otherwise survive every
+// update forever beside the line that replaced it. Something retired is
+// dropped only when THIS payload no longer ships it; an older payload whose
+// template still carries the line merges it like any other template line.
+// The config include was retired because the SessionStart hook now supplies
+// its summary (gh:196).
+//
+// A line is retired only once it stops being true, never merely because the
+// template stopped shipping it. The bullet that describes a session's folder
+// still holds for the sessions a workspace has, so the merge keeps it; the
+// release that removes the session lifecycle is the one that retires it.
 const RETIRED_INCLUDES = ['workspace.json'];
-// The two Quick Reference bullets that described the session lifecycle as the
-// way work happens. The task lifecycle is the default now, so the template
-// replaced them — and left unlisted they would contradict their replacement
-// from the end of the section in every workspace that upgrades.
+// The Quick Reference bullet that placed all work in session worktrees. New
+// work is a task now, so it is false — and kept, it would contradict its
+// replacement from the end of the section in every workspace that upgrades.
 const RETIRED_LINES = [
   '- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`',
-  '- Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker',
 ];
 
 function hasIncludeLine(text, name) {

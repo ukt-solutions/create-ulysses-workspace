@@ -1291,10 +1291,14 @@ console.log('# classify-update');
   rmSync(crlf, { recursive: true, force: true });
 
   // retired prose: the workspace carries a bullet exactly as an earlier
-  // template shipped it, and this payload's template no longer does. The merge
-  // would keep it as a line of the workspace's own — contradicting the line
-  // that replaced it, at the end of its own section — so it is dropped and
-  // named instead. A reworded copy is the workspace's and stays.
+  // template shipped it, this payload's template no longer does, and the
+  // bullet is no longer true. The merge would keep it as a line of the
+  // workspace's own — contradicting the line that replaced it, at the end of
+  // its own section — so it is dropped and named instead. Only a false line
+  // is retired: the bullet describing a session's folder is not shipped by
+  // this template either, but it still holds for the sessions a workspace
+  // has, so the merge keeps it as the workspace's, once. A reworded copy of
+  // the retired line is the workspace's too, and stays.
   const launcherLine = '- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`';
   const sessionLine = '- Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker';
   const reworded = launcherLine.replace('all work happens', 'most work happens');
@@ -1331,12 +1335,13 @@ console.log('# classify-update');
   );
   assertEq(r6.status, 0, `--merge-claude-md with retired prose exits 0 (stderr: ${r6.stderr.trim().slice(0, 200)})`);
   const parsed6 = JSON.parse(r6.stdout);
-  assertEq(parsed6.droppedLines, [launcherLine, sessionLine],
-    'each retired line the workspace still carries is named once, however often it appears');
+  assertEq(parsed6.droppedLines, [launcherLine],
+    'the retired line the workspace still carries is named once, however often it appears');
   const merged6 = parsed6.claudeMd.split('\n');
   assertTrue(!merged6.includes(launcherLine) && !merged6.includes('  ' + launcherLine),
     'the retired bullet is gone, indented copy included');
-  assertTrue(!merged6.includes(sessionLine), 'the second retired bullet is gone too');
+  assertEq(merged6.filter((l) => l === sessionLine).length, 1,
+    'the bullet that still holds for the sessions a workspace has is kept, once, and not retired');
   assertTrue(merged6.includes(reworded), 'a copy the workspace reworded is its own line and survives');
   assertTrue(merged6.includes('- This root is the launcher — all work happens in task worktrees'),
     "the template's replacement is what remains");

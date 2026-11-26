@@ -139,7 +139,7 @@ CLAUDE.md is a template file that you own. The scaffold provides a default, but 
 
 The one thing to preserve is the pair of `@workspace-context/` imports. They are how Claude stays aware of team knowledge — removing them disconnects Claude from the workspace's shared memory. The connection to `workspace.json` needs no import to preserve: the SessionStart hook summarizes it in every chat, and skills read the file when they need it.
 
-Your edits survive upgrades. CLAUDE.md is a template file, so `/workspace-update` merges a new template into your customized copy — and asks about anything it cannot merge cleanly — instead of overwriting it. The one thing the merge takes away is what the template itself has retired and your copy still carries word for word: an include it no longer ships, or a bullet it replaced. Each is dropped from the merged result and named in the diff you approve.
+Your edits survive upgrades. CLAUDE.md is a template file, so `/workspace-update` merges a new template into your customized copy — and asks about anything it cannot merge cleanly — instead of overwriting it. The one thing the merge takes away is what the template itself has retired and your copy still carries word for word: an include it no longer ships, or a bullet that is no longer true. Each is dropped from the merged result and named in the diff you approve. A bullet the template has merely stopped shipping — the one describing a session's folder, for as long as sessions exist — is kept as yours.
 
 ---
 

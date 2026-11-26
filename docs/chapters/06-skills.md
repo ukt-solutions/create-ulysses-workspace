@@ -237,7 +237,7 @@ Applies a staged template update to an initialized workspace. The CLI's `--upgra
 
 1. Decides where the update lands: in a task worktree and through a PR when the workspace repo has a remote of its own (`origin`), in place when it has none
 2. Classifies every file in the payload — new, updated, locally modified, activated, removed, and the rest
-3. Applies the changes with your confirmation, merging files you have customized three-way against the template you are upgrading from, and asking about anything it cannot merge. In CLAUDE.md, a line the template has retired — an include it no longer ships, or a bullet it replaced — is dropped and named in the diff you approve
+3. Applies the changes with your confirmation, merging files you have customized three-way against the template you are upgrading from, and asking about anything it cannot merge. In CLAUDE.md, a line the template has retired — an include it no longer ships, or a bullet that is no longer true — is dropped and named in the diff you approve
 4. Advances `templateVersion`, writes the template baseline, and runs the migrators
 5. Verifies: rebuilds the context catalogs and runs the maintenance audit once, marking findings on the files this update touched
 6. Cleans up and commits. When the sessions directory still holds sessions under the old session lifecycle — counted from the directory alone, whatever `workspace.sessionModel` says — its report points you at `/migrate-sessions`
