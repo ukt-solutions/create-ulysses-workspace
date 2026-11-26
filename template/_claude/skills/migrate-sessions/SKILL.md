@@ -64,7 +64,7 @@ The switch procedure:
    ```bash
    node .claude/scripts/migrate-sessions.mjs --enable-task-model --root .claude/worktrees/chore-enable-task-model --launcher .
    ```
-3. Land the change the way any task lands. A forge-hosted remote (GitHub, GitLab) means a PR/MR through `task-pr.mjs` — the launcher's default branch is protected on a real forge, so landing directly on it is not an option anyway. Commit in the worktree, write a short PR body (what changed, how it was verified) to a scratch file under `workspace-scratchpad/`, and create the PR:
+3. Land the change the way any task lands. An `origin` on a forge (GitHub, GitLab) means a PR/MR through `task-pr.mjs` — the launcher's default branch is protected on a real forge, so landing directly on it is not an option anyway. Commit in the worktree, write a short PR body (what changed, how it was verified) to a scratch file under `workspace-scratchpad/`, and create the PR:
    ```bash
    node .claude/scripts/task-pr.mjs --create --root . --branch chore/enable-task-model \
      --repo . --body-file .=workspace-scratchpad/switch-pr.md --out workspace-scratchpad/switch-prs.json
@@ -75,16 +75,16 @@ The switch procedure:
    git -C .claude/worktrees/chore-enable-task-model commit -m "chore: switch to the task lifecycle"
    ```
 4. **Ask the operator before merging** — a step of its own, not a clause inside step 3, because a one-line diff is still the launcher's default branch and "it's only a one-line change" is not permission. Ask exactly: "The task-model switch is ready to merge into the launcher's default branch. Merge it now?" Only an explicit yes merges; on yes:
-   - forge remote — merge the PR, then pull the launcher:
+   - `origin` is a forge remote, so Step 3 opened a PR — merge the PR, then pull the launcher:
      ```bash
      node .claude/scripts/task-pr.mjs --merge --root . --prs workspace-scratchpad/switch-prs.json
      ```
-   - no remote — fast-forward the launcher's default branch, then remove the worktree:
+   - no `origin`, so Step 3 committed in the worktree — fast-forward the launcher's default branch, then remove the worktree:
      ```bash
      git -C . merge --ff-only chore/enable-task-model
      node .claude/scripts/task-worktree.mjs --root . --remove --repo . --branch chore/enable-task-model --delete-branch
      ```
-   Either way the launcher root never commits to its default branch directly. A workspace with neither a remote nor a tracker can use the task model's local mode (gh:173); until that ships, recommend such workspaces stay on sessions.
+   Either way the launcher root never commits to its default branch directly. A workspace with neither an `origin` nor a tracker can use the task model's local mode (gh:173); until that ships, recommend such workspaces stay on sessions.
 
 With `--launcher .` the switch output reports `remainingSessions` from the launcher even though `--root` is the switch worktree (which has no `work-sessions/` to read; without the flag the result is `remainingSessions: null` with a note pointing at a separate `--inventory` at the launcher root). Remaining sessions are fine either way: they keep resuming and completing under the session lifecycle after the switch.
 
