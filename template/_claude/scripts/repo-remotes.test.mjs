@@ -16,8 +16,8 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
-  statSync, symlinkSync, writeFileSync,
+  appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync,
+  renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -843,6 +843,33 @@ withFixture((fx) => {
   assertEq([...managedRemoteNames(spawnSync, fx.root)].sort(), ['hand-marked', 'repo-app'], 'marked remotes of any name, by the value git reads as true');
   const noGit = () => ({ status: null, error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) });
   assertEq([...managedRemoteNames(noGit, fx.root)], [], 'a git that cannot answer gives an empty set rather than throwing');
+});
+
+console.log('# the marker: a key written with no value is true to git, and marks its remote');
+withFixture((fx) => {
+  // Three ways of writing the key by hand: on a line of its own, with an
+  // empty value, and with an explicit no. git config cannot write the
+  // first, so the file gets the line directly.
+  appendFileSync(join(fx.root, '.git', 'config'), [
+    '[remote "no-value"]', '\tulyssesManaged',
+    '[remote "empty-value"]', '\tulyssesManaged = ',
+    '[remote "said-no"]', '\tulyssesManaged = no',
+    '',
+  ].join('\n'));
+  assertEq(tryRun(fx.root, 'config', '--local', '--type=bool', '--get', 'remote.no-value.ulyssesManaged').stdout.trim(), 'true', 'control: git reads a key with no value as true');
+  assertEq(tryRun(fx.root, 'config', '--local', '--type=bool', '--get', 'remote.empty-value.ulyssesManaged').stdout.trim(), 'false', 'control: and an empty value as false');
+  assertEq([...managedRemoteNames(spawnSync, fx.root)], ['no-value'], 'so the valueless key marks its remote, and the empty and the refused ones do not');
+
+  // In a sync, a remote carrying the valueless marker is managed like any other.
+  const shape = makeOrigin(fx, 'shape');
+  addClone(fx, 'shape', shape.bare);
+  run(fx.root, 'config', '--local', 'remote.repo-shape.url', shape.bare);
+  run(fx.root, 'config', '--local', 'remote.repo-shape.pushurl', 'no-push');
+  run(fx.root, 'config', '--local', 'remote.repo-shape.skipFetchAll', 'true');
+  run(fx.root, 'config', '--local', 'remote.repo-shape.skipDefaultUpdate', 'true');
+  appendFileSync(join(fx.root, '.git', 'config'), '\tulyssesManaged\n');
+  assertEq(syncRepoRemotes(fx.root), EMPTY, 'it is in shape and managed, so the run has nothing to do — no adoption, no conflict, no rewrite');
+  assertEq(run(fx.root, 'config', '--local', '--get-all', 'remote.repo-shape.ulyssesManaged'), '', 'and the valueless key is left as it was written');
 });
 
 // === the hook line ===

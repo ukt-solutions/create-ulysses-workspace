@@ -110,7 +110,8 @@ const WRITE_ORDER = ['pushurl', 'skipfetchall', 'skipdefaultupdate', 'url', 'fet
 const CHANGE_KINDS = ['added', 'updated', 'removed', 'adopted'];
 const CONFLICT = 'conflict: ';
 const LABEL = 'Repo remotes: ';
-// What git reads as false for a boolean. Anything else is true.
+// What git reads as false for a boolean: the spelled-out words, zero, and
+// an empty value. Anything else is true, a valueless key included.
 const GIT_FALSE = new Set(['false', 'no', 'off', '0', '']);
 
 // .native resolves Windows 8.3 short names; the plain fallback covers
@@ -154,16 +155,21 @@ export function remoteNameFor(cloneName) {
 }
 
 // Splits one `git config --null --get-regexp` line, which is a key, a
-// newline, and the value verbatim.
+// newline, and the value verbatim. A key written with no value at all —
+// `ulyssesManaged` on a line of its own — has no newline, and its value is
+// null.
 function splitConfigEntry(entry) {
   const nl = entry.indexOf('\n');
   return nl === -1
-    ? { key: entry, value: '' }
+    ? { key: entry, value: null }
     : { key: entry.slice(0, nl), value: entry.slice(nl + 1) };
 }
 
-// Whether a config value reads as the ownership marker set to true.
+// Whether a config value reads as the ownership marker set to true. A key
+// with no value is true to git, the same as `ulyssesManaged = true`; an
+// empty value is false, like the words and the zero.
 function isMarkerValue(value) {
+  if (value === null) return true;
   return !GIT_FALSE.has(value.trim().toLowerCase());
 }
 
