@@ -160,12 +160,14 @@
 //                     present as `updated` again next time; see
 //                     template-baseline.mjs. Throws rather than writing an
 //                     empty baseline.
-//   --merge-claude-md print JSON { claudeMd, droppedIncludes, missingIncludes }:
-//                     CLAUDE.md with the payload's CLAUDE.md.tmpl merged in —
-//                     template lines updated, the workspace's own lines (custom
-//                     skill entries, sections) kept — minus the retired
-//                     @-includes the workspace still carries but this payload
-//                     no longer ships (droppedIncludes names them, gh:196) —
+//   --merge-claude-md print JSON { claudeMd, droppedIncludes, droppedLines,
+//                     missingIncludes }: CLAUDE.md with the payload's
+//                     CLAUDE.md.tmpl merged in — template lines updated, the
+//                     workspace's own lines (custom skill entries, sections)
+//                     kept — minus what the template has retired and the
+//                     workspace still carries word for word but this payload
+//                     no longer ships: @-includes (droppedIncludes names them,
+//                     gh:196) and prose lines (droppedLines names them) —
 //                     plus the `@{path}` include lines the merged file carries
 //                     whose targets don't exist at the root (machine-local
 //                     local-only-* targets exempt). The skill shows the diff
@@ -703,13 +705,23 @@ function linkRemovedHooks(result, absRoot) {
 
 // ---------- CLAUDE.md merge ----------
 
-// @-includes the template has retired. The merge keeps "lines the template
-// doesn't have" — a workspace's `@workspace.json` line would otherwise survive
-// every update forever. A retired include is dropped only when THIS payload no
-// longer ships it; an older payload whose template still carries the line
-// merges it like any other template line. The SessionStart hook now supplies
-// the config summary the import existed for (gh:196).
+// What the template has retired: @-includes and prose lines it shipped in an
+// earlier version and no longer carries. The merge keeps "lines the template
+// doesn't have" — a workspace's `@workspace.json` line, or a bullet the
+// template itself wrote, would otherwise survive every update forever beside
+// the line that replaced it. Something retired is dropped only when THIS
+// payload no longer ships it; an older payload whose template still carries
+// the line merges it like any other template line. The config include was
+// retired because the SessionStart hook now supplies its summary (gh:196).
 const RETIRED_INCLUDES = ['workspace.json'];
+// The two Quick Reference bullets that described the session lifecycle as the
+// way work happens. The task lifecycle is the default now, so the template
+// replaced them — and left unlisted they would contradict their replacement
+// from the end of the section in every workspace that upgrades.
+const RETIRED_LINES = [
+  '- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`',
+  '- Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker',
+];
 
 function hasIncludeLine(text, name) {
   return text.split(/\r?\n/).some((l) => l.trim() === `@${name}`);
@@ -721,21 +733,38 @@ function dropIncludeLines(text, name) {
   return text.split(/\r?\n/).filter((l) => l.trim() !== `@${name}`).join(eol);
 }
 
+function hasLine(text, line) {
+  return text.split(/\r?\n/).some((l) => l.trim() === line.trim());
+}
+
 /**
- * Retired includes still present in the workspace's CLAUDE.md: each is named
- * in the output so the skill can call the drop out, and stripped from the
- * current text before the merge so the merged result loses the line.
+ * What the template has retired and the workspace's CLAUDE.md still carries:
+ * each is named in the output so the skill can call the drop out, and all of
+ * them are stripped from the current text before the merge so the merged
+ * result loses them. A prose line is matched whole and trimmed — one the
+ * workspace reworded is not the template's any more and is left in place.
  */
-function stripRetiredIncludes(currentText, nextText) {
-  const dropped = [];
+function stripRetired(currentText, nextText) {
+  const droppedIncludes = [];
+  const droppedLines = [];
   let stripped = currentText;
   for (const name of RETIRED_INCLUDES) {
     if (!hasIncludeLine(currentText, name)) continue;
     if (hasIncludeLine(nextText, name)) continue; // this payload still ships it
-    dropped.push(name);
+    droppedIncludes.push(name);
     stripped = dropIncludeLines(stripped, name);
   }
-  return { stripped, dropped };
+  for (const line of RETIRED_LINES) {
+    if (!hasLine(currentText, line)) continue;
+    if (hasLine(nextText, line)) continue; // this payload still ships it
+    droppedLines.push(line.trim());
+  }
+  if (droppedLines.length > 0) {
+    const retired = new Set(droppedLines);
+    const eol = stripped.includes('\r\n') ? '\r\n' : '\n';
+    stripped = stripped.split(/\r?\n/).filter((l) => !retired.has(l.trim())).join(eol);
+  }
+  return { stripped, droppedIncludes, droppedLines };
 }
 
 /**
@@ -927,16 +956,17 @@ function mergeClaudeMdMode(args) {
   const next = readFileSync(tmplPath, 'utf8').replace(/\{\{project-name\}\}/g, name);
   const claudeMdPath = join(absRoot, 'CLAUDE.md');
   const current = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf8') : '';
-  const { stripped, dropped } = stripRetiredIncludes(current, next);
+  const { stripped, droppedIncludes, droppedLines } = stripRetired(current, next);
   const claudeMd = mergeClaudeMd(stripped, next);
   // The gained-@include check is deterministic, not something to eyeball in
   // the diff: every include line whose target is absent here is reported so
   // the skill asks (stub or omit) instead of writing it silently (gh:190).
-  // A retired include the workspace still carried is the mirror decision —
+  // Something retired the workspace still carried is the mirror decision —
   // reported as dropped so the diff the operator approves says so (gh:196).
   process.stdout.write(JSON.stringify({
     claudeMd,
-    droppedIncludes: dropped,
+    droppedIncludes,
+    droppedLines,
     missingIncludes: missingIncludes(absRoot, claudeMd),
   }, null, 2) + '\n');
 }
