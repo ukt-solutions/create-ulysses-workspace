@@ -381,7 +381,20 @@ If several tasks are open, ask the user which one to complete — group by branc
 
 Notes meant for another chat are not drawer notes. The drawer is per-chat and machine-local — no other chat can read it, and this machine is its only copy — so nothing in it survives a handoff. Anything the next chat (or the operator, from another machine) needs to continue this task — decisions, gotchas, where work stopped — goes on the linked issue as a comment through the tracker adapter (`await tracker.comment("{workItem}", body)`), where every chat can read it.
 
-0. **Pre-flight: the worktrees must be clean.** For each `{worktree}` of the chosen task, `git -C '{worktree}' status --porcelain` must be empty. If it is not, stop here — before the rebase — and ask the user to commit or discard: rebasing over uncommitted work silently invalidates it.
+0. **Pre-flight.** Two checks run before anything is rebased, pushed or removed, and either one stops the completion.
+
+   **The worktrees must be clean.** For each `{worktree}` of the chosen task, `git -C '{worktree}' status --porcelain` must be empty. If it is not, stop here — before the rebase — and ask the user to commit or discard: rebasing over uncommitted work silently invalidates it.
+
+   **Every goal sub-branch must be merged — only when a `goal-*.md` artifact is in the chat drawer.** A `/goal`-driven task can produce a per-phase sub-branch for each code phase (any phase declaring `integration.strategy: sub-branch` in the goal artifact). Those sub-branches must be merged into the task branch before completion, or their work is left on a branch nobody finishes once step 5 tears the task's worktrees and branches down. Check each `{worktree}`:
+
+   ```bash
+   task_branch=$(git -C '{worktree}' rev-parse --abbrev-ref HEAD)
+   for sub in $(git -C '{worktree}' branch --format='%(refname:short)' --list "${task_branch}-*"); do
+     git -C '{worktree}' merge-base --is-ancestor "$sub" "$task_branch" || echo "UNMERGED: $sub"
+   done
+   ```
+
+   If any `UNMERGED:` lines print, stop and show the list. The user merges the intended sub-branches into the task branch, or closes abandoned ones, then re-runs `/complete-work`. When no `goal-*.md` artifact is in the drawer, this check is a no-op and completion proceeds normally.
 
 1. **Rebase each task worktree onto its base** — `origin/{defaultBranch}` for a `forge` repo (`git -C '{worktree}' fetch origin`, then `git -C '{worktree}' rebase 'origin/{defaultBranch}'`), the local `{defaultBranch}` for a `local` repo (`git -C '{worktree}' rebase '{defaultBranch}'`; no fetch — there is no remote to fetch from). Freshness first: the PR in step 3 must describe the branch as it will merge. If conflicts arise, STOP and present them — do not auto-resolve.
 

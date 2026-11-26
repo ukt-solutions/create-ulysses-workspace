@@ -37,36 +37,80 @@ If `workspace.tracker` is absent (the hook's `Workspace config` line reads `trac
 
    Notes another chat will need to continue the task never go in this chat's drawer — the drawer is per-chat and machine-local. Put them on the issue as a comment (`await tracker.comment("{workItem}", body)`), where any chat can read them.
 
-   When the invocation's arguments name no issue, list the candidates — the same adapter calls as Flow: Blank steps 3–6 (an issue picked from the list gets the same `--owner` check once its id is known):
+   When the invocation's arguments name no issue, the issue is picked or created here instead:
 
-   ```javascript
-   import { createTracker } from './.claude/scripts/trackers/interface.mjs';
-   import { readFileSync } from 'node:fs';
-   const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
-   const tracker = createTracker(ws.workspace.tracker);
-   const assigned = await tracker.listAssignedToMe();
-   const candidates = assigned.length > 0 ? assigned : await tracker.listUnassigned();
-   ```
+   1. **Fetch the candidate list through the adapter** — the issues assigned to the current user first, falling back to all unassigned issues when that list is empty:
+      ```javascript
+      import { createTracker } from './.claude/scripts/trackers/interface.mjs';
+      import { readFileSync } from 'node:fs';
+      const ws = JSON.parse(readFileSync('workspace.json', 'utf-8'));
+      const tracker = createTracker(ws.workspace.tracker);
+      const assigned = await tracker.listAssignedToMe();
+      const candidates = assigned.length > 0 ? assigned : await tracker.listUnassigned();
+      const fallbackNote = assigned.length === 0 ? '(fallback — no issues assigned to you; showing unassigned)' : '';
+      ```
+   2. **Present the list.** Group by milestone when the adapter provides one; sort by priority label (P1 before P2 before P3) within each group:
+      ```
+      {fallbackNote}
+      Backlog:
+        1. [P1 bug] Auth timeout on mobile (gh:3)
+        2. [P1 feat] JWT refresh logic (gh:8)
 
-   Present the list as Flow: Blank step 4 does. When the pick came from the unassigned fallback, claim it atomically and re-fetch on `ALREADY_ASSIGNED` exactly as Blank step 5 shows; for "something new", create and self-assign per Blank step 6:
+      v0.1:
+        3. [P2 feat] Full-text search (gh:5)
 
-   ```javascript
-   const newIssue = await tracker.createIssue({
-     title: description,
-     body: `Created at /start-work by ${user}.`,
-     labels: [type, priority],
-     milestone: milestone || null,
-   });
-   await tracker.claim(newIssue.id);
-   ```
+        [N] Something new
 
-   The epic flow from Blank step 6 applies here too — `tracker.listEpics()` read before the create (a failure there is reported and skipped, never fatal), the picker offered only when it is non-empty.
+      Which one, or describe something new?
+      ```
+      Accept a number or "N".
+   3. **The operator picked an existing issue.** Its id is known now, so run the same `--owner` check as above and follow the same three outcomes — another chat may already have a task for it. When the task is this chat's to start, take the issue over:
+      - If it came from the unassigned fallback list, claim it atomically:
+        ```javascript
+        try {
+          await tracker.claim(issue.id);
+        } catch (e) {
+          if (e.code === 'ALREADY_ASSIGNED') {
+            console.log(`${issue.id} was just claimed by ${e.assignees.join(', ')}. Refreshing list.`);
+            // Back to the candidate list — someone else grabbed the ticket between fetch and claim.
+            return restart();
+          }
+          throw e;
+        }
+        ```
+      - If it came from the assigned-to-me list, skip the claim call (already mine).
+   4. **The operator described something new.** Ask for the type (`bug` / `feat` / `chore`), priority (`P1` / `P2` / `P3`), and an optional milestone. Read the epic list first — a tracker or epic failure must surface before anything is created, and it never blocks issue creation — then create the issue and self-assign:
+      ```javascript
+      let epics = [];
+      try {
+        epics = await tracker.listEpics();
+      } catch (e) {
+        console.log(`Skipping the epic picker — could not list epics: ${e.message}`);
+      }
+
+      const newIssue = await tracker.createIssue({
+        title: description,
+        body: `Created at /start-work by ${user}.`,
+        labels: [type, priority],
+        milestone: milestone || null,
+      });
+      await tracker.claim(newIssue.id);
+
+      // Offered only when epics already exist; teams without them see
+      // nothing new. Present a numbered menu: the existing epics, "[0] No
+      // epic", and "[N] New epic…". Create only on the explicit new-epic
+      // choice (tracker.createEpic({ name })), then assign the pick:
+      if (epics.length > 0) {
+        await tracker.setIssueEpic(newIssue.id, chosenName /* or null for no epic */);
+      }
+      ```
+      `setIssueEpic` replaces any epic the issue already carries, and an unknown name throws — never invent epic names to satisfy it. If it itself fails after the issue exists, report that and continue: the issue is already created and claimed, and nothing after that point is worth aborting over.
 
    Remember `workItem: {issue.id}`.
 
-2. **Pick repo(s)** — the same numbered multi-select as Blank step 7 (e.g. `1,3` or `all`), defaulting to the repo marked `"primary": true` under `repos` in `workspace.json`, falling back to the first entry when none is marked. The list also offers the **workspace repo itself**, shown as `workspace (this repo)` and addressed as `.`. Include it when the task changes anything tracked in the workspace repo — `workspace-context/`, the workspace's own `.claude/` (rules, hooks, scripts, skills), or, in a dogfood workspace, mirrors of template changes. Steps 4 and 5 take `.` like any other repo name (`--repo "."`).
+2. **Pick repo(s)** — a numbered list from `repos` in `workspace.json` with multi-select (`1,3` or `all`), defaulting to the repo marked `"primary": true`, falling back to the first entry when none is marked. The list also offers the **workspace repo itself**, shown as `workspace (this repo)` and addressed as `.`. Include it when the task changes anything tracked in the workspace repo — `workspace-context/`, the workspace's own `.claude/` (rules, hooks, scripts, skills), or, in a dogfood workspace, mirrors of template changes. Steps 4 and 5 take `.` like any other repo name (`--repo "."`).
 
-3. **Propose the branch** — `{prefix}/{slug}` with the prefix from type (`feature/`, `bugfix/`, `chore/`), per the branch-naming step in Flow: Blank.
+3. **Propose the branch** — `{prefix}/{slug}`, where the prefix comes from the type (`feature/` for `feat`, `bugfix/` for `bug`, `chore/` for `chore`) and `{slug}` is a kebab-case slug of the issue title, or of the description when there is no issue. Wait for confirmation.
 
 4. **Create one worktree per repo the work touches:**
    ```bash
