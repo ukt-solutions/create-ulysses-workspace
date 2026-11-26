@@ -427,14 +427,15 @@ The first writes `CLAUDE.local.md` from `workspace.user` and regenerates the ind
 
 ### Step 17: Set up workspace remote
 
-Check if the workspace git repo already has a remote:
+Check whether the workspace repo has an `origin` of its own:
 ```bash
-git remote -v
+git remote get-url origin
 ```
+It prints the URL and exits 0 when `origin` exists, and exits non-zero when there is none. Only `origin` counts. Step 2 gave the repo a `repo-{name}` remote per project clone, so a list of its remotes is never empty by this point; those exist so Claude Code Desktop can match a pull request to a chat, and none of them is the workspace's own.
 
-**If a remote already exists:** Report "Remote already configured: {url}" and skip to the next step.
+**If `origin` exists:** Report "Remote already configured: {url}" and skip to the next step.
 
-**If no remote but a team workspace repo already exists** (e.g., a teammate already initialized and pushed):
+**If there is no `origin` but a team workspace repo already exists** (e.g., a teammate already initialized and pushed):
 - Ask: "Does a workspace repo already exist that you want to connect to? Provide the URL, or say 'create new'."
 - If URL provided:
   ```bash
@@ -450,7 +451,7 @@ git remote -v
   - For rules: if both sides activated different optional rules, keep both.
   - For CLAUDE.md: use the remote version (it's the established one), add any local customizations the user wants.
 
-**If no remote and creating new:**
+**If there is no `origin` and no team repo to connect to:**
 - Detect the org from project repo remotes in workspace.json
 - Ask: "Create workspace repo as `{org}/workspace-{project}`? Or provide a different name/URL."
 - Create via `gh repo create '{org}/{name}' --private` and add as remote
