@@ -192,6 +192,8 @@ node .claude/scripts/team-roster.mjs --merge-alias alicew [--apply] # merge an a
 
 Gives the workspace repo one remote per project clone, named `repo-{name}` and carrying the clone's origin. Claude Code Desktop decides whether a pull request belongs to a chat by comparing the PR's `owner/name` with every git remote of the chat's folders. A chat runs at the workspace root, whose own remote is the workspace repo, so without these a pull request opened in a project repo is not matched to the chat.
 
+Matching is only half of it: the app must also bind the PR to the chat before it appears in the PR bar. It binds on its own only when the chat runs a literal `gh pr create` or when Claude's reply names the PR in a `<pr-created>{url}</pr-created>` tag. `task-pr.mjs` runs neither, so every skill that opens a PR through it tells Claude to report each GitHub PR in that tag when running in the desktop app.
+
 ```bash
 node .claude/scripts/repo-remotes.mjs --root .               # bring the remotes in step with repos/
 node .claude/scripts/repo-remotes.mjs --root . --json        # the same, printing what changed as JSON

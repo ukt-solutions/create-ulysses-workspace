@@ -69,6 +69,7 @@ The switch procedure:
    node .claude/scripts/task-pr.mjs --create --root . --branch chore/enable-task-model \
      --repo . --body-file .=workspace-scratchpad/switch-pr.md --out workspace-scratchpad/switch-prs.json
    ```
+   When running in the Claude desktop app and the PR is on GitHub, name it in your reply as `<pr-created>{url}</pr-created>`, so the app adds it to the chat's PR bar; elsewhere, give the plain URL.
    Only a workspace whose repo has no `origin` lands locally — commit in the worktree and leave the landing to step 4. Ask git for `origin` itself (`git -C . remote get-url origin` exits non-zero when there is none) rather than listing remotes: a workspace with project clones always carries their `repo-{name}` mirrors, which are never pushed to and do not count:
    ```bash
    git -C .claude/worktrees/chore-enable-task-model add workspace.json

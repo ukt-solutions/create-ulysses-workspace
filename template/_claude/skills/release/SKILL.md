@@ -53,7 +53,7 @@ If the repo has a `package.json` with a `version`, set it to `{version}` (edit t
 
 **Step 4: Merge**
 
-Push the branch and open a PR through the same per-repo forge (`forgeConfigForRepo` from Step 2) with head `release/v{version}`. Ask `Merge? [Y/n]`, then merge (squash, delete branch).
+Push the branch and open a PR through the same per-repo forge (`forgeConfigForRepo` from Step 2) with head `release/v{version}`. When running in the Claude desktop app and the PR is on GitHub, name it in your reply as `<pr-created>{url}</pr-created>`, so the app adds it to the chat's PR bar; elsewhere, give the plain URL. Ask `Merge? [Y/n]`, then merge (squash, delete branch).
 
 **Step 5: Leak audit and consumer-facing review**
 
