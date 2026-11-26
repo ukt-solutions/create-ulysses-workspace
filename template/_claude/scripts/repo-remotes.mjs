@@ -163,12 +163,16 @@ function isMarkerValue(value) {
   return !GIT_FALSE.has(value.trim().toLowerCase());
 }
 
-// Every remote.<name>.<key> git resolves in this repository, as a Map of
-// remote name to a Map of lowercased key to its values. All config scopes are
-// read, because `git remote` lists a remote defined in any of them. Null when
-// git could not answer.
+// Every remote.<name>.<key> in the repository's own config file, as a Map
+// of remote name to a Map of lowercased key to its values. Only that file is
+// read, because it is the only one this script writes: a key held in another
+// scope — a fetch refspec in the global config, say — can be seen but never
+// cleared, and a plan that kept proposing it would report an update on
+// every run. A remote that lives in another scope alone is not here, so
+// before a name is added git is asked about it (definedOutsideLocalConfig).
+// Null when git could not answer.
 function readRemoteConfig(gitFn, dir) {
-  const res = gitCall(gitFn, dir, ['config', '--null', '--get-regexp', '^remote\\.']);
+  const res = gitCall(gitFn, dir, ['config', '--local', '--null', '--get-regexp', '^remote\\.']);
   // Exit code 1 is git's "nothing matches": an empty answer, not a failure.
   if (!res.ok && res.status !== 1) return null;
   const remotes = new Map();
@@ -189,6 +193,15 @@ function readRemoteConfig(gitFn, dir) {
 function isMarked(fields) {
   const values = fields.get(MARKER.toLowerCase()) ?? [];
   return values.some(isMarkerValue);
+}
+
+// Whether a remote of this name is configured in any scope other than the
+// repository's own config file: the global one, an included file, a
+// worktree's. `git remote` lists it all the same, so it is somebody's
+// remote and not a name for this sync to take over.
+function definedOutsideLocalConfig(gitFn, rootDir, remote) {
+  const name = remote.replace(/[\\.*+?^${}()|[\]]/g, '\\$&');
+  return gitCall(gitFn, rootDir, ['config', '--get-regexp', `^remote\\.${name}\\.`]).ok;
 }
 
 /**
@@ -386,6 +399,13 @@ export function syncRepoRemotes(root, { gitFn = spawnSync, enabled = true } = {}
 
     const fields = config.get(remote);
     if (!fields) {
+      if (definedOutsideLocalConfig(gitFn, rootDir, remote)) {
+        result.skipped.push({
+          name: clone.name,
+          reason: `${CONFLICT}remote ${remote} is configured outside this repository's own config`,
+        });
+        continue;
+      }
       if (applyWrites(gitFn, rootDir, remote, planWrites(new Map(), clone.url))) result.added.push(remote);
       else result.skipped.push({ name: clone.name, reason: `writing remote ${remote} failed` });
       continue;

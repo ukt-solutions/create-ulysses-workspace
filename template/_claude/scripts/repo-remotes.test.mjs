@@ -130,6 +130,20 @@ function withFixture(fn) {
   }
 }
 
+// Runs `fn` with the given lines as git's global config — the file
+// GIT_CONFIG_GLOBAL points at, which the module's git inherits from this
+// process — and puts the file back afterwards.
+function withGlobalConfig(lines, fn) {
+  const file = join(GIT_CFG, 'global');
+  const saved = readFileSync(file, 'utf8');
+  writeFileSync(file, `${lines.join('\n')}\n`);
+  try {
+    fn();
+  } finally {
+    writeFileSync(file, saved);
+  }
+}
+
 // What `git config --local` holds for one remote, as { key: value } with
 // only the last part of each key, lowercased the way git reports it. null
 // when the remote does not exist.
@@ -396,6 +410,41 @@ withFixture((fx) => {
   assertEq(result, { ...EMPTY, added: ['repo-x'] }, 'the clone gets a remote of its own instead');
   assertEq(run(fx.root, 'config', '--local', '--get-regexp', '^remote\\.mirror-x\\.'), before, 'mirror-x is untouched');
   assertEq(remoteConfig(fx, 'mirror-x').ulyssesmanaged, undefined, 'and is not marked');
+});
+
+console.log('# idempotent: a key held in another config scope is not reported as an update on every run');
+withFixture((fx) => {
+  const x = makeOrigin(fx, 'x');
+  addClone(fx, 'x', x.bare);
+  syncRepoRemotes(fx.root);
+  // A fetch refspec for the same remote name in the global config. git
+  // resolves it, but it is not in the file this script writes.
+  withGlobalConfig(['[remote "repo-x"]', '\tfetch = +refs/heads/*:refs/remotes/repo-x/*'], () => {
+    assertEq(tryRun(fx.root, 'config', '--get', 'remote.repo-x.fetch').status, 0, 'control: git resolves the refspec from the other scope');
+    const before = localConfigList(fx);
+    const rec = recordingGitFn();
+    const result = syncRepoRemotes(fx.root, { gitFn: rec.gitFn });
+    assertEq(result, EMPTY, 'the next run reports no change');
+    assertEq(rec.writes(), [], 'and issues no write');
+    assertEq(localConfigList(fx), before, 'the local config is as it was');
+    assertEq(repoRemotesLine(result), '', 'so no session is told about a change that is not one');
+  });
+});
+
+console.log('# leave alone: a repo-<name> remote that lives only in another config scope is not taken over');
+withFixture((fx) => {
+  const x = makeOrigin(fx, 'x');
+  addClone(fx, 'x', x.bare);
+  withGlobalConfig([], () => {
+    run(fx.base, 'config', '--global', 'remote.repo-x.url', x.bare);
+    run(fx.base, 'config', '--global', 'remote.repo-x.fetch', '+refs/heads/*:refs/remotes/repo-x/*');
+    assertEq(tryRun(fx.root, 'remote').stdout.trim(), 'repo-x', 'control: git lists the remote');
+    const result = syncRepoRemotes(fx.root);
+    assertEq([result.added, result.updated, result.removed, result.adopted], [[], [], [], []], 'nothing was changed');
+    check(result.skipped.length === 1 && result.skipped[0].name === 'x' && result.skipped[0].reason.startsWith('conflict: '),
+      'the clone is reported as a conflict', JSON.stringify(result));
+    assertEq(tryRun(fx.root, 'config', '--local', '--get-regexp', '^remote\\.').status, 1, 'and nothing was written to the local config');
+  });
 });
 
 // === adopt ===
