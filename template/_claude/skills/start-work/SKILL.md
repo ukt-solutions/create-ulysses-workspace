@@ -413,13 +413,35 @@ If not: ask "Ready to start implementing, or want to brainstorm first?"
 
 ## Flow: Retroactive (called mid-session)
 
-Work that began without `/start-work` is formalized as a task, like any other new work: run **Flow: Task** for the issue, the branch and the worktrees, then carry the uncommitted changes over — stash them, create the worktrees, pop the stash inside each one. The steps below are the legacy session shape of the same recovery and stay for the sessions a workspace already has.
+Work that began without `/start-work` is formalized as a task, like any other new work: run **Flow: Task** for the issue, the branch and the worktrees, then carry the uncommitted changes over into the new worktrees. The numbered steps at the end are the legacy session shape of the same recovery, and stay for the sessions a workspace already has.
 
-When /start-work is called after work has already begun:
+**Carry changes over by the stash entry's SHA, never with a bare pop.** Every worktree of a repository shares one stash stack, so another chat's entry can be `stash@{0}` by the time a pop runs — a pop would apply that one and drop it. Take one repository at a time, wherever its changes sit. `{source}` is where they are — `repos/{repo}/` for a project repo, the workspace root (`.`) for the workspace repo itself — `{worktree}` is the task worktree step 4 of **Flow: Task** created for that repository, and `{slug}` is the branch's slug, so the entry is recognizable in the list:
+
+1. **Stash the changes where they are**, tracked edits and untracked files alike:
+   ```bash
+   git -C '{source}' stash push -u -m 'start-work-{slug}'
+   ```
+2. **Capture the new entry's SHA** from the list — the line whose message is yours, and the newest such line if an earlier attempt left one:
+   ```bash
+   git -C '{source}' stash list --format='%gd %H %gs'
+   ```
+3. **Apply that entry, by SHA, in the new worktree.** A SHA names one entry however many are pushed after it:
+   ```bash
+   git -C '{worktree}' stash apply '{sha}'
+   ```
+4. **Drop the entry only once the apply is confirmed** — the changes are in the worktree's status, and any conflict the apply reported is resolved. Read the list again first: another chat may have pushed an entry since and shifted the numbers. Drop the `stash@{n}` whose message and SHA are both yours:
+   ```bash
+   git -C '{source}' stash list --format='%gd %H %gs'
+   git -C '{source}' stash drop 'stash@{n}'
+   ```
+
+Until step 4 the entry stays in the stack, so an interruption before it loses nothing: the changes are in the worktree and still in the stash. A repository with no uncommitted changes gets no entry — `stash push` says there is nothing to save — and is skipped.
+
+The legacy session shape, for the sessions a workspace already has:
 
 1. Detect uncommitted changes in `repos/` or `workspace-context/`
 2. "It looks like you've already been working. Let me formalize this."
-3. If changes are on a default branch: stash → create session → pop stash
+3. If changes are on a default branch: stash → create session → apply the stash in the session's worktrees, by the carry-over above and never a bare pop
 4. If changes are already on a feature branch: create workspace worktree and nest the existing project worktree(s) under it, or create a fresh session if the work is small enough to re-apply
 5. Summarize: "Formalized as work session: {name}. Work from `work-sessions/{name}/workspace/`."
 
