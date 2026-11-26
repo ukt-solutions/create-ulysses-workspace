@@ -2,15 +2,20 @@
 // Tests for the session-start hook.
 // Run: node .claude/hooks/session-start.test.mjs
 //
-// Two kinds of case. Most call the hook's helpers directly. The repo-remotes
-// cases at the end run the hook itself, against a real workspace built in a
-// temp directory the way session-end.test.mjs builds its fixture.
+// Three kinds of case. Most call the hook's helpers directly. The repo-remotes
+// cases and the legacy-session cases at the end run the hook itself, against
+// a real workspace built in a temp directory the way session-end.test.mjs
+// builds its fixture.
 //
 // The config summary must state what workspace.json says — never a default the
 // scripts don't apply: broken tracker/forge/repos values surface as
 // `invalid`, an unset forge type surfaces as origin-picked, and only
 // sessionModel falls back ("task": new work is always a task, so that is what
 // an unset value means — a workspace still holding "session" is told so).
+//
+// The legacy-session nudge counts the sessions directory and nothing else:
+// an entry whose name does not start with a dot is a legacy session, so an
+// archive alone is none, and workspace.sessionModel is never consulted.
 import { execFileSync, spawnSync } from 'child_process';
 import {
   cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync,
@@ -333,6 +338,66 @@ if (gitForHook.error || gitForHook.status !== 0) {
     assertEq(lines.length, 1, 'the conflict is announced');
     assert(lines[0]?.startsWith('Repo remotes: conflict repos/app: '), `and says which clone: ${lines[0]}`);
     assertEq(fx.git(fx.ws, 'config', '--local', '--get-regexp', '^remote\\.repo-app\\.'), before, 'the remote it collided with is untouched');
+  });
+
+  // The legacy-session nudge, one line, counted from the sessions directory.
+  const NUDGE = 'This workspace still has {n} work session(s) under the old session model — /migrate-sessions can inventory and drain them.';
+  const nudgeLines = (context) => (context ?? '').split('\n').filter((line) => line.startsWith('This workspace still has'));
+  const writeWorkspaceJson = (fx, workspace) => writeFileSync(join(fx.ws, 'workspace.json'), JSON.stringify({
+    workspace,
+    repos: { app: { remote: 'none', branch: 'main' } },
+  }, null, 2));
+
+  // 17. A workspace with no sessions directory: no nudge, no error, and the
+  // config line already says the task lifecycle for an unset key.
+  withRepoRemotesFixture({}, (fx) => {
+    const r = runSessionStart(fx);
+    assertEq(r.status, 0, `the hook exits 0 with no sessions directory (stderr: ${r.stderr.trim().slice(0, 200)})`);
+    assertEq(nudgeLines(r.context), [], 'no sessions directory, no nudge');
+    assert(typeof r.context === 'string' && r.context.includes('sessionModel: task |'), 'an unset sessionModel reads as the task lifecycle');
+  });
+
+  // 18. Only an archive under work-sessions/: .archived/ and other dot
+  // entries are not sessions.
+  withRepoRemotesFixture({}, (fx) => {
+    mkdirSync(join(fx.ws, 'work-sessions', '.archived', 'old--20260101T000000', 'workspace'), { recursive: true });
+    writeFileSync(join(fx.ws, 'work-sessions', '.archived', 'old--20260101T000000', 'workspace', 'session.md'), '---\n---\n');
+    writeFileSync(join(fx.ws, 'work-sessions', '.DS_Store'), '');
+    const r = runSessionStart(fx);
+    assertEq(r.status, 0, 'the hook exits 0 with only an archive present');
+    assertEq(nudgeLines(r.context), [], 'an archive alone is not a legacy session');
+  });
+
+  // 19. One real entry is the nudge — and the file's sessionModel changes
+  // nothing, in either direction.
+  withRepoRemotesFixture({}, (fx) => {
+    mkdirSync(join(fx.ws, 'work-sessions', 'fix-auth', 'workspace'), { recursive: true });
+    const first = runSessionStart(fx);
+    assertEq(first.status, 0, 'the hook exits 0 with a legacy session present');
+    assertEq(nudgeLines(first.context), [NUDGE.replace('{n}', 1)], 'one real entry is one line naming the count and /migrate-sessions');
+    for (const sessionModel of ['task', 'session', '']) {
+      writeWorkspaceJson(fx, { name: 'fixture', sessionModel, workSessionsDir: 'work-sessions' });
+      assertEq(nudgeLines(runSessionStart(fx).context), [NUDGE.replace('{n}', 1)], `sessionModel ${JSON.stringify(sessionModel)} in the file does not hide the session`);
+    }
+    mkdirSync(join(fx.ws, 'work-sessions', 'second', 'workspace'), { recursive: true });
+    assertEq(nudgeLines(runSessionStart(fx).context), [NUDGE.replace('{n}', 2)], 'a second entry is counted');
+  });
+
+  // 20. A custom workSessionsDir is the directory that counts: missing, it
+  // is no nudge and no error — even with entries under the default name —
+  // and present, its entries are the count.
+  withRepoRemotesFixture({}, (fx) => {
+    writeWorkspaceJson(fx, { name: 'fixture', workSessionsDir: 'legacy-sessions' });
+    mkdirSync(join(fx.ws, 'work-sessions', 'not-the-configured-directory'), { recursive: true });
+    const absent = runSessionStart(fx);
+    assertEq(absent.status, 0, `the hook exits 0 when the configured directory is missing (stderr: ${absent.stderr.trim().slice(0, 200)})`);
+    assertEq(nudgeLines(absent.context), [], 'a missing custom directory is no nudge, and the default name does not stand in for it');
+    mkdirSync(join(fx.ws, 'legacy-sessions', 'beta'), { recursive: true });
+    mkdirSync(join(fx.ws, 'legacy-sessions', 'alpha'), { recursive: true });
+    mkdirSync(join(fx.ws, 'legacy-sessions', '.archived'), { recursive: true });
+    const present = runSessionStart(fx);
+    assertEq(present.status, 0, 'the hook exits 0 with entries under the custom directory');
+    assertEq(nudgeLines(present.context), [NUDGE.replace('{n}', 2)], 'the custom directory\'s entries are the count, dot entries aside');
   });
 }
 

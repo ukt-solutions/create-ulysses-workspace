@@ -179,6 +179,33 @@ export function getSessionTrackers(root) {
 }
 
 /**
+ * The sessions a workspace still holds under the legacy session lifecycle:
+ * the names directly under the sessions directory that do not start with a
+ * dot, sorted. New work is always a task, so an entry here is work that
+ * predates the task lifecycle and waits to be drained with /migrate-sessions.
+ * This is the one place that decides whether a workspace "still has legacy
+ * sessions" — the session-start hook's nudge, the maintenance audit's info
+ * line and /workspace-update's report all count the same thing.
+ *
+ * Dot entries are the migration's own (.archived/) or tooling noise, and
+ * never count. Every other entry counts whatever it holds — a session
+ * folder, an orphan shell — because the inventory is what says which is
+ * which. The directory alone decides: a missing or unreadable one means
+ * none. workspace.sessionModel is never read — the key is kept for older
+ * workspaces and selects nothing.
+ */
+export function listLegacySessions(root) {
+  const { workSessionsDir } = getWorkspacePaths(root);
+  let entries;
+  try {
+    entries = readdirSync(workSessionsDir);
+  } catch {
+    return [];
+  }
+  return entries.filter((name) => !name.startsWith('.')).sort();
+}
+
+/**
  * Read a single session tracker by name. Returns the parsed fields object
  * (not the full { fields, body, raw } shape). Returns null if missing.
  */

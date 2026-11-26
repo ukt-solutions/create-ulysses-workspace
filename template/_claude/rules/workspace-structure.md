@@ -28,7 +28,7 @@ Canonical loads verbatim into every session (`CLAUDE.md` → `@workspace-context
 
 ## Dynamic context loading (hooks)
 
-- **`session-start.mjs`** (`SessionStart`): injects the workspace name, a `Workspace config (workspace.json):` line, a `Chat record:` line for this chat, and a `Workspace root:` line with the launcher's path (git-derived roots land on the source clone in a task worktree); with an active session, also its name, branch, work item, and shared-context catalog.
+- **`session-start.mjs`** (`SessionStart`): injects the workspace name, a `Workspace config (workspace.json):` line, a `Chat record:` line for this chat, and a `Workspace root:` line with the launcher's path (git-derived roots land on the source clone in a task worktree); with an active session, also its name, branch, work item, and shared-context catalog. At the launcher it adds one line when legacy sessions remain — how many sit under the old session model, and that `/migrate-sessions` can drain them — counted from the sessions directory's non-dot entries alone.
 - **`subagent-start.mjs`** (`SubagentStart`): gives subagents the canonical truths they miss (subagents do not load `CLAUDE.md`) — locked files under `workspace.subagentInlineMaxBytes` (8192) are inlined with frontmatter stripped, larger ones become pointers, and past `workspace.subagentContextMaxBytes` (32768) the largest demote first. Gitignored and `local-only-*` files are excluded.
 
 Both are Node.js scripts — cross-platform, no shell dependency.

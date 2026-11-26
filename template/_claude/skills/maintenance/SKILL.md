@@ -48,6 +48,8 @@ A `workspace-context/locked/` directory is a warning. Older scaffolds created it
 
 It also checks the template-modification registry (`.claude/template-modifications.json`, the workspace's record of files it owns outright or deliberately edits): legacy keys still in workspace.json (`workspace.localFiles`, `workspace.templateModifications`), keys that escape `.claude/` (the registry covers `.claude/` paths only — root files are handled by their own merge paths), and registrations whose file has gone back to the template's baseline content are info — `/workspace-update` offers the cleanups. A registry that doesn't parse is a warning: its localFiles exclusions and reasons are being ignored, and the update flow stops on it.
 
+Sessions still under the old session lifecycle are one info line. New work is always a task, so whatever sits under the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) is work from before the task lifecycle: the script counts the entries whose names do not start with a dot — an archive under `.archived/` is not a session — and names them with a pointer to `/migrate-sessions`, which inventories them and finishes, archives or removes each one with the operator. The count comes from the directory alone, read at the launcher even when the audit runs from a worktree; `workspace.sessionModel` is not consulted. The line is information, not a fault: suggest `/migrate-sessions` and leave the decision to the operator.
+
 ### 4. Git state
 The script covers the launcher itself: on its default branch, tracked tree clean. Untracked paths are info — gitignored content is not counted.
 

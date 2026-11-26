@@ -238,9 +238,15 @@ Where the commit lands was decided in Step 1 — the launcher's default branch i
 
 Report: "Workspace updated to v{templateVersion}. Restart Claude Code if rules or hooks changed."
 
-### Step 8: Session-model migration nudge
+### Step 8: Legacy-session nudge
 
-After the update is applied, read `workspace.json` (Step 4 just rewrote its `templateVersion`, so the file is in hand): if the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) has entries and `workspace.sessionModel` is not `"task"`, append one line to the report: "This workspace still has {N} session(s) under the session model — `/migrate-sessions` can inventory and drain them and switch to the task model whenever you're ready." Suggest only; the operator decides whether and when.
+After the update is applied, count the sessions the workspace still has under the old session model. New work is always a task now, so whatever is left in the sessions directory is work from before the task lifecycle. The count comes from the template's own detection, `listLegacySessions` in `hooks/_utils.mjs` — the same one the session-start hook and the maintenance audit use: the entries directly under the sessions directory (`workspace.workSessionsDir`, default `work-sessions/`) whose names do not start with a dot, so an archive under `.archived/` never counts. The directory alone decides; `workspace.sessionModel` plays no part, because the key selects nothing. Run it from the payload, whose copy is the one this update brings:
+
+```bash
+node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { listLegacySessions } = await import(pathToFileURL("{payload}/.claude/hooks/_utils.mjs").href); console.log(listLegacySessions("{launcher}").length);'
+```
+
+`{launcher}` is the workspace root — `.` when the update was applied in place, the launcher's absolute path when it ran from the worktree. When the count is above zero, append one line to the report: "This workspace still has {N} work session(s) under the old session model — `/migrate-sessions` can inventory and drain them." Suggest only; the operator decides whether and when. Nothing needs switching for new work: it starts as a task whatever `workspace.json` holds.
 
 ## Notes
 
