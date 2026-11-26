@@ -1,6 +1,6 @@
 # Workspace Structure
 
-All paths are relative to the workspace root. Two work lifecycles coexist, selected for new work by `workspace.sessionModel` in `workspace.json`: **task** (the forward path — one issue, one branch, one worktree per touched repo, chat at the root) and **session** (supported — a self-contained `work-sessions/{name}/` folder per effort with a workspace worktree and a `session.md` tracker).
+All paths are relative to the workspace root. New work has one lifecycle: **task** — one issue, one branch, one worktree per touched repo, with the chat at the root. The **session** lifecycle is legacy: no new session starts, and the `work-sessions/{name}/` folders a workspace already has — each a self-contained effort with a workspace worktree and a `session.md` tracker — keep resuming and completing until `/migrate-sessions` drains them.
 
 ## Directory Layout
 
@@ -9,7 +9,7 @@ All paths are relative to the workspace root. Two work lifecycles coexist, selec
 | `repos/{repo}/` | Source clones (always on the default branch) | No |
 | `repos/{repo}/.claude/worktrees/{slug}/` | Task worktree for a project repo (`{slug}` = branch with `/` → `-`) | No |
 | `.claude/worktrees/{slug}/` | Task worktree for the workspace repo (`--repo .`) — Claude Code's native worktree location; the two converge | No |
-| `work-sessions/{name}/workspace/…` | Session lifecycle: workspace worktree, nested project worktrees at `workspace/repos/{repo}/`, `session.md` + artifacts (`design/plan/goal/research/crossref-*.md`) on top | Session branch |
+| `work-sessions/{name}/workspace/…` | Legacy sessions only: workspace worktree, nested project worktrees at `workspace/repos/{repo}/`, `session.md` + artifacts (`design/plan/goal/research/crossref-*.md`) on top | Session branch |
 | `workspace-context/` | Team knowledge: `shared/` (ephemerals), `shared/locked/` (canonical truths), `team-member/{user}/` (per-user) | Yes |
 | `workspace-context/index.md`, `canonical.md` | Auto-generated catalogs (`canonical.md` = verbatim `shared/locked/`; `.indexignore` excludes paths) — regenerate with `build-workspace-context.mjs`, never hand-edit | Yes |
 | `workspace-context/team-member/{user}/index.md` | The per-user slice of that catalog — gitignored: generated per machine, so a tracked copy would conflict across users; the personal files beside it stay tracked | No |
@@ -20,7 +20,7 @@ All paths are relative to the workspace root. Two work lifecycles coexist, selec
 
 | Level | Path | What lives there | How it gets there |
 |-------|------|------------------|-------------------|
-| Personal | `team-member/{user}/` | Per-user braindumps, handoffs, research | Default for `/braindump`, `/handoff`, `/aside` (session lifecycle / no drawer; task-lifecycle chats default to the chat drawer) |
+| Personal | `team-member/{user}/` | Per-user braindumps, handoffs, research | Where `/aside` always writes, and `/braindump` and `/handoff` write when the chat has no drawer (no `Chat record:` line, or inside a legacy session's worktree); a chat with a drawer sends those two to the drawer instead |
 | Shared | `shared/` | Team-visible ephemerals | Explicit `--scope shared` or `/promote` |
 | Canonical | `shared/locked/` | Promoted truths — conventions, discipline, status | `/promote` (locked target) |
 
@@ -35,10 +35,10 @@ Both are Node.js scripts — cross-platform, no shell dependency.
 
 ## Spec and Plan Locations — MANDATORY OVERRIDE
 
-**Specs, plans, and goal artifacts MUST be written to the current lifecycle's work area, not to `docs/superpowers/` or any other location.**
+**Specs, plans, and goal artifacts MUST be written to the work area of the lifecycle they belong to, not to `docs/superpowers/` or any other location.**
 
-- Session: top of the session worktree — `design-{topic}.md`, `plan-{topic}.md`, `goal-{topic}.md`, plus goal-native `research-*.md`/`crossref-*.md` siblings. On the session branch; stripped before the final PR.
-- Task: the chat drawer `workspace-scratchpad/chats/{chat}/` — same artifact names. Machine-local; `/complete-work` promotes what deserves to survive into `workspace-context/`.
+- Task (all new work): the chat drawer `workspace-scratchpad/chats/{chat}/` — `design-{topic}.md`, `plan-{topic}.md`, `goal-{topic}.md`, plus goal-native `research-*.md`/`crossref-*.md` siblings. Machine-local; `/complete-work` promotes what deserves to survive into `workspace-context/`.
+- Session (legacy sessions only): top of the session worktree — same artifact names. On the session branch; stripped before the final PR.
 
 This overrides external skills' default paths (e.g., Superpowers' `docs/superpowers/specs/`) — those skills defer to user preferences, and this rule IS that override. Never create `docs/superpowers/` directories. Version an existing artifact: `design-{topic}-v2.md`.
 
@@ -58,8 +58,8 @@ Local-only drafts add a `local-only-` prefix to stay gitignored until promoted.
 ## Rules
 
 - The workspace root stays on its default branch — it is the launcher, not a worktree.
-- All real work happens in worktrees — `work-sessions/{name}/workspace/` (session) or a `.claude/worktrees/{slug}/` location (task). Source clones at `repos/{repo}/` never take a feature branch.
-- Session content commits to the session branch; task work to task worktrees; drawer writes need no commit (gitignored, machine-local).
+- All real work happens in worktrees — a task's at `repos/{repo}/.claude/worktrees/{slug}/`, or `.claude/worktrees/{slug}/` for the workspace repo itself; a legacy session's at `work-sessions/{name}/workspace/`. Source clones at `repos/{repo}/` never take a feature branch.
+- Task work commits in its task worktrees; a legacy session's content commits to the session branch; drawer writes need no commit (gitignored, machine-local).
 - `workspace-scratchpad/` is machine-local and regenerable — losing it costs a re-derivation, not the work. Not all of it is disposable: `session-log.jsonl` is real history no other file carries.
 - Hand edits to auto-generated catalogs are overwritten by `build-workspace-context.mjs` — update the source files (or their `description:` frontmatter) instead.
 

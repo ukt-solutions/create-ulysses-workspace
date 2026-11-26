@@ -1,19 +1,20 @@
 ---
 name: start-work
-description: Begin or resume a work session. Creates a self-contained work-sessions/{name}/ folder containing the workspace worktree and nested project worktrees. Accepts optional parameter "handoff" or "blank".
+description: Start new work as a task — one tracker issue, one branch, one worktree per repo the work touches, with the chat staying at the workspace root — or resume a work-sessions/ session the workspace already has. Accepts an optional issue id, "handoff" or "blank".
 ---
 
 # Start Work
 
-Two lifecycles share this skill. `workspace.sessionModel` in `workspace.json` selects for new work: `"task"` routes new work to **Flow: Task** (session model v2 — no session folder, no `session.md`); absent or `"session"` keeps the existing flows below, unchanged. Resuming an existing `work-sessions/` session always uses the existing Resume flow regardless of the setting. CLAUDE.md no longer imports `workspace.json`: take `sessionModel`, `tracker`, and the repo names from the SessionStart hook's `Workspace config (workspace.json):` line when it is in context, else read `workspace.json`.
+New work always starts as a task, through **Flow: Task** below: one tracker issue, one branch, one worktree per repo the work touches, and no session folder or `session.md`. Nothing selects the lifecycle any more — `workspace.sessionModel` in `workspace.json` is a key older workspaces keep, not a setting this skill reads. The session flows further down (Resume, Blank, Retroactive) stay for the `work-sessions/` sessions a workspace already has: those resume and complete as before, until they are drained with `/migrate-sessions`. CLAUDE.md does not import `workspace.json`: take `tracker` and the repo names from the SessionStart hook's `Workspace config (workspace.json):` line when it is in context, else read the file.
 
-Begin or resume a persistent work session. Each session lives in its own `work-sessions/{name}/` folder containing one workspace worktree, nested project worktrees, and a unified `session.md` tracker. Sessions can run in parallel from separate terminals.
+A legacy session is a self-contained `work-sessions/{name}/` folder holding one workspace worktree, nested project worktrees and a unified `session.md` tracker, and sessions can run in parallel from separate terminals. No new one is created from here.
 
 ## Parameters
-- `/start-work` (no param) — list your active sessions, then resume or start new
-- `/start-work blank` — start new work from scratch
-- `/start-work handoff` — list shared context to resume from
-- `/start-work all` — list active sessions across all users (for shared debugging or multi-user workspaces)
+- `/start-work` (no param) — start new work as a task; a workspace that still has `work-sessions/` sessions is offered them first, so one can be resumed instead
+- `/start-work gh:42` — start a task on that issue (`#42` and an issue URL mean the same)
+- `/start-work blank` — start new work as a task, without offering the session list
+- `/start-work handoff` — list shared context to resume from, then start the task it belongs to
+- `/start-work all` — offer the workspace's sessions across all users when listing them (for shared debugging or multi-user workspaces)
 
 ## Flow: Task (session model v2)
 
@@ -83,23 +84,27 @@ If `workspace.tracker` is absent (the hook's `Workspace config` line reads `trac
 
 ## Flow: No Parameter
 
-1. Read the current user from `.claude/settings.local.json` → `workspace.user`. If unset, behave as `/start-work all` (no user filter). If the user invoked `/start-work all`, also skip filtering.
-2. Walk `work-sessions/` — each `work-sessions/{name}/workspace/session.md` is one session. Read frontmatter for `status`, `description`, `branch`, `repos`, and `user`.
-3. Filter to sessions whose `status` is `active` or `paused`. When a current user is known and the user did not pass `all`, additionally filter to sessions whose `user` field matches the current user (or is missing — unscoped legacy sessions stay visible to everyone).
-4. If matching sessions exist, present them:
-   ```
-   Your active work sessions:
-     1. migrate-tool (active, last chat ended 2h ago)
-        "Rewriting the migration module"
-        Branch: bugfix/migrate-rewrite | Repos: my-app
+New work is a task whatever this flow finds in `work-sessions/`. Looking there only adds the chance to resume a session that is still in flight instead; once the last one is drained there is nothing to offer, and step 1 is silent.
 
-     [N] Start something new
+1. **Offer the sessions the workspace already has:**
+   1. Read the current user from `.claude/settings.local.json` → `workspace.user`. If unset, behave as `/start-work all` (no user filter). If the user invoked `/start-work all`, also skip filtering.
+   2. Walk `work-sessions/` — each `work-sessions/{name}/workspace/session.md` is one session. Read frontmatter for `status`, `description`, `branch`, `repos`, and `user`.
+   3. Filter to sessions whose `status` is `active` or `paused`. When a current user is known and the user did not pass `all`, additionally filter to sessions whose `user` field matches the current user (or is missing — unscoped legacy sessions stay visible to everyone).
+   4. If matching sessions exist, present them:
+      ```
+      Your active work sessions:
+        1. migrate-tool (active, last chat ended 2h ago)
+           "Rewriting the migration module"
+           Branch: bugfix/migrate-rewrite | Repos: my-app
 
-   Which one?
-   ```
-5. User picks one → resume flow
-6. User picks "new" → blank flow
-7. If no matching sessions exist but other users have active/paused sessions, note it briefly before falling through to `blank`: "No active sessions for you. {N} session(s) belong to other users — run `/start-work all` to see them." If no sessions exist at all, proceed silently as `blank`.
+        [N] Start something new
+
+      Which one?
+      ```
+   5. User picks a session → **Flow: Resume**, and this flow ends there
+   6. User picks "Start something new" → continue with step 2
+   7. If no matching sessions exist but other users have active/paused sessions, note it briefly before continuing: "No active sessions for you. {N} session(s) belong to other users — run `/start-work all` to see them." If no sessions exist at all, continue silently.
+2. **Start the new work with Flow: Task.**
 
 ## Flow: Resume
 
@@ -144,6 +149,8 @@ On resume, check for uncaptured work from previous chats:
 If no gap is found, skip silently.
 
 ## Flow: Blank (new session)
+
+Legacy: this is how a session was started before the task lifecycle. Nothing routes here — new work goes through **Flow: Task** — and the flow stays in the file only so the session lifecycle can be removed in one piece by a later release.
 
 1. **Check for a configured tracker.** Read `workspace.tracker` from `workspace.json`.
 
@@ -361,6 +368,8 @@ If superpowers-workflow rule is active: run mandatory research phase, then invok
 If not: ask "Ready to start implementing, or want to brainstorm first?"
 
 ## Flow: Retroactive (called mid-session)
+
+Work that began without `/start-work` is formalized as a task, like any other new work: run **Flow: Task** for the issue, the branch and the worktrees, then carry the uncommitted changes over — stash them, create the worktrees, pop the stash inside each one. The steps below are the legacy session shape of the same recovery and stay for the sessions a workspace already has.
 
 When /start-work is called after work has already begun:
 

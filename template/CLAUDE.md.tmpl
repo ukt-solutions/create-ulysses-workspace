@@ -3,9 +3,8 @@
 This is a claude-workspace. All conventions are defined in .claude/rules/.
 
 ## Quick Reference
-- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`
-- `/start-work` to create or resume a work session
-- Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker
+- This root is the launcher — all work happens in task worktrees at `repos/{repo}/.claude/worktrees/{slug}/` (`.claude/worktrees/{slug}/` for the workspace repo)
+- `/start-work` to start a task, or resume a `work-sessions/` session the workspace already has
 - From root: only `local-only-*` and `workspace-scratchpad/` are writable
 - Team knowledge lives in `workspace-context/`
 - Run `/rename` to label this chat before `/clear` — keeps the chat findable in your CLI history after the context is wiped
@@ -21,7 +20,7 @@ Config lives in `workspace.json` — read it when a skill needs a value.
 
 ## Skills
 - `/workspace-init` — first-time workspace setup (clone repos, install template, activate rules)
-- `/start-work [handoff|blank]` — begin a work session
+- `/start-work [issue|handoff|blank]` — start a task, or resume an existing session
 - `/handoff [name]` — save workstream state
 - `/braindump [name]` — capture discussion/reasoning
 - `/aside [--quick] <thought>` — capture a drive-by idea without interrupting current work
