@@ -94,7 +94,7 @@ Starts new work as a task, or resumes a session the workspace already has. Which
 
 - `/start-work` — start a task; a workspace that still has `work-sessions/` sessions is offered them first, so one can be resumed instead
 - `/start-work blank` — start a task without offering the session list
-- `/start-work handoff` — list shared context to resume from, then start the task it belongs to
+- `/start-work handoff` — list the handoff files and resume from the one you pick: the work item it names is the task to start or resume, and without one its next steps are the work at hand
 - `/start-work all` — offer the workspace's sessions across all users when listing them
 - `/start-work gh:42`, `#42` or an issue URL — start a task on that issue
 

@@ -13,7 +13,7 @@ A legacy session is a self-contained `work-sessions/{name}/` folder holding one 
 - `/start-work` (no param) — start new work as a task; a workspace that still has `work-sessions/` sessions is offered them first, so one can be resumed instead
 - `/start-work gh:42` — start a task on that issue (`#42` and an issue URL mean the same)
 - `/start-work blank` — start new work as a task, without offering the session list
-- `/start-work handoff` — list shared context to resume from, then start the task it belongs to
+- `/start-work handoff` — list the handoff files and resume from the one the operator picks: the work item it names is the task to start or resume
 - `/start-work all` — offer the workspace's sessions across all users when listing them (for shared debugging or multi-user workspaces)
 
 ## Flow: Task (session model v2)
@@ -23,6 +23,8 @@ New work as a task: one tracker issue, one branch, one worktree per repo the wor
 If `workspace.tracker` is absent (the hook's `Workspace config` line reads `tracker: off`), say tracking is off and skip step 1 — but still ask for the type (`bug` / `feat` / `chore`) and a one-line description, because the type picks the branch prefix — then continue with steps 2–6. What that costs: without a tracker there is no `workItem` and no issue to close at completion — the task is still recorded on the chat record (with no work item, keyed by repo + branch), so `/complete-work` finds it from the launcher like any other task.
 
 > **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
+
+**Invoked as `/start-work handoff`: settle the work from a handoff before step 1.** List the handoff files for the operator to pick from — every `handoff_*.md` in the chat drawers under `workspace-scratchpad/chats/*/` (each chat has its own drawer, so one is usually in an earlier chat's), and every `handoff_*.md` under `workspace-context/team-member/{user}/` and `workspace-context/shared/`, the `local-only-` drafts among them. With none to list, say so and take step 1 as though `handoff` had not been given. Read the one picked. When its frontmatter names a work item (`workItem: {id}`), the invocation is now `/start-work {id}`: step 1's issue-named path starts that issue's task, or resumes it when a chat already has one — adopting it into this chat, leaving it with its owner, or continuing your own. When it names none, its `## Next Steps` is the work at hand: take the issue from step 1's list, or describe something new, and let the branch and repo it mentions default steps 2 and 3. Either way the flow continues from step 1.
 
 1. **Identify or create the tracker issue and claim it.** If the invocation's arguments already name an issue — `gh:N`, `#N`, or an issue URL — normalize it to the adapter's id (`#42` and a `.../issues/42` URL both mean `gh:42`) and fetch it with `tracker.getIssue(id)`. Then check whether the issue already has a task before claiming anything — another chat may have started it (gh:188):
 
