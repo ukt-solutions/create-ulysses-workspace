@@ -98,32 +98,6 @@ function makeLauncherRoot() {
   return { root, bare };
 }
 
-// An old-model session tracker whose chatSessions name the given chat ids —
-// the only link a lane chat at the launcher is findable through.
-function makeSession(root, name, { branch, workItem = null, status = 'active', chatIds = [] }) {
-  const dir = join(root, 'work-sessions', name, 'workspace');
-  mkdirSync(dir, { recursive: true });
-  const chats = chatIds.map((id, i) => [
-    `  - id: ${id}`,
-    '    names: []',
-    `    started: 2026-09-0${i + 1}T00:00:00.000Z`,
-    '    ended: null',
-  ].join('\n'));
-  writeFileSync(join(dir, 'session.md'), [
-    '---',
-    `name: ${name}`,
-    `status: ${status}`,
-    `branch: ${branch}`,
-    `workItem: ${workItem === null ? 'null' : workItem}`,
-    'chatSessions:',
-    ...chats,
-    '---',
-    '',
-    '## Progress',
-    '',
-  ].join('\n'));
-}
-
 const clean = (r) => rmSync(r, { recursive: true, force: true });
 // git and detectWorkModel() spell a path the way the filesystem does — a
 // resolved /private/var on macOS where tmpdir says /var, the long name of a
@@ -659,29 +633,20 @@ console.log('# workspace repo: CLI --repo "." round-trip');
   } finally { clean(root); clean(bare); }
 }
 
-console.log('# session layout and task worktree coexist and detect independently');
+console.log('# a task worktree detects beside a leftover work-sessions folder');
 {
   const { root } = makeRoot();
   try {
     // Detection resolves real paths, so expectations must too — on macOS
     // the tmpdir lives behind the /var -> /private/var symlink.
     const realRoot = real(root);
-    // An old-model session layout...
-    const wsDir = join(realRoot, 'work-sessions', 'alpha', 'workspace');
+    // A folder left over from the session lifecycle earlier template
+    // versions had...
     mkdirSync(join(root, 'work-sessions', 'alpha', 'workspace', 'repos', 'app'), { recursive: true });
     // ...and a task worktree, in the same root, at the same time.
     const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/both' });
 
-    assertEq(
-      detectWorkModel(join(root, 'work-sessions', 'alpha', 'workspace'), root),
-      { model: 'session', sessionName: 'alpha', workspaceDir: wsDir },
-      'session workspace detects as session',
-    );
-    assertEq(
-      detectWorkModel(join(wsDir, 'repos', 'app'), root),
-      { model: 'session', sessionName: 'alpha', workspaceDir: wsDir },
-      'inside a nested project worktree is still session',
-    );
+    assertEq(detectWorkModel(join(root, 'work-sessions', 'alpha', 'workspace'), root).model, 'none', 'a leftover session folder detects as nothing — no skill resumes or completes it');
     assertEq(
       detectWorkModel(wt.path, root),
       { model: 'task', source: 'worktree', repo: 'app', branch: 'feature/both', path: join(realRoot, 'repos', 'app', '.claude', 'worktrees', 'feature-both') },
@@ -692,29 +657,6 @@ console.log('# session layout and task worktree coexist and detect independently
     assertEq(detectWorkModel(deep, root).model, 'task', 'deep inside the task worktree is still task');
     assertEq(detectWorkModel(root, root).model, 'none', 'the workspace root itself is none');
     assertEq(detectWorkModel(join(root, 'repos', 'app'), root).model, 'none', 'the source clone is none');
-    assertEq(detectWorkModel(join(root, 'work-sessions', 'alpha'), root).model, 'none', 'session folder without workspace/ is none');
-  } finally { clean(root); }
-}
-
-console.log('# detection from inside a real session worktree');
-{
-  const { root } = makeRoot();
-  try {
-    // A workspace repo at the root, with a REAL session worktree under
-    // work-sessions/{name}/workspace — the old model's own layout.
-    git(root, 'init -q -b main');
-    writeFileSync(join(root, '.gitignore'), 'repos\nwork-sessions\n');
-    git(root, 'add -A');
-    git(root, 'commit -q -m init');
-    const wsWt = join(root, 'work-sessions', 'alpha', 'workspace');
-    git(root, 'worktree add -q -b "session/alpha" "work-sessions/alpha/workspace"');
-    const expected = { model: 'session', sessionName: 'alpha', workspaceDir: real(wsWt) };
-    assertEq(detectWorkModel(wsWt, root), expected, 'root = launcher detects session');
-    assertEq(detectWorkModel(wsWt, join(root, 'work-sessions', 'alpha')), expected, 'root = session dir detects session');
-    assertEq(detectWorkModel(wsWt, wsWt), expected, 'root = the session worktree itself detects session');
-    // And a task worktree elsewhere in the same root still detects as task.
-    const wt = createTaskWorktree(root, { repo: 'app', branch: 'feature/side' });
-    assertEq(detectWorkModel(wt.path, root).model, 'task', 'task worktree still detects as task');
   } finally { clean(root); }
 }
 
@@ -754,81 +696,6 @@ console.log('# detection with a chat name finds record tasks (H1)');
     reconcile(root, { sessionId: 'sid-2', name: 'idle' });
     assertEq(detectWorkModel(root, root, { chat: 'idle' }).model, 'none', 'empty record is none');
     assertEq(detectWorkModel(root, root, { chat: 'ghost' }).model, 'none', 'missing record is none');
-  } finally { clean(root); }
-}
-
-console.log('# a lane chat at the launcher finds its session by session id (gh:188)');
-{
-  const { root } = makeRoot();
-  try {
-    makeSession(root, 'alpha', { branch: 'bugfix/alpha', workItem: 'gh:11', chatIds: ['sid-old', 'sid-lane'] });
-    makeSession(root, 'beta', { branch: 'feature/beta', workItem: 'gh:12', status: 'paused', chatIds: ['sid-lane'] });
-    makeSession(root, 'other', { branch: 'chore/other', chatIds: ['sid-nobody'] });
-
-    const expected = [
-      { name: 'alpha', branch: 'bugfix/alpha', workItem: 'gh:11', status: 'active' },
-      { name: 'beta', branch: 'feature/beta', workItem: 'gh:12', status: 'paused' },
-    ];
-    assertEq(
-      detectWorkModel(root, root, { sessionId: 'sid-lane' }),
-      { model: 'session', source: 'chat-sessions', sessions: expected },
-      'the launcher detects every session the chat id drove, sorted by name',
-    );
-
-    // cwd inside a session worktree still wins over the id lookup.
-    const byCwd = detectWorkModel(join(root, 'work-sessions', 'alpha', 'workspace'), root, { sessionId: 'sid-lane' });
-    assertEq(byCwd.sessionName, 'alpha', 'cwd detection takes precedence');
-    assertEq(byCwd.source, undefined, 'cwd detection carries no source field');
-
-    // The chat record's sessionId carries the same link when no id is passed.
-    reconcile(root, { sessionId: 'sid-lane', name: 'lane' });
-    assertEq(
-      detectWorkModel(root, root, { chat: 'lane' }).sessions,
-      expected,
-      'a chat record resolves the session id when none is given',
-    );
-
-    // And $CLAUDE_CODE_SESSION_ID, when the record is missing too.
-    assertEq(
-      detectWorkModel(root, root, { env: { CLAUDE_CODE_SESSION_ID: 'sid-lane' } }).sessions,
-      expected,
-      'the env var resolves the session id as the last resort',
-    );
-    assertEq(
-      detectWorkModel(root, root, { sessionId: 'sid-unregistered', env: { CLAUDE_CODE_SESSION_ID: 'sid-lane' } }).model,
-      'none',
-      'an explicit session id beats the env var',
-    );
-    assertEq(detectWorkModel(root, root, { env: {} }).model, 'none', 'no resolvable id leaves the launcher none');
-  } finally { clean(root); }
-}
-
-console.log('# open tasks and matching sessions at once report mixed');
-{
-  const { root } = makeRoot();
-  try {
-    reconcile(root, { sessionId: 'sid-lane', name: 'lane' });
-    addTask(root, 'lane', { workItem: 'gh:20', branch: 'feature/next', repo: 'app' });
-    makeSession(root, 'alpha', { branch: 'bugfix/alpha', workItem: 'gh:11', chatIds: ['sid-lane'] });
-
-    assertEq(
-      detectWorkModel(root, root, { chat: 'lane' }),
-      {
-        model: 'mixed',
-        tasks: [{ workItem: 'gh:20', branch: 'feature/next', repo: 'app' }],
-        sessions: [{ name: 'alpha', branch: 'bugfix/alpha', workItem: 'gh:11', status: 'active' }],
-      },
-      'both lists come back under model mixed',
-    );
-
-    // A chat whose tasks are the only signal keeps the task answer.
-    reconcile(root, { sessionId: 'sid-only', name: 'taskonly' });
-    addTask(root, 'taskonly', { workItem: 'gh:21', branch: 'feature/solo', repo: 'app' });
-    assertEq(
-      detectWorkModel(root, root, { chat: 'taskonly' }),
-      { model: 'task', source: 'chat-record', tasks: [{ workItem: 'gh:21', branch: 'feature/solo', repo: 'app' }] },
-      'tasks without sessions stay a plain task detect',
-    );
   } finally { clean(root); }
 }
 
@@ -873,9 +740,8 @@ console.log('# parseArgs validation');
   assert(rm.force === true && rm.deleteBranch === true, 'force and delete-branch flags parse');
   const det = parseArgs(['node', 's', '--detect', '--chat', 'worker']);
   assertEq([det.mode, det.chat, det.cwd], ['detect', 'worker', null], 'detect parses chat, defaults cwd');
-  const sid = parseArgs(['node', 's', '--detect', '--session-id', 'sid-x']);
-  assertEq([sid.mode, sid.sessionId], ['detect', 'sid-x'], 'detect parses a session id');
-  throws(() => parseArgs(['node', 's', '--detect', '--session-id']), '--session-id requires a value');
+  // Detection no longer matches sessions by chat id, so the flag is gone with it.
+  throws(() => parseArgs(['node', 's', '--detect', '--session-id', 'sid-x']), '--session-id is no longer a flag');
 }
 
 console.log('# parseArgs mode/flag pairing');
@@ -917,22 +783,6 @@ console.log('# CLI round-trip');
       exit = err.status;
     }
     assertEq(exit, 2, 'CLI errors exit 2');
-  } finally { clean(root); }
-}
-
-console.log('# CLI --detect --session-id finds a session from the launcher');
-{
-  const { root } = makeRoot();
-  try {
-    makeSession(root, 'alpha', { branch: 'bugfix/alpha', workItem: 'gh:11', chatIds: ['sid-cli'] });
-    const script = fileURLToPath(new URL('./task-worktree.mjs', import.meta.url));
-    const out = JSON.parse(execFileSync(
-      process.execPath, [script, '--root', root, '--detect', '--session-id', 'sid-cli'],
-      { cwd: root, encoding: 'utf8', env: ENV },
-    ));
-    assertEq(out.model, 'session', 'CLI reports the session model');
-    assertEq(out.source, 'chat-sessions', 'source names the chatSessions lookup');
-    assertEq(out.sessions, [{ name: 'alpha', branch: 'bugfix/alpha', workItem: 'gh:11', status: 'active' }], 'the session is listed with its tracker fields');
   } finally { clean(root); }
 }
 

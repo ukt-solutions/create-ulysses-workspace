@@ -8,7 +8,7 @@ description: First-time workspace initialization, or joining a workspace a teamm
 
 # Workspace Init
 
-Guided initialization for a newly scaffolded workspace. Clones repos, installs template components from the `.workspace-update/` payload, extracts team knowledge from documentation sources and prior Claude chat history, populates shared context, formalizes existing worktrees as work sessions, and configures the workspace for use.
+Guided initialization for a newly scaffolded workspace. Clones repos, installs template components from the `.workspace-update/` payload, extracts team knowledge from documentation sources and prior Claude chat history, populates shared context, and configures the workspace for use.
 
 Initialization runs once per workspace and ends by setting `workspace.initialized: true` in workspace.json. Every later person who clones that workspace runs this skill too — it detects the initialized workspace and runs the **join flow** instead, which sets up only the per-user, machine-local pieces.
 
@@ -86,7 +86,7 @@ Workspace-init creates a branch for all its work. Record the default branch firs
 ```bash
 git checkout -b chore/workspace-init
 ```
-All commits go on this branch. Step 18 merges the branch back into the default branch at the end — init must finish with every commit on the default branch, never stranded on the init branch (an unmerged init branch leaves `workspace.json` without `initialized: true` on the default branch, which blocks later `/workspace-update` runs). The granular per-step history stays on `chore/workspace-init` for review.
+All commits go on this branch. Step 17 merges the branch back into the default branch at the end — init must finish with every commit on the default branch, never stranded on the init branch (an unmerged init branch leaves `workspace.json` without `initialized: true` on the default branch, which blocks later `/workspace-update` runs). The granular per-step history stays on `chore/workspace-init` for review.
 
 ## Flow
 
@@ -97,7 +97,6 @@ Scan the workspace for existing content that needs organizing:
 - .mcp.json.bak, or a .mcp.json that differs from the payload's — external service configs
 - Non-standard directories and files at root — anything not part of the template structure
 - Existing auto-memory files in `~/.claude/projects/` for this project path
-- Existing git worktrees (branches checked out in separate directories)
 - Any files at workspace root that aren't the template's own: CLAUDE.md, workspace.json, .gitignore, .claudeignore, .mcp.json
 
 Present the inventory as a table.
@@ -116,9 +115,9 @@ With the clones in place — all of them, not only the ones this step made — r
 ```bash
 node .claude/scripts/repo-remotes.mjs --root .
 ```
-Claude Code Desktop matches a pull request to a chat through the remotes of the chat's folders, and a chat runs at the workspace root, so each clone needs a `repo-{name}` remote there carrying its origin. Without one, a PR opened in a project repo is not matched to the chat. A remote made this way cannot be pushed to, and no fetch reaches it. Report the lines the script prints, and name any clone it reports as a conflict. Step 17 asks for `origin` alone, because from here on the repo's list of remotes is never empty.
+Claude Code Desktop matches a pull request to a chat through the remotes of the chat's folders, and a chat runs at the workspace root, so each clone needs a `repo-{name}` remote there carrying its origin. Without one, a PR opened in a project repo is not matched to the chat. A remote made this way cannot be pushed to, and no fetch reaches it. Report the lines the script prints, and name any clone it reports as a conflict. Step 16 asks for `origin` alone, because from here on the repo's list of remotes is never empty.
 
-While workspace.json is open, note the work lifecycle — there is nothing to choose. New work always starts as a task: one tracker issue, one branch and one worktree per touched repo, with the chat at the workspace root. The template ships `"task"` in `workspace.sessionModel`; a workspace.json made before that default keeps whatever it holds, because the key selects nothing now and is never rewritten behind the operator's back. `work-sessions/` entries the workspace arrived with are sessions from the session lifecycle: they stay where they are, resuming and completing as before, until `/migrate-sessions` drains them.
+While workspace.json is open, note the work lifecycle — there is nothing to choose. New work always starts as a task: one tracker issue, one branch and one worktree per touched repo, with the chat at the workspace root. An older `workspace.json` may still carry `workspace.sessionModel` and `workspace.workSessionsDir`, the keys of the session lifecycle earlier template versions had: leave both as they are, since the first selects nothing and the second only names where leftover sessions sit. `work-sessions/` entries the workspace arrived with are such leftovers. Nothing resumes or completes them; `/migrate-sessions` inventories and drains them.
 
 ### Step 3: Identify documentation sources
 
@@ -154,14 +153,13 @@ Step 7: Extract content from documentation sources
 Step 8: Scan Claude chat history
 Step 9: Preserve local preferences from CLAUDE.md.bak
 Step 10: Create locked team knowledge
-Step 11: Formalize existing worktrees as work sessions
-Step 12: Set up issue tracker
-Step 13: Configure user identity and start the team roster
-Step 14: Clean root directory
-Step 15: Clean up payload and pre-migration artifacts
-Step 16: Verify — self-contradiction check
-Step 17: Set up workspace remote
-Step 18: Mark initialized, report
+Step 11: Set up issue tracker
+Step 12: Configure user identity and start the team roster
+Step 13: Clean root directory
+Step 14: Clean up payload and pre-migration artifacts
+Step 15: Verify — self-contradiction check
+Step 16: Set up workspace remote
+Step 17: Mark initialized, report
 
 Adjust this plan, reorder, skip steps, or add things?"
 ```
@@ -170,7 +168,7 @@ Adapt the plan to what was actually found. Only include relevant steps. Wait for
 
 ### Step 5: Install template components from payload
 
-Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 18 after the payload is deleted.
+Read `.workspace-update/.manifest.json` to confirm this is an `"action": "init"` payload. **Capture the `templateVersion` now** — you'll need it for Step 17 after the payload is deleted.
 
 How much this step has to do depends on how the workspace was scaffolded. `--init` installs only the bootstrap pieces and leaves the rest of the template to this step. `npm create` installs the whole template up front, so by the time you get here every file in the walk below is already present and matches — the walk asks nothing and installs nothing. Walk the payload either way: it is the same payload.
 
@@ -196,7 +194,7 @@ Also install these top-level files from the payload:
 ```bash
 node .claude/scripts/classify-update.mjs --root . --write-baseline --payload .workspace-update
 ```
-It hashes the payload's verbatim files — run it before Step 15 deletes the payload.
+It hashes the payload's verbatim files — run it before Step 14 deletes the payload.
 
 **Commit (if this step installed or changed anything):** `git commit -m "feat: install template components from payload"`. On a workspace made with `npm create` there is usually nothing to commit here.
 
@@ -294,32 +292,7 @@ Combine content from Steps 7, 8, 9, and existing auto-memory into locked context
 
 **Commit:** `git commit -m "feat: create locked team knowledge"`
 
-### Step 11: Formalize existing worktrees as work sessions
-
-Check for existing git worktrees that represent in-progress work:
-
-```bash
-# For each repo in workspace.json:
-git -C repos/{repo} worktree list
-```
-
-Also check for any existing `work-sessions/*/` folders:
-```bash
-ls work-sessions/ 2>/dev/null
-```
-
-For each active worktree or session folder found:
-1. Determine the session name from the branch name or directory name
-2. Ask: "Found worktree for branch `{branch}` at `{path}`. Formalize as work session '{suggested-name}'? [Y/n]"
-3. If confirmed, invoke `node .claude/scripts/create-work-session.mjs --session-name '{name}' --branch '{branch}' --repo {repo} --user {user}` to set up the standard layout. For existing worktrees that are already on the right branch, the script will refuse — in that case, move the worktree manually under `work-sessions/{name}/workspace/repos/{repo}/` using `git -C repos/{repo} worktree move`, then write the `work-sessions/{name}/workspace/session.md` tracker by hand with the helper (from inside the worktree so the initial commit lands on the session branch).
-4. **Search Claude chat history for sessions that touched this branch** — scan conversation logs for commits or file edits on this branch, and synthesize what was being worked on into the session.md body
-5. Ask the user to describe the current state and next steps, add to the tracker body
-
-6. If declined: leave the worktree as-is, report it in the final summary
-
-**Commit:** `git commit -m "feat: formalize existing worktrees as work sessions"`
-
-### Step 12: Set up issue tracker
+### Step 11: Set up issue tracker
 
 Ask: "Want to link this workspace to an issue tracker? This enables atomic assignment for `/start-work` and real-time status across the team. (GitHub Issues recommended if your workspace repo is on GitHub.)"
 
@@ -328,14 +301,14 @@ Ask: "Want to link this workspace to an issue tracker? This enables atomic assig
 
 The user can run `/setup-tracker` anytime later. This step replaces the old "Populate open-work.md" step — there is no longer a local tracker file. Work items live in the configured tracker from day one.
 
-If you discovered candidate work items during earlier steps (bugs in braindumps, TODOs in chat history, in-progress worktrees from Step 11), surface them now as a list:
+If you discovered candidate work items during earlier steps (bugs in braindumps, TODOs in chat history), surface them now as a list:
 
 "Found {N} candidate work items during init. Once a tracker is configured, create issues for them via `/start-work` → 'Something new'? The list:
   - ..."
 
 Do NOT batch-create issues automatically — the user should review and prune the list.
 
-### Step 12.5: Configure MCP servers
+### Step 11.5: Configure MCP servers
 
 MCP (Model Context Protocol) servers extend what Claude can do inside the workspace. The template ships with a Playwright MCP server entry in `.mcp.json` for browser automation and visual testing. Additional servers open up two particularly useful capabilities:
 
@@ -358,7 +331,7 @@ MCP (Model Context Protocol) servers extend what Claude can do inside the worksp
 
 **This step is guidance only.** The right LSP server depends on your language; the right internal-tool server depends on what your team builds. Configure `.mcp.json` after init when you know what you need — there is no pressure to choose now. The file Step 5 installed carries the template's Playwright entry, and additional servers are additive.
 
-### Step 13: Configure user identity and start the team roster
+### Step 12: Configure user identity and start the team roster
 
 If `.claude/settings.local.json` already holds a `workspace.user`, it is the default. The interactive `npm create` scaffold asks for it and writes it. Otherwise run `node .claude/scripts/team-roster.mjs --suggest --root .` for the default. On a fresh workspace this is usually the OS username. If `workspace.json` arrived with a roster, it is whichever member's forge login or git email matches this machine. Ask: "What name should be used for your user-scoped context? [{default}]".
 Save it to `.claude/settings.local.json`, keeping any other keys the file already has:
@@ -378,9 +351,9 @@ node .claude/scripts/team-roster.mjs --add '{name}' --name '{git config user.nam
 
 **Commit (if the roster was started):** `git commit -m "feat: start the team roster" -- workspace.json`
 
-### Step 14: Clean root directory
+### Step 13: Clean root directory
 
-The workspace root holds only the template's own files: `CLAUDE.md`, `workspace.json`, `.gitignore`, `.claudeignore`, `.mcp.json`, the `CODEBASE.md` Step 5 may have generated, and the standard directories (`.claude/`, `workspace-context/`). The `repos/`, `work-sessions/`, and `workspace-scratchpad/` directories are lazy-created the first time something writes to them — they won't exist yet unless something already has. `.workspace-update/` is the payload Step 15 deletes; leave it where it is.
+The workspace root holds only the template's own files: `CLAUDE.md`, `workspace.json`, `.gitignore`, `.claudeignore`, `.mcp.json`, the `CODEBASE.md` Step 5 may have generated, and the standard directories (`.claude/`, `workspace-context/`). The `repos/` and `workspace-scratchpad/` directories are lazy-created the first time something writes to them — they won't exist yet unless something already has. `.workspace-update/` is the payload Step 14 deletes; leave it where it is.
 
 Move everything else to `workspace-scratchpad/unmigrated/`:
 
@@ -396,7 +369,7 @@ Report: "Moved {N} items to workspace-scratchpad/unmigrated/: {list}."
 
 **Commit (if anything was moved):** `git commit -m "chore: clean root — move non-template items to unmigrated"`
 
-### Step 15: Clean up payload and pre-migration artifacts
+### Step 14: Clean up payload and pre-migration artifacts
 
 - **Delete `.workspace-update/` directory entirely**
 - **Remove any `@.workspace-update/` lines from CLAUDE.md**
@@ -407,7 +380,7 @@ Report: "Moved {N} items to workspace-scratchpad/unmigrated/: {list}."
 
 **Commit:** `git commit -m "chore: clean up payload and pre-migration artifacts"`
 
-### Step 16: Verify — self-contradiction check
+### Step 15: Verify — self-contradiction check
 
 Read EVERY created and activated file:
 - Every `.claude/rules/*.md` (not .skip)
@@ -425,7 +398,7 @@ Fix ALL issues found. This step must not be rushed.
 
 **Commit:** `git commit -m "fix: resolve self-contradictions from init"`
 
-### Step 16.5: Build the context catalogs and CLAUDE.local.md
+### Step 15.5: Build the context catalogs and CLAUDE.local.md
 
 The root `CLAUDE.md` imports `workspace-context/canonical.md` and `workspace-context/index.md`, and `CLAUDE.local.md` imports this user's index. Nothing earlier in the flow writes them. Without them, the locked knowledge from Step 10 never reaches the main session, and the next session start reports "Setup incomplete". Create this user's folder if it is missing (`workspace-context/team-member/{user}/`), then run:
 
@@ -439,7 +412,7 @@ The first writes `CLAUDE.local.md` from `workspace.user` and regenerates the ind
 
 **Commit:** `git commit -m "chore: build the workspace-context catalogs" -- workspace-context/canonical.md workspace-context/index.md`
 
-### Step 17: Set up workspace remote
+### Step 16: Set up workspace remote
 
 Check whether the workspace repo has an `origin` of its own:
 ```bash
@@ -469,9 +442,9 @@ It prints the URL and exits 0 when `origin` exists, and exits non-zero when ther
 - Detect the org from project repo remotes in workspace.json
 - Ask: "Create workspace repo as `{org}/workspace-{project}`? Or provide a different name/URL."
 - Create via `gh repo create '{org}/{name}' --private` and add as remote
-- Do NOT push yet — Step 18 merges the init branch and pushes the default branch after the merge
+- Do NOT push yet — Step 17 merges the init branch and pushes the default branch after the merge
 
-### Step 18: Mark initialized, merge to the default branch, report
+### Step 17: Mark initialized, merge to the default branch, report
 
 Update workspace.json:
 - Set `initialized: true`
@@ -485,7 +458,7 @@ git checkout '{default-branch}'
 git merge --squash chore/workspace-init
 git commit -m "chore: workspace initialization"
 ```
-If `origin` is configured (Step 17), push the default branch (`git push origin '{default-branch}'`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 17 rebase). The condition is `origin`, not "a remote": since Step 2 the repo has carried a `repo-{name}` remote per project clone, and none of those is the workspace's own, so with no `origin` there is nothing to push to. Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
+If `origin` is configured (Step 16), push the default branch (`git push origin '{default-branch}'`; use `--force-with-lease` only if the operator explicitly accepts rewritten history after a Step 16 rebase). The condition is `origin`, not "a remote": since Step 2 the repo has carried a `repo-{name}` remote per project clone, and none of those is the workspace's own, so with no `origin` there is nothing to push to. Keep `chore/workspace-init` — it carries the granular per-step history — unless the user asks for it to be deleted. If the user declines the merge, the final report must tell them exactly how to finish it themselves.
 
 **Final report:**
 
@@ -502,7 +475,6 @@ Summary:
 - {M} locked context files ({size}KB / 10KB target)
 - {K} user context files
 - {H} prior chat sessions scanned, {D} decisions extracted
-- {W} existing worktrees formalized as work sessions
 - {L} items moved to workspace-scratchpad/unmigrated/
 - {V} self-contradictions found and fixed
 - Template version: {version}
@@ -515,9 +487,6 @@ Issues encountered:
 
 If no issues: "No issues encountered."
 
-Active work sessions (formalized from existing worktrees):
-- {list each with branch, repo, and description}
-
 Items in workspace-scratchpad/unmigrated/:
 - {list each item with a one-line description}
 
@@ -527,7 +496,7 @@ If the merge was declined, replace the branch line with:
     git merge --squash chore/workspace-init
     git commit -m 'chore: workspace initialization'
     git push origin {default-branch}
-  (leave out the last line if Step 17 found or set no `origin`)
+  (leave out the last line if Step 16 found or set no `origin`)
 
 This session is done. Start a fresh Claude Code session and run /start-work to begin."
 ```
@@ -538,12 +507,12 @@ This session is done. Start a fresh Claude Code session and run /start-work to b
 - Execute confidently. Report after each major step completes.
 - Commit after each major step — granular history on the branch.
 - Ask the user only for decisions that require judgment.
-- **Capture the `templateVersion` from `.manifest.json` early** (Step 5) before the payload is deleted in Step 15.
+- **Capture the `templateVersion` from `.manifest.json` early** (Step 5) before the payload is deleted in Step 14.
 - **Root directory cleanliness is non-negotiable.** Non-template items go to unmigrated.
 - **Every expected behavior that fails must be reported.**
 - **Don't suggest starting work at the end.** Tell the user to restart Claude Code and run /start-work in a fresh session.
-- The verification step (Step 16) is mandatory — read every file, check thoroughly.
-- **Build manifests before long operations.** Chat history scanning (Step 8) and worktree formalization (Step 11) can be interrupted by auto-compaction. Write a manifest to `workspace-scratchpad/` before starting so progress survives.
+- The verification step (Step 15) is mandatory — read every file, check thoroughly.
+- **Build manifests before long operations.** Chat history scanning (Step 8) can be interrupted by auto-compaction. Write a manifest to `workspace-scratchpad/` before starting so progress survives.
 - **Never re-fetch content that already exists.** Always check workspace-context and rules for existing extractions before accessing external sources.
 - This skill is idempotent — safe to run if interrupted and restarted.
 
@@ -553,7 +522,6 @@ This session is done. Start a fresh Claude Code session and run /start-work to b
 - The branch allows the user to review, adjust, or redo individual steps before merging
 - Documentation sources are first-class — always ask, always confirm access, always report failures
 - Chat history scanning uses a manifest to survive auto-compaction
-- Existing worktrees are formalized with session markers, trackers, and linked chat history
-- **Launch point:** Launch `claude` from the workspace root. A worktree is a context boundary — `CLAUDE.md` discovery stops at its root and gitignored content is absent — so a chat started inside a project worktree (a session's `work-sessions/{name}/workspace/repos/{repo}/` or a task's `repos/{repo}/.claude/worktrees/{slug}/`) loads only that repo's own `CLAUDE.md`, without the workspace conventions or hooks. That is occasionally what you want for isolated, repo-only work; for normal work, stay at the root and reach worktrees by path.
+- **Launch point:** Launch `claude` from the workspace root. A worktree is a context boundary — `CLAUDE.md` discovery stops at its root and gitignored content is absent — so a chat started inside a project worktree (a task's `repos/{repo}/.claude/worktrees/{slug}/`) loads only that repo's own `CLAUDE.md`, without the workspace conventions or hooks. That is occasionally what you want for isolated, repo-only work; for normal work, stay at the root and reach worktrees by path.
 - **Skills are on-demand, not pre-loaded:** Skills are invoked explicitly by name (`/skill-name`) when needed; they are not loaded at session start. The `.skip` mechanism in `.claude/rules/` provides the analogous progressive-disclosure pattern for rules — a `.md.skip` file is present but inactive; rename it to `.md` to activate, rename it back to deactivate. Step 6 of this skill walks through the activation choices.
 - **`scope:` for path-scoped skills:** The `scope:` frontmatter field (shown as a commented-out example at the top of this file) restricts a skill so it activates only when the working directory is inside the declared path. Removing the `#` prefix from the example line turns this skill into a path-scoped skill — useful when you want a repo-specific skill available only from inside that repo's worktree.

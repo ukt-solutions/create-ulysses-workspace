@@ -14,10 +14,10 @@ the work at hand. This skill covers everything after that decision.
 
 ## File layout
 
-- One `goal-{topic}.md` artifact per effort. Session model: at the top of the session worktree, alongside `session.md`. Task model: in the chat drawer at `workspace-scratchpad/chats/{chat}/`, alongside its phase outputs. One goal per worktree or task either way.
+- One `goal-{topic}.md` artifact per effort, in the chat drawer at `workspace-scratchpad/chats/{chat}/`, alongside its phase outputs. One goal per task.
 - The artifact's frontmatter holds machine state; its body holds the human-readable goal statement, per-phase intent, and a mandatory `## Start command` section (see "Kicking off the goal") with the literal `/goal "..."` invocation the user runs to start the loop.
-- Phase output artifacts live as siblings. `research-*.md` and `crossref-*.md` are goal-native (produced by `parallel-research` and `crossref` phase types). `design-*.md` and `plan-*.md` are pre-existing session-artifact patterns that `type: skill` phases reuse when the wrapped skill is `superpowers:brainstorming` or `superpowers:writing-plans`; they are not goal-specific.
-- Session model: the artifact is tracked on the session branch and lives there until `/complete-work` runs, which strips it before the final PR. Task model: the drawer is machine-local and untracked; `/complete-work` routes the artifact (promote into `workspace-context/` or discard) at completion, so while a task is active give the artifact's frontmatter a `workItem: {id}` line — the offer is scoped to the task that owns the artifact.
+- Phase output artifacts live as siblings. `research-*.md` and `crossref-*.md` are goal-native (produced by `parallel-research` and `crossref` phase types). `design-*.md` and `plan-*.md` are the workspace's spec and plan names, which `type: skill` phases reuse when the wrapped skill is `superpowers:brainstorming` or `superpowers:writing-plans`; they are not goal-specific.
+- The drawer is machine-local and untracked. `/complete-work` routes the artifact (promote into `workspace-context/` or discard) at completion, so while a task is active give the artifact's frontmatter a `workItem: {id}` line — the offer is scoped to the task that owns the artifact.
 
 ## Frontmatter schema
 
@@ -113,7 +113,7 @@ A goal's `turn_budget` is a backstop that counts every orchestrator turn — inc
 
 This is a structural property of `/goal` + review gates, not a per-goal accident. Plan for it:
 
-- **Drop `gate: review` from early phases when the human is expected to be away for stretches.** Research, crossref, spec, and plan phases produce artifacts that the final session→main PR consumes anyway. The integration-branch model (`main` untouched until `/complete-work` opens the final PR for human review) already provides one strong human review point; piling per-phase gates on top of that, with no human watching, just burns budget. Set those phases to `gate: auto` when the run will be unattended.
+- **Drop `gate: review` from early phases when the human is expected to be away for stretches.** Research, crossref, spec, and plan phases produce artifacts that the final task→main PR consumes anyway. The integration-branch model (`main` untouched until `/complete-work` opens the final PR for human review) already provides one strong human review point; piling per-phase gates on top of that, with no human watching, just burns budget. Set those phases to `gate: auto` when the run will be unattended.
 - **Keep `gate: review` for phases with irreversible side effects or for phases whose outcome reshapes subsequent phases.** A spec gate that lets the human reprioritize the ranked execution list before `executing-plans` walks it is worth its cost; a research-synthesis gate that just rubber-stamps a matrix the human will see again in the final PR is not.
 - **Size `turn_budget` for the worst case you actually expect.** If every phase is `gate: auto`: budget ≈ (estimated work-turns) × 1.2 (small headroom for retries). If any phases are `gate: review` and the human may be unavailable for hours: multiply the work-turn estimate by **2–3×** to absorb gate-idle pings, or raise the budget mid-goal by editing the goal artifact's `completion_condition` and `turn_budget` fields. The Stop-hook condition string is fixed from the original `/goal` invocation; raising `turn_budget` in the artifact keeps the auditable source-of-truth correct for resume but does not change the running evaluator's text — the user can re-run the (updated) `## Start command` to refresh it after `/goal clear`.
 - **If the goal stops on the backstop mid-work because of gate-idle waste, that is the system working as designed.** `claude --resume` plus re-running the `## Start command` continues from durable phase state; phase artifacts and per-phase `status: complete` markers survive. Do not treat backstop-stop as a failure of the goal.
@@ -122,16 +122,16 @@ This guidance is workspace-side mitigation only. The underlying friction — the
 
 ## Integration branch and per-phase sub-PRs
 
-While a `/goal`-driven effort is running, its work branch (`feature/{session-name}` for a session, the task's branch for a task) acts as the goal's integration branch. Main is untouched until `/complete-work` opens the final PR for human review. This is the key autonomy boundary: phase agents can merge their own work, repeatedly, throughout the goal — but only into the integration branch, never into main. The integration-branch and sub-branch guidance in this section applies to task branches unchanged.
+While a `/goal`-driven effort is running, the task's branch acts as the goal's integration branch. Main is untouched until `/complete-work` opens the final PR for human review. This is the key autonomy boundary: phase agents can merge their own work, repeatedly, throughout the goal — but only into the integration branch, never into main.
 
 Two merge strategies, picked per phase:
 
-- **Direct commit (default for artifact-only phases).** Phases of type `parallel-research` and `crossref`, and skill phases that wrap artifact-producing skills (`brainstorming`, `writing-plans`), commit their outputs directly to the session branch. These artifacts are stripped before the final PR anyway, so sub-PR ceremony adds nothing.
-- **Sub-branch with self-merged PR (default for code phases).** Skill phases that wrap code-producing skills (`executing-plans`, `test-driven-development`, `subagent-driven-development`) work on a per-phase sub-branch and open a PR back to the session branch. After the phase's gate is satisfied, the main agent self-merges the sub-PR. Each sub-PR is a discrete reviewable unit — failures can be retried by rebuilding just the one sub-branch.
+- **Direct commit (default for artifact-only phases).** Phases of type `parallel-research` and `crossref`, and skill phases that wrap artifact-producing skills (`brainstorming`, `writing-plans`), keep whatever they commit directly on the task branch — no sub-branch. Their artifacts are routed at completion anyway, so sub-PR ceremony adds nothing.
+- **Sub-branch with self-merged PR (default for code phases).** Skill phases that wrap code-producing skills (`executing-plans`, `test-driven-development`, `subagent-driven-development`) work on a per-phase sub-branch and open a PR back to the task branch. After the phase's gate is satisfied, the main agent self-merges the sub-PR. Each sub-PR is a discrete reviewable unit — failures can be retried by rebuilding just the one sub-branch.
 
-Sub-branch naming follows the existing `git-conventions.md` rule (kebab-case after prefix, no nesting): `feature/{session-name}-{phase-name}`. Examples for a session named `ulysses-goals`:
+Sub-branch naming follows the existing `git-conventions.md` rule (kebab-case after prefix, no nesting): `{task-branch}-{phase-name}`. Examples for a task on branch `feature/ulysses-goals`:
 
-- `feature/ulysses-goals` — session/integration branch
+- `feature/ulysses-goals` — task/integration branch
 - `feature/ulysses-goals-strategy-research` — phase sub-branch (if a research phase were promoted to sub-branch strategy)
 - `feature/ulysses-goals-implement` — phase sub-branch for the implement phase
 
@@ -144,15 +144,15 @@ phases:
     skill: superpowers:executing-plans
     integration:
       strategy: sub-branch        # direct | sub-branch
-      branch: feature/{session-name}-implement   # explicit, or derived if omitted
+      branch: feature/ulysses-goals-implement   # explicit, or derived if omitted
       self_merge: true            # main agent merges the sub-PR after gate is satisfied; default true
 ```
 
 If `integration:` is omitted, defaults are applied by phase type per the list above.
 
-Multi-repo sessions: each project repo has its own session branch (same name across repos per existing convention). Phase sub-branches are created per-repo where the phase commits, with matching names. The sub-PR target in each repo is that repo's session branch.
+Multi-repo tasks: each project repo has its own copy of the task branch (same name across repos per existing convention). Phase sub-branches are created per-repo where the phase commits, with matching names. The sub-PR target in each repo is that repo's task branch.
 
-`/complete-work` verifies before the final PR that every phase sub-branch has been merged into the session branch. If any are outstanding, it fails loudly with a list of unmerged sub-branches. The user resolves them (merge or close) before re-running.
+`/complete-work` verifies before the final PR that every phase sub-branch has been merged into the task branch. If any are outstanding, it stops with a list of unmerged sub-branches. The user resolves them (merge or close) before re-running.
 
 ## Model tiering
 
@@ -257,19 +257,19 @@ When the artifact is drafted and the user has reviewed it, the agent's hand-off 
 
 ## Lifecycle integration
 
-- `/goal` runs inside started work. It does NOT replace `/start-work`. Session model: the session is created the normal way and the goal artifact is drafted at the worktree top (including its `## Start command` block). Task model: the task is started the normal way and the artifact is drafted into the chat drawer. Either way the user runs the `## Start command` block's `/goal "..."` to kick off the loop.
-- Session model: the goal artifact lives on the session branch and travels with `git push`, surviving across machines and `--resume`. Task model: the drawer is machine-local — push the task branch for the code, and `/promote` the artifact if it must travel.
-- Session model: `session.md`'s `## Tasks` should mirror the phase list at coarse grain (one task per phase) so `TodoWrite` shows high-level progress; the main agent updates `## Tasks` at phase transitions via the helper specified by the `task-list-mirroring` rule, in addition to updating `goal-{topic}.md`. Task model: TodoWrite is the live mirror and there is no durable `## Tasks` — the goal artifact's own `phases:` list is the durable state.
-- `/pause-work` works without special handling. The goal-evaluator state resets on resume per the Claude Code docs; phase state is durable in the artifact.
-- `/complete-work` reads `goal-*.md`, `research-*.md`, and `crossref-*.md` for release-note synthesis and strips them from the branch before the final PR, alongside the existing `design-*.md` and `plan-*.md` handling. When a goal artifact is present, it also runs a pre-flight check that every declared sub-branch (from phases with `integration.strategy: sub-branch`) has been merged into the session branch. Unmerged sub-branches abort completion with a clear list to resolve.
+- `/goal` runs inside started work. It does NOT replace `/start-work`. The task is started the normal way and the goal artifact is drafted into the chat drawer, including its `## Start command` block. The user then runs that block's `/goal "..."` to kick off the loop.
+- The drawer is machine-local, so the goal artifact does not travel with `git push`: push the task branch for the code, and `/promote` the artifact if it must travel or be resumed on another machine.
+- TodoWrite is the live mirror, and there is no durable task list beside it — the goal artifact's own `phases:` list is the durable state.
+- The goal-evaluator state resets on resume per the Claude Code docs; phase state is durable in the artifact.
+- `/complete-work` offers the drawer's `goal-*.md`, `research-*.md` and `crossref-*.md` for promotion into `workspace-context/`, alongside the task's `design-*.md` and `plan-*.md`. When a goal artifact is present, it also runs a pre-flight check that every declared sub-branch (from phases with `integration.strategy: sub-branch`) has been merged into the task branch. Unmerged sub-branches stop completion with a clear list to resolve.
 
-If a research or crossref artifact deserves to outlive the branch, the user runs `/promote` on it before `/complete-work`. `/promote` accepts arbitrary paths and routes them into `workspace-context/`.
+If a research or crossref artifact deserves to outlive the task, the user runs `/promote` on it before `/complete-work`. `/promote` accepts arbitrary paths and routes them into `workspace-context/`.
 
 ## Tracker integration
 
-Goals do not replace work items. A goal is execution shape; a work item is the unit the team tracks. See `work-item-tracking.md` for how `workItem:` in session frontmatter links a session to its tracker issue. A goal lives inside a session and therefore inherits the session's `workItem:`.
+Goals do not replace work items. A goal is execution shape; a work item is the unit the team tracks. See `work-item-tracking.md` for how the `workItem:` on a chat record's task entry links the task to its tracker issue. A goal lives inside a task and therefore inherits the task's `workItem:`.
 
-When the goal artifact is itself the deliverable for a future session to execute (i.e., this session's job was to *write* the goal, and another session will *run* it), the strip rule needs an escape hatch. The pattern: preserve the artifact in the tracker issue body (as a fenced code block) before `/complete-work` runs. The future session picks up the issue via `/start-work`, copies the artifact text into its worktree top, and runs `/goal`. The strip rule stays clean and consistent; the deliverable is preserved through the tracker.
+When the goal artifact is itself the deliverable for a future chat to execute (i.e., this chat's job was to *write* the goal, and another will *run* it), the drawer is not enough to carry it: a drawer is per-chat and machine-local, so the next chat cannot read this one's. The pattern: preserve the artifact in the tracker issue body (as a fenced code block) before `/complete-work` runs. The future chat picks up the issue via `/start-work`, copies the artifact text into its own drawer, and runs `/goal`. The deliverable is preserved through the tracker.
 
 ## Out of scope
 
@@ -293,7 +293,7 @@ completion_condition: >
   All 5 phases in goal-evaluate-rate-limiting.md show status: complete.
   Phase artifacts exist at: research-rate-limiting-strategies.md,
   crossref-existing-infrastructure.md, design-rate-limiting.md,
-  plan-rate-limiting.md, and the implementation commits land on the session
+  plan-rate-limiting.md, and the implementation commits land on the task
   branch (visible in git log). The /complete-work skill has produced release
   notes and opened the final PR; the PR URL appeared in the transcript.
   Or stop after 60 turns.
@@ -305,7 +305,7 @@ phases:
     artifact: research-rate-limiting-strategies.md
     gate: review
     integration:
-      strategy: direct                   # artifact-only phase; commits straight to session branch
+      strategy: direct                   # artifact-only phase; commits straight to the task branch
     team:
       agents:
         - subagent_type: researcher
@@ -410,7 +410,7 @@ phases:
     gate: review
     integration:
       strategy: sub-branch               # code phase: sub-branch + self-merged PR
-      branch: feature/{session-name}-implement
+      branch: feature/ulysses-goals-implement
       self_merge: true
 ---
 
@@ -418,12 +418,12 @@ phases:
 
 The api-gateway needs rate limiting before the next traffic step-up. This
 goal runs the full arc from candidate-algorithm research through implementation
-on the session branch.
+on the task branch.
 
 ## Start command
 
 ```
-/goal "All 5 phases in goal-evaluate-rate-limiting.md show status: complete. Phase artifacts exist at: research-rate-limiting-strategies.md, crossref-existing-infrastructure.md, design-rate-limiting.md, plan-rate-limiting.md, and the implementation commits land on the session branch (visible in git log). The /complete-work skill has opened the final PR; the PR URL appeared in the transcript. Or stop after 60 turns."
+/goal "All 5 phases in goal-evaluate-rate-limiting.md show status: complete. Phase artifacts exist at: research-rate-limiting-strategies.md, crossref-existing-infrastructure.md, design-rate-limiting.md, plan-rate-limiting.md, and the implementation commits land on the task branch (visible in git log). The /complete-work skill has opened the final PR; the PR URL appeared in the transcript. Or stop after 60 turns."
 ```
 
 This is the frontmatter `completion_condition` flattened to one line. Run it after reviewing the artifact; it flips the goal to `status: active`.
@@ -445,8 +445,8 @@ This is the frontmatter `completion_condition` flattened to one line. Run it aft
    implementation checklist.
 
 5. **implement** wraps `superpowers:executing-plans` on a per-phase
-   sub-branch (`feature/{session-name}-implement`). The main agent opens
-   a PR from the sub-branch back into the session/integration branch and
+   sub-branch (`feature/ulysses-goals-implement`). The main agent opens
+   a PR from the sub-branch back into the task/integration branch and
    self-merges once the gate is satisfied. Sub-branch is deleted post-merge.
 
 Each gate is `review`: the user approves, rejects with feedback, or

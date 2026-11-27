@@ -74,8 +74,8 @@
 //                 --launcher <root> counts the remaining sessions from
 //                 the launcher when --root is that worktree). Kept for
 //                 back-compat: new work is a task whatever the key holds,
-//                 so the write brings an older workspace.json in line with
-//                 the template and routes nothing.
+//                 so the write only stops an older workspace.json from
+//                 still saying "session" — it routes nothing.
 //
 // NOTHING HERE DELETES — with one deliberate exception: --remove-shell,
 // whose target is a folder provably empty of files and symlinks
@@ -2126,8 +2126,8 @@ function isLinkedWorktree(gitFn, rootDir) {
 /**
  * Write workspace.sessionModel: "task", keeping every other key untouched.
  * Kept for back-compat: new work is a task whatever the key holds, so the
- * write brings an older workspace.json in line with the template and routes
- * nothing. From the launcher this also reports the remaining sessions; from
+ * write only stops an older workspace.json from still saying "session" — it
+ * routes nothing. From the launcher this also reports the remaining sessions; from
  * a task worktree (the S6 flow) there is no sessions directory to read —
  * pass `launcher` (CLI `--launcher <root>`) to count them from the launcher
  * anyway, or get remainingSessions null with a note saying where the real

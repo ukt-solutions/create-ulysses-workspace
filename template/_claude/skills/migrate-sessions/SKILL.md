@@ -106,13 +106,13 @@ For each session, lay out its evidence and ask the operator which way to go. Nev
   node .claude/scripts/migrate-sessions.mjs --remove-shell --session '{name}'
   ```
 
-A session still being worked — ACTIVE, or UNKNOWN because nothing says what it is — is neither finished nor archived on a guess. Ask the operator whether its work is at a stopping point. When it is, Finish lands what is done and the rest starts as a task. When it is not, say that the session stays for a later run and move on: nothing converts a live session to a task in place, because the lifecycles keep their state differently (a session folder with a tracker versus a branch with a chat-record entry), and no new session starts to replace it. Whatever stays is still on the drain list — the session-start hook and the maintenance audit keep counting it — until a later run finishes or archives it.
+A session still being worked — ACTIVE, or UNKNOWN because nothing says what it is — is neither finished nor archived on a guess. Ask the operator whether its work is at a stopping point. When it is, Finish lands what is done and the rest starts as a task. When it is not, say that the session stays for a later run and move on: nothing converts a live session to a task in place, because the two keep their state differently (a session folder with a tracker versus a branch with a chat-record entry), no new session starts to replace it, and since the session lifecycle was removed no skill resumes or completes one — this skill is the only way out. Whatever stays is still on the drain list — the session-start hook and the maintenance audit keep counting it — until a later run finishes or archives it.
 
 Unbacked commits (present on no remote) are safe in an archive — they are only ever at risk when someone deletes one. That is why the backup decision is a gate rather than a suggestion: the archive itself refuses until the backup step ran or the decline is recorded, and its result names what rode along.
 
 ## 3. Switch — never write the launcher's tracked `workspace.json` directly
 
-The switch is a back-compat write, not a change of course: new work is a task whatever `workspace.json` holds, and `workspace.sessionModel` selects nothing. It brings an older file in line with the template, which ships `"task"`, and it lands the way any change to the launcher's tracked files lands. Skip it when the file already holds `"task"` — there is nothing to write.
+The switch is a back-compat write, not a change of course: new work is a task whatever `workspace.json` holds, and `workspace.sessionModel` selects nothing. It exists for an older file that still says `"session"`: `"task"` is written over it, so nothing that reads the old key is told a lifecycle is in use that no longer exists. It lands the way any change to the launcher's tracked files lands. Skip it when the file has no `workspace.sessionModel` or already holds `"task"` — only an older file that still says `"session"` has anything to write.
 
 1. Create a workspace task worktree for the change:
    ```bash
@@ -146,7 +146,7 @@ The switch is a back-compat write, not a change of course: new work is a task wh
      ```
    Either way the launcher root never commits to its default branch directly. A workspace with neither an `origin` nor a tracker completes its work in local mode: nothing is pushed and each repo merges into its own source clone — a session being finished no less than a task.
 
-With `--launcher .` the switch output reports `remainingSessions` from the launcher even though `--root` is the switch worktree (which has no `work-sessions/` to read; without the flag the result is `remainingSessions: null` with a note pointing at a separate `--inventory` at the launcher root). Those are the sessions still to drain — step 4 lists them. Until they are, they keep resuming and completing under the session lifecycle, which stays supported for the sessions a workspace already has.
+With `--launcher .` the switch output reports `remainingSessions` from the launcher even though `--root` is the switch worktree (which has no `work-sessions/` to read; without the flag the result is `remainingSessions: null` with a note pointing at a separate `--inventory` at the launcher root). Those are the sessions still to drain — step 4 lists them. Until they are, the session-start hook's nudge and the maintenance audit keep counting them, and nothing else touches them: since the session lifecycle was removed, this skill is how each one leaves.
 
 ## 4. Verify
 

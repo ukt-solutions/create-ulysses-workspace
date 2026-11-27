@@ -13,46 +13,32 @@ Capture discussion reasoning, exploration results, and design rationale into wor
 
 > **Note:** `/braindump side` has moved to `/aside`. If the user invokes `/braindump side`, redirect them: "The side braindump is now `/aside`. Running it for you." Then invoke the `/aside` skill with their text.
 
-## Lifecycle-Aware Behavior
+## Where the Capture Goes
 
 > **Quoting.** Command values go in single quotes, and a `'` inside a value is written `'\''`: chat text in double quotes would let `$(…)` or backticks run before the command starts.
 
-Where the capture goes follows from where this chat is working, in this order.
+Where the capture goes follows from whether this chat has a drawer.
 
-**Inside a legacy session's worktree** — the active-session pointer at `.claude/.active-session.json` exists inside the current worktree:
-
-- Default behavior: append reasoning and decisions to the session tracker body at `work-sessions/{session-name}/workspace/session.md`
-- Add a new section to the tracker body (Context, Exploration, Decisions, Implications) — do NOT touch the frontmatter
-- Auto-commit from inside the worktree so the update lands on the session branch:
-  ```bash
-  cd 'work-sessions/{session-name}/workspace'
-  git add session.md
-  git commit -m 'braindump: update {session-name} tracker'
-  ```
-
-**Everywhere else, with a chat drawer** — the default. It needs only the `Chat record:` line the SessionStart hook injects (`{chat}` is its name); `workspace.sessionModel` plays no part, so a workspace whose file still says `"session"` writes here too:
+**In a chat with a drawer** — the default. It needs only the `Chat record:` line the SessionStart hook injects (`{chat}` is its name):
 
 - Default behavior: write `braindump_{topic}.md` directly into that chat's drawer at `workspace-scratchpad/chats/{chat}/` — the drawer sits outside `workspace-context/`, so `capture-context.mjs` is not involved
 - No commit for drawer writes: the drawer is gitignored and machine-local; `/complete-work` lists it and asks what to promote into `workspace-context/`
 - While a task is active, add `workItem: {id}` to the file's frontmatter: `/complete-work` offers a drawer item only to the task that owns it, so the tag keeps this capture out of another task's promotion list
 
-**With no session and no drawer** — the `Chat record:` line is absent (compaction can drop it). Say the drawer destination is unavailable for that reason rather than guessing a chat name, and:
+**In a chat with no drawer** — the `Chat record:` line is absent (compaction can drop it). Say the drawer destination is unavailable for that reason rather than guessing a chat name, and:
 
 - Use `--local-only` so the captured file is gitignored (the root only allows local-only writes), landing in `team-member/{user}/`
 - Suggest starting work (`/start-work`) if the braindump is about actionable work
 
-The flows below apply when NOT in an active work session, or when the user explicitly asks for a standalone braindump file.
+The flows below are for a standalone file — one under `workspace-context/` rather than in the drawer. They are the default when the chat has no drawer, and they apply whenever the user asks for a standalone braindump.
 
 ## Flow: Named
 
 A braindump is tracked only when it is written into a worktree of the workspace repo, because only a worktree is on a branch of its own. Everywhere else it is local-only: the workspace root is the launcher, it stays on the repo's default branch, only `local-only-*` files are written there, and none of them is committed.
 
-Two worktrees count as **the worktree**:
+One worktree counts as **the worktree**: the task's workspace-repo worktree — `{launcher-root}/.claude/worktrees/{slug}/`, where `{slug}` is the task's branch with `/` replaced by `-`. It is this chat's when the chat's record holds that task with `repo: "."`.
 
-- a task's workspace-repo worktree — `{launcher-root}/.claude/worktrees/{slug}/`, where `{slug}` is the task's branch with `/` replaced by `-`. It is this chat's when the chat's record holds that task with `repo: "."`.
-- a session's workspace worktree — `work-sessions/{session-name}/workspace/`, for a chat running inside it.
-
-`{launcher-root}` is the workspace root: the absolute path on the `Workspace root:` line the SessionStart hook injects when the chat runs there. A chat running inside either worktree is already in it; there the same line names the worktree, and inside a session's worktree the hook adds `Working in workspace worktree. Main root: …` with the launcher's path. A chat at the workspace root has a worktree only through its own task: `node .claude/scripts/task-worktree.mjs --root . --detect --chat '{chat}'` lists the chat's tasks with their `branch` and `repo`, and an entry with `repo: "."` names one — ask which when several do. `{chat}` is the name on the `Chat record:` line the hook injects. With no worktree, the capture stays local-only.
+`{launcher-root}` is the workspace root: the absolute path on the `Workspace root:` line the SessionStart hook injects when the chat runs there. A chat running inside that worktree is already in it; there the same line names the worktree. A chat at the workspace root has a worktree only through its own task: `node .claude/scripts/task-worktree.mjs --root . --detect --chat '{chat}'` lists the chat's tasks with their `branch` and `repo`, and an entry with `repo: "."` names one — ask which when several do. `{chat}` is the name on the `Chat record:` line the hook injects. With no worktree, the capture stays local-only.
 
 Use the centralized `capture-context.mjs` helper — it computes the path, applies the `braindump_` prefix, and writes the frontmatter so this skill doesn't have to. `--root` decides where the capture goes, so there are two forms. Without a worktree the capture is local-only at the root — the root form:
 
@@ -118,21 +104,6 @@ The helper writes the frontmatter (`state: ephemeral`, `lifecycle: active`, `typ
 3. If multiple topics: "I see discussion about {topic-1} and {topic-2}. Split into separate braindumps?"
 4. Proceed with named flow for each
 
-## Include task snapshot
-
-If an active session exists (detected via `.claude/.active-session.json`), include a `## Tasks at capture time` section in the braindump body before piping it to `capture-context.mjs`:
-
-```markdown
-## Tasks at capture time
-
-- [x] Start work
-- [x] Reproduce on iOS Safari
-- [ ] Identify race condition
-- [ ] Complete work
-```
-
-Use the same GFM checkbox format as `session.md`'s `## Tasks` section (just `content` and `status` per task — no `activeForm` field, no blockquote line). Do NOT call `sync-tasks.mjs --write` — braindumps are snapshots, not the canonical store.
-
 ## Updating Existing Braindumps
 
 When updating, rewrite as a fresh snapshot (coherent-revisions rule) and pass `--update` to `capture-context.mjs`. The updated braindump should read as if written in one pass.
@@ -147,7 +118,7 @@ Pass the same flags as the original write — `--root`, and `--local-only` unles
 
 ## Auto-commit
 
-A tracked braindump — one written into the worktree — is committed from inside it. The commands run against the worktree with `-C` because from the workspace root `git add` cannot reach a path under `.claude/worktrees/` or `work-sessions/`: the launcher's `.gitignore` covers both.
+A tracked braindump — one written into the worktree — is committed from inside it. The commands run against the worktree with `-C` because from the workspace root `git add` cannot reach a path under `.claude/worktrees/`: the launcher's `.gitignore` covers it.
 
 ```bash
 git -C '{worktree}' add '{printed-path}'
