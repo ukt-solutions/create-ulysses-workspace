@@ -251,6 +251,8 @@ After the upgrade, each active session branch needs a one-time `git rebase main`
 
 ## Upgrading to v0.8.0 (one-time manual procedure)
 
+**A record, not a procedure for today.** The skills this section names — `/pause-work`, and `/start-work` starting or resuming a session — belonged to the template of its time, and v0.28 is the last release that ships them. A workspace still on the pre-v0.8.0 layout has to take these steps on its old template before it upgrades past v0.28.
+
 v0.8.0 restructures the on-disk layout so each work session lives in a single self-contained folder at `work-sessions/{name}/`. This replaces the scattered old layout where session state was spread across `repos/{name}___wt-*/`, `.claude-scratchpad/.work-session-*.json`, and `shared-context/{user}/inflight/`. It also eliminates the `repos/` symlink that caused the v0.5.1 destructive gitignore bug.
 
 The paths in this section are the ones a pre-v0.8.0 workspace had. `shared-context/` in particular is historical: it was renamed to `workspace-context/` in v0.15.0, and `/workspace-update` runs that migration on the way through.
