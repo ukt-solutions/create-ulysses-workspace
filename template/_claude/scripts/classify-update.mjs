@@ -720,9 +720,10 @@ function linkRemovedHooks(result, absRoot) {
 // config include, because the SessionStart hook now supplies its summary
 // (gh:196). The Quick Reference bullet that placed all work in session
 // worktrees, because new work is a task. And the session lifecycle's own
-// lines — its two skill-list entries and the bullet describing a session's
-// folder — because that lifecycle is removed: kept, they would advertise a
-// skill that no longer exists and a layout nothing writes to.
+// lines — its two skill-list entries, the bullet describing a session's
+// folder, and the compaction line that named its tracker — because that
+// lifecycle is removed: kept, they would advertise a skill that no longer
+// exists and a layout nothing writes to.
 const RETIRED_INCLUDES = ['workspace.json'];
 // Retired word for word: the Quick Reference bullet that placed all work in
 // session worktrees. Kept, it would contradict its replacement from the end
@@ -740,12 +741,19 @@ const RETIRED_LINES = [
 //     with it (no separator), nor a skill whose name merely begins the same
 //     way (`\b`), because `[^`]*` only spans the argument hints inside the
 //     command's own backticks.
-//   - the folder bullet is recognised by its opening clause, `work-sessions/`
-//     included: the same sentence about some other folder is the
-//     workspace's.
+//   - the folder bullet and the compaction line are recognised by their
+//     opening clause, the tracker's file name or `work-sessions/` included:
+//     the same sentence about something else is the workspace's.
+//
+// The compaction line matters because the template reworded it rather than
+// dropping it. A skill entry is replaced by its name; plain prose is kept
+// in the workspace's old wording beside the template's new one, so without
+// this entry every upgraded workspace would go on naming a tracker that no
+// longer exists.
 const RETIRED_LINE_PATTERNS = [
   /^\s*[-*]\s+`\/(?:pause-work|sync-work)\b[^`]*`\s*(?:—|–|-|:)\s/u,
   /^\s*[-*]\s+Each session is a self-contained folder at\s+`work-sessions\//u,
+  /^\s*Files in `workspace-context\/`, the session tracker \(`session\.md`\)/u,
 ];
 
 function hasIncludeLine(text, name) {

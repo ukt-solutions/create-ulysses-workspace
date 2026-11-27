@@ -1304,6 +1304,11 @@ console.log('# classify-update');
   const syncLine = '- `/sync-work` — push branches without ceremony';
   const startQuick = '- `/start-work` to start a task';
   const startSkill = '- `/start-work [issue|handoff|blank]` — start a task, or resume one this chat already has';
+  // The compaction line, before and after. The template reworded it instead
+  // of dropping it, and plain prose that was reworded is kept in the
+  // workspace's old wording — so the old one has to be retired by shape.
+  const compactLine = "Files in `workspace-context/`, the session tracker (`session.md`) or chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` survive compaction — they're on disk; re-read them on demand.";
+  const newCompactLine = "Files in `workspace-context/` or the chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` in them, survive compaction — they're on disk; re-read them on demand.";
   const taskTemplate = [
     '## Workspace: {{project-name}}',
     '',
@@ -1314,6 +1319,12 @@ console.log('# classify-update');
     '',
     '## Skills',
     startSkill,
+    '',
+    '## Compact Instructions',
+    '',
+    'When auto-compacting context, preserve in the summary:',
+    '',
+    newCompactLine,
     '',
   ].join('\n');
   // One --merge-claude-md run: a workspace whose CLAUDE.md is `lines` joined
@@ -1354,7 +1365,7 @@ console.log('# classify-update');
     "the template's replacement is what remains");
   rmSync(wordForWord.root, { recursive: true, force: true });
 
-  // By shape: the session lifecycle's three lines, exactly as every template
+  // By shape: the session lifecycle's four lines, exactly as the templates
   // shipped them. Kept, they would advertise skills that no longer exist and
   // a layout nothing writes to.
   const lifecycle = mergeWith(
@@ -1371,15 +1382,22 @@ console.log('# classify-update');
       syncLine,
       '- `/acme-deploy` — ours',
       '',
+      '## Compact Instructions',
+      '',
+      compactLine,
+      '',
     ],
     taskTemplate,
   );
-  assertEq(lifecycle.droppedLines, [pauseLine, syncLine, sessionLine],
+  assertEq(lifecycle.droppedLines, [pauseLine, syncLine, sessionLine, compactLine],
     'each retired line is named once, in the wording the workspace carries, however often it appears');
-  for (const line of [pauseLine, syncLine, sessionLine]) {
+  for (const line of [pauseLine, syncLine, sessionLine, compactLine]) {
     gone(lifecycle, line, `retired by shape, indented copy included: ${line}`);
   }
   assertTrue(lifecycle.claudeMd.includes('- `/acme-deploy` — ours'), "a skill entry of the workspace's own survives beside them");
+  assertEq(lifecycle.claudeMd.split('\n').filter((l) => l === newCompactLine).length, 1,
+    "the template's reworded compaction line is there once, with no stale copy beside it");
+  assertTrue(!lifecycle.claudeMd.includes('session.md'), 'nothing in the merged file names a session tracker');
   rmSync(lifecycle.root, { recursive: true, force: true });
 
   // By shape, across small wording differences: another description,
@@ -1401,7 +1419,9 @@ console.log('# classify-update');
   // Never a line of the workspace's own. Prose that mentions a removed skill
   // is not an entry; neither is a sentence that merely starts with one, nor
   // a skill whose name merely begins the same way; and the same sentence
-  // about some other folder is the workspace's.
+  // about some other folder is the workspace's. The compaction line is
+  // recognised only by the clause that names the tracker: the workspace's
+  // own sentence about files that survive compaction is kept, tracker or no.
   const ours = [
     '- `/acme-deploy` — ours',
     'We used to run `/pause-work` every Friday before `/sync-work`.',
@@ -1411,6 +1431,8 @@ console.log('# classify-update');
     '- `/sync-work` is gone; push with git',
     '- Each session is logged in `notes/sessions/`',
     '- Each session is a self-contained folder at `notes/sessions/`',
+    "Files in `workspace-context/` or `notes/` survive compaction — ours.",
+    "We keep files in `workspace-context/`, the session tracker (`session.md`) aside.",
   ];
   const own = mergeWith(
     ['## Workspace: acme', '', '## Our notes', ...ours, '', '## Skills', '- `/acme-deploy` — ours', ''],
@@ -1460,10 +1482,14 @@ console.log('# classify-update');
     pauseLine,
     syncLine,
     '',
+    '## Compact Instructions',
+    '',
+    compactLine,
+    '',
   ].join('\n');
-  const stillShipped = [launcherLine, sessionLine, pauseLine, syncLine];
+  const stillShipped = [launcherLine, sessionLine, pauseLine, syncLine, compactLine];
   const older = mergeWith(
-    ['## Workspace: acme', '', '## Quick Reference', launcherLine, sessionLine, '', '## Skills', pauseLine, syncLine, ''],
+    ['## Workspace: acme', '', '## Quick Reference', launcherLine, sessionLine, '', '## Skills', pauseLine, syncLine, '', '## Compact Instructions', '', compactLine, ''],
     olderTemplate,
   );
   assertEq(older.droppedLines, [], 'a line this payload still ships is never dropped, word for word or by shape');
@@ -1474,11 +1500,11 @@ console.log('# classify-update');
 
   // Under CRLF the drop leaves the file's other EOLs alone.
   const proseCrlf = mergeWith(
-    ['## Workspace: acme', '', '## Quick Reference', launcherLine, sessionLine, '- Ours, kept.', '', '## Skills', pauseLine, syncLine, ''],
+    ['## Workspace: acme', '', '## Quick Reference', launcherLine, sessionLine, '- Ours, kept.', '', '## Skills', pauseLine, syncLine, '', '## Compact Instructions', '', compactLine, ''],
     taskTemplate,
     '\r\n',
   );
-  assertEq(proseCrlf.droppedLines, [launcherLine, pauseLine, syncLine, sessionLine], 'CRLF retires the prose too');
+  assertEq(proseCrlf.droppedLines, [launcherLine, pauseLine, syncLine, sessionLine, compactLine], 'CRLF retires the prose too');
   for (const line of stillShipped) {
     assertTrue(!proseCrlf.claudeMd.includes(line), `retired under CRLF as well: ${line}`);
   }
