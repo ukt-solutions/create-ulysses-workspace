@@ -1417,22 +1417,29 @@ console.log('# classify-update');
   rmSync(rewordedLines.root, { recursive: true, force: true });
 
   // Never a line of the workspace's own. Prose that mentions a removed skill
-  // is not an entry; neither is a sentence that merely starts with one, nor
-  // a skill whose name merely begins the same way; and the same sentence
-  // about some other folder is the workspace's. The compaction line is
-  // recognised only by the clause that names the tracker: the workspace's
-  // own sentence about files that survive compaction is kept, tracker or no.
+  // is not an entry; neither is a sentence that merely starts with one; and
+  // the same sentence about some other folder is the workspace's. The
+  // compaction line is recognised only by the clause that names the tracker:
+  // the workspace's own sentence about files that survive compaction is kept,
+  // tracker or no.
   const ours = [
     '- `/acme-deploy` — ours',
     'We used to run `/pause-work` every Friday before `/sync-work`.',
-    '- `/pause-workflows` — our own skill, whose name begins the same way',
-    '- `/sync-worker` — ours as well',
     '- `/pause-work` the branch by hand, then `/release`',
     '- `/sync-work` is gone; push with git',
     '- Each session is logged in `notes/sessions/`',
     '- Each session is a self-contained folder at `notes/sessions/`',
     "Files in `workspace-context/` or `notes/` survive compaction — ours.",
     "We keep files in `workspace-context/`, the session tracker (`session.md`) aside.",
+    // Skills of the workspace's own whose names merely begin with a removed
+    // one. The name must end at the entry's own backtick or at a space
+    // before its argument hints: a hyphen is a word boundary to `\b`, so a
+    // word-boundary check would take `/pause-work-lite` for `/pause-work`.
+    '- `/pause-work-lite` — my own thing',
+    '- `/sync-work-items` — mine',
+    '- `/pause-work.v2` — ours too',
+    '- `/pause-workflows` — our own skill, whose name begins the same way',
+    '- `/sync-worker` — ours as well',
   ];
   const own = mergeWith(
     ['## Workspace: acme', '', '## Our notes', ...ours, '', '## Skills', '- `/acme-deploy` — ours', ''],

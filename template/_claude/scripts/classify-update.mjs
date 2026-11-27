@@ -734,16 +734,22 @@ const RETIRED_LINES = [
 // Retired by shape, for lines a workspace may have reworded without making
 // them its own. Each pattern is anchored on what makes the line the
 // template's, so a different description, argument hint or dash still
-// matches while a line of the workspace's does not:
-//   - a skill-list entry is a bullet whose command token is the removed
-//     skill, followed by a separator and a description. Prose that mentions
-//     the skill is not an entry; neither is a sentence that merely starts
-//     with it (no separator), nor a skill whose name merely begins the same
-//     way (`\b`), because `[^`]*` only spans the argument hints inside the
-//     command's own backticks.
-//   - the folder bullet and the compaction line are recognised by their
-//     opening clause, the tracker's file name or `work-sessions/` included:
-//     the same sentence about something else is the workspace's.
+// matches while a line of the workspace's does not.
+//
+// A skill-list entry is a bullet whose command token is the removed skill,
+// followed by a separator and a description. The skill's name has to END
+// the command token: the lookahead lets only the token's closing backtick or
+// the space before its argument hints follow it, and `[^`]*` then spans those
+// hints alone. A word boundary would not do — a hyphen and a dot are word
+// boundaries too, so `\b` took `/pause-work-lite` and `/pause-work.v2` for
+// `/pause-work`. With the name ended outright, prose that mentions the skill
+// is not an entry; neither is a sentence that merely starts with it (no
+// separator), nor a skill of the workspace's whose name merely begins the
+// same way, by a letter, a digit, a hyphen or a dot.
+//
+// The folder bullet and the compaction line are recognised by their opening
+// clause, the tracker's file name or `work-sessions/` included: the same
+// sentence about something else is the workspace's.
 //
 // The compaction line matters because the template reworded it rather than
 // dropping it. A skill entry is replaced by its name; plain prose is kept
@@ -751,7 +757,7 @@ const RETIRED_LINES = [
 // this entry every upgraded workspace would go on naming a tracker that no
 // longer exists.
 const RETIRED_LINE_PATTERNS = [
-  /^\s*[-*]\s+`\/(?:pause-work|sync-work)\b[^`]*`\s*(?:—|–|-|:)\s/u,
+  /^\s*[-*]\s+`\/(?:pause-work|sync-work)(?![^`\s])[^`]*`\s*(?:—|–|-|:)\s/u,
   /^\s*[-*]\s+Each session is a self-contained folder at\s+`work-sessions\//u,
   /^\s*Files in `workspace-context\/`, the session tracker \(`session\.md`\)/u,
 ];
