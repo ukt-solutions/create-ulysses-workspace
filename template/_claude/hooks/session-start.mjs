@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// SessionStart hook — register this chat in the active session tracker
-// and surface open sessions + shared context.
+// SessionStart hook — name this chat's record and surface the workspace's
+// config, setup state and shared context.
 import { readdirSync, statSync, readFileSync, existsSync } from 'fs';
 import { join, basename, relative } from 'path';
 import { execFileSync } from 'child_process';
@@ -9,13 +9,7 @@ import {
   readJSON,
   readStdin,
   respond,
-  getSessionTrackers,
   listLegacySessions,
-  getActiveSessionPointer,
-  readSessionTracker,
-  updateSessionTracker,
-  sessionFolderPath,
-  timeAgo,
   configSummary,
   setupHint,
 } from './_utils.mjs';
@@ -82,36 +76,7 @@ if (chatId) {
   lines.push(`Workspace root: ${root}`);
 }
 
-// If we're inside a workspace worktree, its .claude/.active-session.json
-// tells us which session this is.
-const pointer = getActiveSessionPointer(root);
-if (pointer) {
-  if (chatId) {
-    const mainRoot = pointer.rootPath || root;
-    const tracker = readSessionTracker(mainRoot, pointer.name);
-    if (tracker) {
-      const chats = tracker.chatSessions || [];
-      if (!chats.some(c => c.id === chatId)) {
-        chats.push({
-          id: chatId,
-          names: [],
-          started: new Date().toISOString(),
-          ended: null,
-        });
-        updateSessionTracker(mainRoot, pointer.name, {
-          chatSessions: chats,
-          updated: new Date().toISOString().slice(0, 10),
-        });
-      }
-    }
-  }
-  lines.push(`Active work session: ${pointer.name}`);
-  lines.push(`Working in workspace worktree. Main root: ${pointer.rootPath}`);
-  respond(lines.join('\n'));
-  process.exit(0);
-}
-
-// We're at the main workspace root — surface open sessions and context.
+// Surface the workspace's setup state, repos and context.
 
 // Fetch each project clone, then mirror the clones onto this repo as remotes
 // a pull request can be matched by (repo-remotes.mjs). Both are conveniences:
@@ -178,37 +143,6 @@ if (repoRemotesNote) lines.push(repoRemotesNote);
 const legacySessions = listLegacySessions(root);
 if (legacySessions.length > 0) {
   lines.push(`This workspace still has ${legacySessions.length} work session(s) under the old session model — /migrate-sessions can inventory and drain them.`);
-}
-
-// Surface active work sessions
-const trackers = getSessionTrackers(root);
-if (trackers.length > 0) {
-  lines.push('');
-  lines.push('Active work sessions:');
-  for (let i = 0; i < trackers.length; i++) {
-    const t = trackers[i];
-    const wsWorktree = join(sessionFolderPath(root, t.name), 'workspace');
-    const worktreeExists = existsSync(wsWorktree);
-    if (!worktreeExists) {
-      lines.push(`  ${i + 1}. ${t.name} (orphaned — worktree missing)`);
-      continue;
-    }
-    const chats = t.chatSessions || [];
-    const lastChat = chats[chats.length - 1];
-    const lastEnded = lastChat?.ended;
-    const statusDetail = t.status === 'paused'
-      ? `paused ${timeAgo(lastEnded)}`
-      : lastEnded
-        ? `active, last chat ended ${timeAgo(lastEnded)}`
-        : 'active';
-    const repoList = Array.isArray(t.repos) ? t.repos.join(', ') : (t.repos || '—');
-    lines.push(`  ${i + 1}. ${t.name} (${statusDetail})`);
-    lines.push(`     "${t.description || ''}"`);
-    lines.push(`     Branch: ${t.branch} | Repos: ${repoList}`);
-    lines.push(`     Worktree: work-sessions/${t.name}/workspace/`);
-    lines.push('');
-  }
-  lines.push('Use /start-work to resume a session or start new work.');
 }
 
 // Surface team-shared workspace context (secondary)

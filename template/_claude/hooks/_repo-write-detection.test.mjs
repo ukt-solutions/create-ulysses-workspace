@@ -40,7 +40,7 @@ check(isTaskWorktreeWrite(root, join(root, 'repos', 'app', 'src', 'a.ts')), fals
 check(isTaskWorktreeWrite(root, join(root, 'repos', 'app', '.claude', 'settings.json')), false, 'write to a repo .claude file', 'not under worktrees');
 check(isTaskWorktreeWrite(root, join(root, 'repos', '.claude', 'worktrees', 'x', 'f')), false, 'missing repo segment', 'no repo between repos/ and .claude');
 check(isTaskWorktreeWrite(root, join(root, 'repos', 'app', '.claude', 'worktrees')), false, 'the worktrees dir itself', 'no slug segment');
-check(isTaskWorktreeWrite(root, join(root, 'work-sessions', 'alpha', 'workspace', 'f.md')), false, 'session-model write', 'not a task path');
+check(isTaskWorktreeWrite(root, join(root, 'work-sessions', 'alpha', 'workspace', 'f.md')), false, 'a path under a leftover work-sessions folder', 'not a task path');
 check(isTaskWorktreeWrite(root, join(root, 'workspace-context', 'notes.md')), false, 'context write', 'unrelated');
 check(isTaskWorktreeWrite(root, join('/elsewhere', 'repos', 'app', '.claude', 'worktrees', 'x', 'f')), false, 'outside the given root', 'other tree');
 check(isTaskWorktreeWrite(root, ''), false, 'empty path', 'empty');
@@ -76,13 +76,11 @@ const CLAUDE_DIR = resolve(HERE, '..');
 
 function makeFixture() {
   const fx = mkdtempSync(join(tmpdir(), 'rwd-fx-'));
-  // Leave machine-local state behind: copied from inside a session worktree,
-  // .active-session.json would make the fixture look like a session and
-  // route the hook down the session branch instead of the launcher checks.
-  const LOCAL = new Set(['.active-session.json', 'settings.local.json']);
+  // Leave machine-local state behind: settings.local.json names this
+  // machine's user, which the fixture has none of.
   cpSync(CLAUDE_DIR, join(fx, '.claude'), {
     recursive: true,
-    filter: (src) => !LOCAL.has(basename(src)),
+    filter: (src) => basename(src) !== 'settings.local.json',
   });
   return fx;
 }

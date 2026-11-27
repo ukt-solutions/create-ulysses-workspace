@@ -1,10 +1,7 @@
 #!/usr/bin/env node
-// PreToolUse hook — enforce workspace root write restrictions and detect
-// out-of-session repo writes.
+// PreToolUse hook — enforce workspace root write restrictions.
 //
-// New layout paths:
-//   Workspace worktree: work-sessions/{name}/workspace/
-//   Project worktree:   work-sessions/{name}/workspace/repos/{repo}/
+// Layout paths:
 //   Bare clone:         repos/{repo}/  (at workspace root)
 //   Task worktree:      repos/{repo}/.claude/worktrees/{slug}/  (gh:132)
 //   Workspace task worktree: {root}/.claude/worktrees/{slug}/  (gh:146)
@@ -15,9 +12,6 @@ import {
   getWorkspaceRoot,
   readStdin,
   respond,
-  getActiveSessionPointer,
-  readSessionTracker,
-  readJSON,
   getWorkspacePaths,
 } from './_utils.mjs';
 
@@ -110,32 +104,6 @@ async function main() {
     .join(' ')
     .replace(/\\/g, '/');
 
-  // If we're in a workspace worktree, check for out-of-session repo writes
-  const pointer = getActiveSessionPointer(root);
-  if (pointer) {
-    const mainRoot = pointer.rootPath || root;
-    const config = readJSON(join(mainRoot, 'workspace.json'));
-    const tracker = readSessionTracker(mainRoot, pointer.name);
-
-    if (tracker && config?.repos) {
-      // Find references to repos inside work-sessions/{name}/workspace/repos/{repo}/
-      // and also the workspace-root repos/{repo}/ for direct writes.
-      const wtMatch = paths.match(/work-sessions\/[^/\s]+\/workspace\/repos\/([^/\s]+)/);
-      const cloneMatch = paths.match(/(?:^|\s|\/)repos\/([^/\s]+)/);
-      const targetRepo = wtMatch ? wtMatch[1] : (cloneMatch ? cloneMatch[1] : null);
-      if (targetRepo) {
-        const sessionRepos = tracker.repos || [];
-        if (config.repos[targetRepo] && !sessionRepos.includes(targetRepo)) {
-          respond(`You're about to write to ${targetRepo}, which isn't part of this session. Consider adding it first so changes land on the session branch.`);
-          process.exit(0);
-        }
-      }
-    }
-
-    respond();
-    process.exit(0);
-  }
-
   // We're at the main workspace root — restrict writes
 
   const { scratchpadDir } = getWorkspacePaths(root);
@@ -186,7 +154,10 @@ async function main() {
     }
   }
 
-  // Check if this write targets repos/, workspace-context/, work-sessions/, or template files
+  // Check if this write targets repos/, workspace-context/, or template files.
+  // work-sessions/ counts as a repo write too: nothing writes there any more,
+  // and a workspace may still hold folders left over from the session
+  // lifecycle earlier template versions had.
   const isRepoWrite = /(?:^|[\s/])repos\//.test(judged) || judged.includes('work-sessions/');
   const isContextWrite = judged.includes('workspace-context/') && !basename(filePathArg).startsWith('local-only-');
   const isTemplateWrite = judged.includes('.claude/') && !judged.includes(scratchpadName);
