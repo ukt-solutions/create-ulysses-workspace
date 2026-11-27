@@ -12,7 +12,7 @@ A rule is a markdown file that gives Claude standing instructions. Unlike skills
 
 Rules live in `.claude/rules/` and are tracked in git. Every `.md` file in this directory is loaded on every turn — unless it declares `paths:` frontmatter, which defers loading until a matching file is touched (see "Path-Scoped Rules" below). This means the team shares the same behavioral constraints, and changes to rules are versioned and reviewable like any other code change.
 
-The template ships eighteen rules: nine active, two of which are path-scoped, and nine optional.
+The template ships seventeen rules: eight active, one of which is path-scoped, and nine optional.
 
 ## Active Rules
 
@@ -20,15 +20,15 @@ Seven rules ship active and load on every turn. These encode the core convention
 
 **coherent-revisions.md** — When revising any document or code, rewrite the affected section from start to finish so the result reads as a single coherent piece. Never patch or inject content between existing blocks. This applies to everything: docs, specs, code, context files, release notes, commit messages. The rule exists because injected revisions create fragmented output where the seams between old and new content are visible.
 
-**git-conventions.md** — Branch naming (`feature/`, `bugfix/`, `chore/` prefixes, kebab-case), the worktree layout (a task's under `repos/{repo}/.claude/worktrees/{slug}/`, or `.claude/worktrees/{slug}/` for the workspace repo itself; a legacy session's under `work-sessions/{name}/workspace/`), conventional commit format (`feat:`, `fix:`, `refactor:`, `chore:`, `docs:`), and commit discipline: fetch and rebase before a pull request, never auto-resolve a conflict, and never amend or force-push unless asked. These conventions keep git history clean and work state predictable.
+**git-conventions.md** — Branch naming (`feature/`, `bugfix/`, `chore/` prefixes, kebab-case), the worktree layout (a task's under `repos/{repo}/.claude/worktrees/{slug}/`, or `.claude/worktrees/{slug}/` for the workspace repo itself), conventional commit format (`feat:`, `fix:`, `refactor:`, `chore:`, `docs:`), and commit discipline: fetch and rebase before a pull request, never auto-resolve a conflict, and never amend or force-push unless asked. These conventions keep git history clean and work state predictable.
 
 **honest-pushback.md** — Three sections that enforce intellectual honesty. First, Claude must challenge assumptions and push back when something seems wrong — no sycophantic agreement. Second, "No Retry Loops" — if a fix fails twice with the same result, stop and research before trying again. Third, "Verify, Don't Assume" — when evidence is available (logs, database, UI, API responses), check it instead of guessing. Claude asks once whether to verify proactively, then remembers the preference for the session.
 
-**memory-guidance.md** — Decides where durable content goes, and what each destination costs. It orders the eight destinations from cheapest to most expensive — from nowhere, through a path-scoped rule, a skill, auto-memory and personal and shared context, up to canonical context and an unconditional rule — and has the always-loaded cost stated before anything is written to one of the two that tax every session. It carries the test for what qualifies as canonical, and what belongs in auto-memory. While work is in flight, its decisions and progress belong to the lifecycle's own state — the session tracker, or the task's chat drawer — not to auto-memory.
+**memory-guidance.md** — Decides where durable content goes, and what each destination costs. It orders the eight destinations from cheapest to most expensive — from nowhere, through a path-scoped rule, a skill, auto-memory and personal and shared context, up to canonical context and an unconditional rule — and has the always-loaded cost stated before anything is written to one of the two that tax every session. It carries the test for what qualifies as canonical, and what belongs in auto-memory. While work is in flight, its decisions and progress belong to the task's chat drawer, not to auto-memory.
 
-**work-item-tracking.md** — Defines the workspace's stance on issue tracking: when a tracker is configured in `workspace.json`, all work items live in the tracker (not in a local mirror), and skills read and write through a pluggable adapter at `.claude/scripts/trackers/{type}.mjs`. The template ships `github-issues` and `gitlab-issues` adapters; others can be added by dropping in a new module. The rule also describes when to create issues, how sessions link to them via `workItem:` frontmatter, and what state belongs in the tracker versus the session.
+**work-item-tracking.md** — Defines the workspace's stance on issue tracking: when a tracker is configured in `workspace.json`, all work items live in the tracker (not in a local mirror), and skills read and write through a pluggable adapter at `.claude/scripts/trackers/{type}.mjs`. The template ships `github-issues` and `gitlab-issues` adapters; others can be added by dropping in a new module. The rule also describes when to create issues, how a task links to them through the `workItem:` on its chat record, and what state belongs in the tracker rather than on that record.
 
-**workspace-structure.md** — Documents the directory layout of both lifecycles, the three levels of `workspace-context/`, the file-naming conventions, and the structural rules (the root stays on its default branch, and only `local-only-*` files and the scratchpad are writable from it). It also settles where specs and plans go: in the work area of the lifecycle they belong to — a task's chat drawer, or the top of a legacy session's worktree — overriding any default path an external skill might use.
+**workspace-structure.md** — Documents the directory layout, the three levels of `workspace-context/`, the file-naming conventions, and the structural rules (the root stays on its default branch, and only `local-only-*` files and the scratchpad are writable from it). It also settles where specs and plans go: in the task's chat drawer, overriding any default path an external skill might use.
 
 **goal-driven-work.md** — Decides when Claude Code's built-in `/goal` command is the right shape for work: when it is multi-phase, has an end state you can verify, and will span more than a turn or two. The rule is the convention layer that keeps phase state durable across turns and resumes. Everything after that decision is the `/goal-driven-work` skill.
 
@@ -74,11 +74,10 @@ The .skip pattern avoids the complexity of a configuration file that lists which
 
 ## Path-Scoped Rules
 
-A rule taxes context on every turn — unless it declares `paths:` frontmatter. A rule with a `paths:` array of globs loads only when Claude reads or edits a file matching one of them, so an instruction about session trackers costs nothing while you are writing code, and vice versa.
+A rule taxes context on every turn — unless it declares `paths:` frontmatter. A rule with a `paths:` array of globs loads only when Claude reads or edits a file matching one of them, so an instruction about calling a forge costs nothing while you are writing documentation, and vice versa.
 
-Two shipped rules are scoped this way:
+One shipped rule is scoped this way:
 
-- **task-list-mirroring.md** — `work-sessions/**` and `**/session.md`. The `## Tasks` contract only matters when a session tracker is in play.
 - **forge-operations.md** — `**/.claude/skills/**` and `**/.claude/scripts/**`. The forge-adapter discipline only matters when writing the skills and scripts that call it.
 
 Use `paths:` for your own rules whenever the instruction applies to specific files or directories rather than to every session — a rule about migration scripts does not need to be in context while editing documentation. `context-footprint.mjs` lists scoped rules separately from the always-loaded total, and `/maintenance` warns when that total exceeds `workspace.alwaysLoadedBudgetBytes`. Scoping composes with the .skip pattern: `paths:` decides *when* an active rule loads, `.skip` decides *whether* it loads at all.
@@ -123,8 +122,8 @@ Ship new rules as `.md.skip` if they are optional for the team. Ship them as `.m
 .claude/rules/
 ├── coherent-revisions.md          # Active — loaded every turn
 ├── git-conventions.md             # Active — loaded every turn
+├── forge-operations.md             # Active, path-scoped — loads when a skill or script is touched
 ├── …                              # the rest of the active rules
-├── task-list-mirroring.md         # Active, path-scoped — loads when a session tracker (`session.md`) is touched
 ├── scope-guard.md.skip            # Optional — available
 ├── config-review.md.skip          # Optional — available
 ├── …                              # the rest of the optional rules
@@ -135,7 +134,7 @@ Ship new rules as `.md.skip` if they are optional for the team. Ship them as `.m
 
 ## Key Takeaways
 
-- Rules are always-loaded behavioral constraints. Every `.md` file in `.claude/rules/` is read on every turn — except rules with `paths:` frontmatter (task-list-mirroring, forge-operations), which load only when a matching file is touched.
-- The template ships eighteen rules: nine active, seven unconditional and two path-scoped, and nine optional `.skip` rules, which you activate by renaming.
+- Rules are always-loaded behavioral constraints. Every `.md` file in `.claude/rules/` is read on every turn — except the rule with `paths:` frontmatter (forge-operations), which loads only when a matching file is touched.
+- The template ships seventeen rules: eight active, seven unconditional and one path-scoped, and nine optional `.skip` rules, which you activate by renaming.
 - The .skip pattern is a universal three-state convention: `.md` (active), `.md.skip` (available), `local-only-` (personal).
 - User instructions in CLAUDE.md take priority over rules. Skills can declare exceptions to rules.

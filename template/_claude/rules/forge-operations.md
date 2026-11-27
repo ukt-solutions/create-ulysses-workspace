@@ -13,13 +13,14 @@ workflow-run operations.** They go through the adapter at `.claude/scripts/forge
 reached via `createForge()` from `.claude/scripts/forges/interface.mjs`.
 
 The interface module is the source of truth for the available methods and their shapes —
-read it when you need the API. `/complete-work` and `/pause-work` each carry the exact calls
-they make, so in practice you rarely need to look.
+read it when you need the API. The callers that ship — `task-pr.mjs`, which `/complete-work`
+and `/migrate-sessions` hand their pull-request work to, and the `/release` skill — carry the
+exact calls they make, so in practice you rarely need to look.
 
 ## Why
 
 Switching code hosts becomes a `workspace.json` field plus one adapter file instead of a
-sweep across six skills. Failure modes share typed errors — `PrNotFound`, `MergeRejected`,
+sweep across every caller. Failure modes share typed errors — `PrNotFound`, `MergeRejected`,
 `WorkflowNotFound`, `ReleaseNotFound` — instead of every callsite parsing stderr. And the
 adapter takes an injectable `spawnFn`, so tests mock subprocesses rather than running them.
 

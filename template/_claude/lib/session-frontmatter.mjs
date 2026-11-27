@@ -1,4 +1,4 @@
-// Session frontmatter parser for work-sessions/{name}/session.md trackers.
+// Frontmatter parser for the workspace's markdown files.
 //
 // Reads and writes a small, opinionated subset of YAML scoped to the
 // fields the workspace actually uses. Lossless rewrites: when a field is
@@ -12,9 +12,11 @@
 //   - inline lists ("names: [a, b]")
 //
 // Anything outside this subset throws. The parser is intentionally narrow.
+//
+// This module is a library, not a CLI: the scripts import it, and nothing is
+// meant to run it with arguments.
 
-import { readFileSync, writeFileSync, realpathSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { readFileSync, writeFileSync } from 'fs';
 
 const FM_DELIM = '---';
 
@@ -263,45 +265,4 @@ export function writeSessionFile(filePath, fields, body = '') {
  */
 export function readSessionFields(filePath) {
   return readSessionFile(filePath).fields;
-}
-
-// This module is a LIBRARY, not a CLI. Several skills say "update the tracker
-// via the session-frontmatter helper", and the natural reading of that — given
-// that everything else a skill invokes (sync-tasks.mjs, create-work-session.mjs,
-// build-workspace-context.mjs) is a real CLI — is to run this file with flags.
-//
-// Without this guard, Node imports the module, finds no side effects, ignores
-// the arguments and EXITS 0. The caller sees success, the frontmatter is
-// untouched, and a `cmd || fallback` idiom never fires because exit 0 is
-// success. That silently dropped a `workItem:` linkage during the gh:89
-// session and was only caught by re-reading the file (gh:143).
-//
-// So: fail loudly and say what to call instead.
-//
-// import.meta.url is the real file — percent-encoded, and resolved through
-// symlinks — while argv[1] is the path as typed, so the two are compared as
-// real paths. Gluing a `file://` prefix onto argv[1] instead matched no
-// Windows path at all (`file:///D:/…` against `D:\…`): the guard never fired
-// there and a direct run went back to exiting 0.
-function isMainModule(metaUrl) {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(process.argv[1]);
-  } catch { return false; }
-}
-
-if (isMainModule(import.meta.url)) {
-  process.stderr.write(
-    'session-frontmatter.mjs is a library, not a CLI — it takes no arguments.\n' +
-    '\n' +
-    'Import it instead:\n' +
-    '  node --input-type=module -e \'\n' +
-    '  import { updateSessionFile } from "./.claude/lib/session-frontmatter.mjs";\n' +
-    '  updateSessionFile("session.md", { workItem: "gh:42" });\n' +
-    '  \'\n' +
-    '\n' +
-    'Exports: parseSessionContent, updateSessionContent, updateSessionFile,\n' +
-    'readSessionFile, readSessionFields, writeSessionFile.\n',
-  );
-  process.exit(2);
 }

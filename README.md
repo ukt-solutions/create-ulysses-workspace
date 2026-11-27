@@ -11,7 +11,7 @@
 
 > Rules, skills, and hooks that steer Claude Code through real work. Tracked tasks from issue to pull request, multi-repo with versioning, shared context that survives chat boundaries.
 
-> **Beta.** Pre-1.0 releases ship under the `@beta` dist-tag — install with `@beta`, as every command below does. Release candidates for 1.0.0 will ship under `@rc`. `latest` is not maintained until 1.0.0 and may point to an older beta, so use `@beta` for now. Conventions and CLI flags are stable. Beta testers welcome — please [open an issue](https://github.com/ukt-solutions/create-ulysses-workspace/issues) if anything's confusing.
+> **Beta.** Pre-1.0 releases ship under the `@beta` dist-tag — install with `@beta`, as every command below does. Release candidates for 1.0.0 will ship under `@rc`. `latest` is not maintained until 1.0.0 and may point to an older beta, so use `@beta` for now. Breaking changes are still allowed before 1.0.0 and ride on minor bumps, so read a release's notes before upgrading — [VERSIONING.md](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/VERSIONING.md) defines what counts as one. Beta testers welcome — please [open an issue](https://github.com/ukt-solutions/create-ulysses-workspace/issues) if anything's confusing.
 
 Requires Node 20.9 or later.
 
@@ -51,7 +51,7 @@ npx @ulysses-ai/create-workspace@beta --init
 
 `--init` treats the current directory as the workspace root and adds the workspace around what is already there. An existing `.gitignore` gains the template's entries. An existing `.mcp.json` is kept, and `/workspace-init` offers to add the template's servers to it. An existing `CLAUDE.md` is backed up to `CLAUDE.md.bak` and replaced with the workspace template, so your old content is preserved for `/workspace-init` to extract from.
 
-Then run `claude` and `/workspace-init`. The skill discovers any repos already present, asks which to register in `workspace.json`, prompts for any additional repos to add, extracts documentation from existing sources, and formalizes any in-progress git worktrees as work sessions. Then `/start-work` to begin.
+Then run `claude` and `/workspace-init`. The skill discovers any repos already present, asks which to register in `workspace.json`, prompts for any additional repos to add, and extracts documentation from existing sources. Then `/start-work` to begin.
 
 The interactive scaffolder is for a new workspace and needs an empty directory: one that doesn't exist yet, or holds nothing but a freshly created, empty git repository. Pointed at a directory that already has files, it refuses and leaves them as they are, naming `--init` as the way to go.
 
@@ -76,9 +76,9 @@ Rules say what's safe. Skills say how to do the recurring things. Hooks notice w
 
 Four things, in the order you'll touch them:
 
-1. **A workflow lifecycle that survives chat boundaries.** `/start-work` provisions the work — issue, branch, worktree — and `/complete-work` rebases, opens PRs, merges, and tears down. New work is always a **task**: one issue, one branch and one worktree per repo it touches, with the chat staying at the workspace root. The older **session** lifecycle — a long effort wrapped in a self-contained folder with a tracker file — starts nothing new; the sessions a workspace already has keep resuming and completing until `/migrate-sessions` drains them.
+1. **A workflow lifecycle that survives chat boundaries.** `/start-work` provisions the work — issue, branch, worktree — and `/complete-work` rebases, opens PRs, merges, and tears down. Work is a **task**: one issue, one branch and one worktree per repo it touches, with the chat staying at the workspace root. That is the only lifecycle. Earlier versions also had **sessions** — a long effort wrapped in a self-contained folder with a tracker file — and a workspace that still has such folders drains them with `/migrate-sessions`.
 
-2. **Parallel work you can run from separate terminals.** Each unit of work gets its own branch and its own git worktrees, so two can't collide on a branch or a working directory. A task's worktrees live under each repo's `.claude/worktrees/{slug}/`; a legacy session keeps its worktrees in its own folder under `work-sessions/{name}/`.
+2. **Parallel work you can run from separate terminals.** Each unit of work gets its own branch and its own git worktrees, so two can't collide on a branch or a working directory. A task's worktrees live under each repo's `.claude/worktrees/{slug}/`.
 
 3. **Multi-repo support with versioning across repos.** A workspace wraps your project repos rather than replacing them. A task can span one repo or many. `/release` cuts a versioned release per repo — bump, tag, forge release with notes generated from merged PRs.
 
@@ -90,8 +90,8 @@ Four things, in the order you'll touch them:
 
 A scaffolded workspace with:
 
-- **17 skills** covering the workflow lifecycle, releases, handoffs, and maintenance
-- **9 active rules** + **9 optional `.skip` rules** for behaviors you can opt into
+- **15 skills** covering the workflow lifecycle, releases, handoffs, and maintenance
+- **8 active rules** + **9 optional `.skip` rules** for behaviors you can opt into
 - **9 hooks** for SessionStart, SubagentStart, PreCompact, and the rest of the small set the conventions rely on
 - A **`workspace-context/`** memory system with three visibility levels: `shared/locked/` (team truths), `shared/` (team-visible ephemerals), `team-member/{user}/` (personal)
 - Conventions for **multi-repo tasks** with isolated git worktrees, parallelizable from separate terminals
@@ -122,7 +122,7 @@ The eleven [chapters](https://github.com/ukt-solutions/create-ulysses-workspace/
 | Part | Chapter | Topic |
 |------|---------|-------|
 | Concepts | [01](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/01-what-is-a-workspace.md) | What Is a Workspace |
-| | [02](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/02-work-sessions.md) | Work Sessions |
+| | [02](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/02-work-sessions.md) | Tasks |
 | | [03](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/03-workspace-context.md) | Workspace Context |
 | The Toolkit | [04](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/04-claude-md.md) | CLAUDE.md |
 | | [05](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/docs/chapters/05-rules.md) | Rules |
@@ -137,7 +137,7 @@ What counts as a breaking change, and what the version number does and does not 
 
 ## Status
 
-In active pre-1.0 development. Used as dogfood and validated against external workspaces. Conventions and CLI flags are stable; small refinements continue. v1.0 will mark a stability commitment.
+In active pre-1.0 development. It is used as the dogfood workspace — the workspace this template is developed in runs on it — and no external workspace has validated it yet; external beta testers are welcome. Conventions and CLI flags are not stable yet: breaking changes are still allowed before 1.0.0 and ride on minor bumps, as [VERSIONING.md](https://github.com/ukt-solutions/create-ulysses-workspace/blob/main/VERSIONING.md) defines. v1.0 will mark a stability commitment.
 
 ## Feedback
 

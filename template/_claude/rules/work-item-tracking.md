@@ -3,8 +3,9 @@
 When a workspace has a tracker configured, **all work items — bugs, features, chores — live
 in that tracker.** There is no local file mirroring its state. Skills reach it through
 `createTracker()` from `.claude/scripts/trackers/interface.mjs`; that module is the source of
-truth for the available methods, and the four skills that use it (`start-work`, `pause-work`,
-`complete-work`, `setup-tracker`) each carry the exact calls they make.
+truth for the available methods, and the callers that use it — the `start-work` and
+`setup-tracker` skills, and `task-pr.mjs` when `complete-work` closes the issue — each carry
+the exact calls they make.
 
 ## Why external-first
 
@@ -23,23 +24,23 @@ issues live, or `"auto"` to resolve from the git remote. Epics are configured wi
 throws. No `workspace.tracker` means tracking is disabled, and skills fall back
 to a blank describe-the-work flow rather than fabricating a local mirror.
 
-## Session linkage
+## Task linkage
 
-`/start-work` records the adapter-prefixed issue ID in session frontmatter as `workItem: gh:42`.
-The prefix makes it self-describing across adapter swaps.
+`/start-work` records the adapter-prefixed issue ID on the chat record's task entry as
+`workItem: gh:42`. The prefix makes it self-describing across adapter swaps.
 
 ## When to create issues
 
 - **Work described during `/start-work`** → create the issue, then claim it.
-- **A bug or feature found mid-session** → ask "Create an issue for this? [Y/n]". Link it to
-  the session if it is in scope; leave it unassigned if it is a future concern.
+- **A bug or feature found mid-task** → ask "Create an issue for this? [Y/n]". Link it to
+  the task if it is in scope; leave it unassigned if it is a future concern.
 - **Never during braindumps or handoffs.** Those are discussion artifacts. Action items can
   graduate to issues later, at `/start-work`.
 
 ## What not to do
 
 - Do not create, read, or write `workspace-context/open-work.md`. It is deprecated.
-- Do not put ticket state in session frontmatter beyond the `workItem:` pointer. Status,
+- Do not put ticket state on the chat record beyond the `workItem:` pointer. Status,
   assignment, labels and milestone live in the tracker.
 - Do not cache issue bodies locally. Fetch with `tracker.getIssue(id)` when you need one.
 

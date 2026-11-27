@@ -1,6 +1,6 @@
 ---
 name: build-docs-site
-description: Build a comprehensive Docusaurus documentation site for a project. Consolidates scattered knowledge sources (README, docs/, existing sites, code, shared context, chat dumps, exports) into a coherent branded reference with theme-aware diagrams. Replaces existing documentation while using it as raw material. Multi-hour skill — requires an active work session.
+description: Build a comprehensive Docusaurus documentation site for a project. Consolidates scattered knowledge sources (README, docs/, existing sites, code, shared context, chat dumps, exports) into a coherent branded reference with theme-aware diagrams. Replaces existing documentation while using it as raw material. Multi-hour skill — requires an active task.
 ---
 
 # Build Docs Site
@@ -11,15 +11,15 @@ The intent is to **replace** existing documentation while treating it as raw mat
 
 ## Parameters
 
-- `/build-docs-site` — start a new site or resume an in-progress one in the active work session
+- `/build-docs-site` — start a new site or resume an in-progress one in the active task
 - `/build-docs-site --diagrams` — explicitly resume at Phase 7 (diagrams) on an existing site
 
 ## Prerequisites
 
-This skill requires an active work session. It does multi-hour work and loses state on context compaction without one.
+This skill requires an active task. It does multi-hour work and loses state on context compaction without one.
 
-- Run `/start-work` first if no session is active
-- Confirm the target project repo (the skill uses the session marker's `repos[0]` if there's only one)
+- Run `/start-work` first if no task is active
+- Confirm the target project repo (when the task touches a single repo, that is the one)
 - Default output location: `apps/docs-site/` for monorepos, `docs-site/` otherwise
 - Docusaurus 3.10+ is the target — Node 20+ required on the user's machine
 
@@ -60,8 +60,8 @@ References below use paths relative to the skill directory.
 
 ### Phase 0 — Prerequisites and project confirmation
 
-1. Verify an active work session exists. If not: stop and instruct the user to run `/start-work`.
-2. Read the session marker. Identify the target project repo. If multiple repos, ask which one.
+1. Verify an active task exists. If none does: stop and instruct the user to run `/start-work`.
+2. Identify the target project repo from the task's worktrees. If the task touches multiple repos, ask which one.
 3. Determine the output path. Default rules:
    - Monorepo (workspace files at root): `apps/docs-site/`
    - Single-package repo: `docs-site/`
@@ -98,9 +98,8 @@ For the codebase:
 For shared context:
 - Walk `workspace-context/` for handoffs, braindumps, and locked team knowledge
 
-For work-session history:
-- Walk `work-sessions/*/workspace/session.md` for any currently-active session trackers — their bodies may contain decisions not yet captured anywhere durable
-- Walk the chat drawers `workspace-scratchpad/chats/*/` for in-progress task-model material — designs, plans, braindumps, research not yet promoted into `workspace-context/` — same rationale: it is thinking the site may need that no merged artifact carries
+For in-progress work:
+- Walk the chat drawers `workspace-scratchpad/chats/*/` for in-progress task material — designs, plans, braindumps, research not yet promoted into `workspace-context/`. It is thinking the site may need that no merged artifact carries.
 
 For existing project documentation (from Phase 1 Q2):
 - Read every file the user pointed at
@@ -263,13 +262,13 @@ After "done" is declared, expect feedback in four categories. Address each in or
 
 After Phase 6 is clean, ask:
 
-> Ready to do diagrams? This can add significant content and may benefit from a fresh work session. Options:
+> Ready to do diagrams? This can add significant content and may benefit from a fresh chat. Options:
 > A. Continue now (recommended if context space is plentiful)
-> B. `/complete-work` on content and start a fresh session for diagrams
+> B. `/complete-work` on content and start a fresh chat for diagrams
 > C. Defer diagrams entirely
 
 If A: continue inline.
-If B: exit cleanly and hand off. The user re-invokes `/build-docs-site --diagrams` in the new session.
+If B: exit cleanly and hand off. The user re-invokes `/build-docs-site --diagrams` in the new chat.
 If C: skip to Phase 8.
 
 #### Approach decisions
@@ -314,7 +313,7 @@ Produce a final report:
 - **Files needing user decision.** Any old docs with content that didn't migrate cleanly — coverage check found gaps the user needs to resolve.
 - **URLs that may need redirects.** If the old docs had live URLs, list them. The skill flags but does not set up redirects.
 
-Update the session tracker with the final state. The skill's work ends here. `/complete-work` handles the merge, the PR, and cleanup.
+Record the final state with a `/handoff` to the chat drawer. The skill's work ends here. `/complete-work` handles the merge, the PR, and cleanup.
 
 ## Notes
 
@@ -322,4 +321,4 @@ Update the session tracker with the final state. The skill's work ends here. `/c
 - Diagrams primitives are deliberately fixed (no project customization) because the class-based fill pattern is load-bearing for theme support.
 - The leak grep is project-accurate because it derives the list from the project's own dependency manifests. Do not maintain a hardcoded master list — it would over-trigger for projects whose docs legitimately discuss their own dependencies.
 - The forbidden-word grep is per-project — each project supplies its own list from Phase 1 Q5. There is no default.
-- This skill takes hours, not minutes. Always run inside an active work session. Update the session tracker periodically so context compaction doesn't lose state.
+- This skill takes hours, not minutes. Always run inside an active task. Capture progress with `/handoff` periodically so context compaction doesn't lose state.

@@ -92,7 +92,7 @@ When you are ready to do actual work:
 
 You pick an issue from the team's tracker, or describe new work and it files one. You can also name the issue on the command line: `/start-work gh:42`. The workspace creates one branch and one worktree per repo the task touches, under `repos/{repo}/.claude/worktrees/{slug}/` (the branch name with `/` turned into `-`; `.claude/worktrees/{slug}/` when the task changes the workspace repo itself). Your chat stays at the workspace root and reaches the worktrees by path.
 
-If the workspace still has sessions from before tasks — work a teammate started under the older session lifecycle — `/start-work` offers them first, so one can be resumed instead of a task started. New work is always a task; nothing in `workspace.json` chooses.
+New work is always a task; nothing in `workspace.json` chooses. If the workspace still holds sessions from the lifecycle of earlier versions — work a teammate started under it — the session-start hook says so at launch. `/start-work` does not resume them; `/migrate-sessions` is how they are drained.
 
 Either way, your work is isolated from everyone else's until it merges.
 
@@ -116,7 +116,7 @@ When the work is done:
 
 Claude rebases, opens pull requests with a description of the change, merges once you approve, and closes the linked issue.
 
-If you need to stop before the work is done, `/handoff` captures where you are. The task stays open on your chat's record with its worktrees in place, and `/start-work` on the same issue finds it again. Only a session started under the older session lifecycle has `/pause-work`, which pushes its work and opens draft pull requests.
+If you need to stop before the work is done, `/handoff` captures where you are. The task stays open on your chat's record with its worktrees in place, and `/start-work` on the same issue finds it again.
 
 ## You Are Set Up
 

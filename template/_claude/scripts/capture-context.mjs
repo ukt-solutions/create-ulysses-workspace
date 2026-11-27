@@ -28,9 +28,9 @@
 // tracked capture committed at the root would land on that branch, so when
 // --root is a git checkout sitting on its default branch the helper refuses
 // a tracked capture, for --print-only as for a write. The error names the
-// way out: --local-only, or a worktree — a task's or a session's — which is
-// on another branch and passes. Nothing waves a capture through; what must
-// be tracked is written into a worktree.
+// way out: --local-only, or a task's worktree, which is on another branch
+// and passes. Nothing waves a capture through; what must be tracked is
+// written into a worktree.
 //
 // The guard is a safety net behind the rule the skills state, not the rule
 // itself, and it fails open. It says nothing, and the capture proceeds as if
@@ -222,7 +222,7 @@ function defaultBranchOf(gitFn, root, current) {
 /**
  * True when {root} is the top-level checkout of a git repository whose HEAD
  * is on that repository's default branch — the state the workspace launcher
- * is kept in. A task or session worktree is the same repository on another
+ * is kept in. A task worktree is the same repository on another
  * branch and returns false. So does anything git cannot vouch for: no git,
  * no repository, a detached HEAD, a directory merely nested inside some
  * other repository, or a default branch that cannot be recognised.

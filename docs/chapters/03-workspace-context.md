@@ -54,7 +54,7 @@ Shared-level files are an explicit choice. Content lands here when you deliberat
 
 Personal files persist from one piece of work to the next. They stay until you promote them, move them, or delete them.
 
-In-flight work state — a session's tracker, a task's specs and plans — never lives in `workspace-context/`. That is for knowledge that outlives any single effort. A session keeps its state in `work-sessions/{name}/`, and a task keeps it in its chat's drawer under `workspace-scratchpad/chats/{chat}/`. The capture skills route around this on their own; [how context gets created](#how-context-gets-created) shows how.
+In-flight work state — a task's specs and plans — never lives in `workspace-context/`. That is for knowledge that outlives any single effort. A task keeps its state in its chat's drawer under `workspace-scratchpad/chats/{chat}/`. The capture skills route around this on their own; [how context gets created](#how-context-gets-created) shows how.
 
 ## How the Levels Reach Claude
 
@@ -76,21 +76,20 @@ Three capture skills write workspace context. Each serves a different purpose.
 
 **`/aside`** captures a drive-by idea without interrupting the current work. Use it when a thought crosses your mind that does not belong to the current work but should not be lost.
 
-Where `/handoff` and `/braindump` write depends on where you are:
+Where `/handoff` and `/braindump` write depends on whether the chat has a drawer:
 
 | Where you are | What they write |
 |---|---|
-| Inside a legacy session's workspace worktree | The session tracker's body, at `work-sessions/{name}/workspace/session.md`, committed on the session branch |
-| Anywhere else, in a chat with a drawer — the default | A `handoff_{topic}.md` or `braindump_{topic}.md` in that chat's drawer, `workspace-scratchpad/chats/{chat}/` — gitignored and machine-local |
+| In a chat with a drawer — the default | A `handoff_{topic}.md` or `braindump_{topic}.md` in that chat's drawer, `workspace-scratchpad/chats/{chat}/` — gitignored and machine-local |
 | In a chat with no drawer, because the SessionStart hook injected no `Chat record:` line | A gitignored draft in `workspace-context/team-member/{user}/`: `local-only-handoff_{topic}.md` or `local-only-braindump_{topic}.md` |
 
-The drawer needs only the `Chat record:` line the SessionStart hook injects, and `workspace.sessionModel` plays no part in the choice. Under a session, the captured reasoning becomes part of the session's durable thinking, and `/complete-work` carries it into the PR body when the session finishes. Under a task, `/complete-work` lists the drawer and asks what deserves to move into `workspace-context/`. Neither commits anything at capture time.
+The drawer needs only the `Chat record:` line the SessionStart hook injects. `/complete-work` lists the drawer and asks what deserves to move into `workspace-context/`. Nothing is committed at capture time.
 
 The root is the launcher, and the launcher is no place to commit: only `local-only-*` files and the scratchpad are writable from it, and real work happens in worktrees. So a capture made there stays on your machine, a draft for an audience of one. Nothing is committed, and the generated index does not list it. It becomes team-visible through `/promote`, which picks up `local-only-` files: for each one you promote, it writes a tracked copy where you choose — `workspace-context/shared/`, `workspace-context/team-member/{user}/`, or `workspace-context/shared/locked/` — removes the draft, and commits the result on its own.
 
 Every capture goes through `.claude/scripts/capture-context.mjs`, which works out the path, applies the type prefix and adds the frontmatter, so the skills cannot drift from one another. `/handoff` and `/braindump` each take an optional name (`/handoff auth` gives the file the topic `auth`); with no name, the skill looks at the conversation and suggests one.
 
-`/aside` is the one capture that ignores the lifecycle. Inside a session or a task, `/handoff` and `/braindump` write to the tracker or the drawer; `/aside` writes to `workspace-context/team-member/{user}/` regardless, as a gitignored `local-only-` file. By default it dispatches a background agent to research the idea while you keep working; `--quick` parks the thought as a note without the research step. The result is `local-only-research_{topic}.md`, or `local-only-braindump_{topic}.md` with `--quick`. It is never committed and takes no part in a session. Like a root capture, it reaches the team only through `/promote`.
+`/aside` is the one capture that stands apart from the task. While a task is active, `/handoff` and `/braindump` write to the drawer; `/aside` writes to `workspace-context/team-member/{user}/` regardless, as a gitignored `local-only-` file. By default it dispatches a background agent to research the idea while you keep working; `--quick` parks the thought as a note without the research step. The result is `local-only-research_{topic}.md`, or `local-only-braindump_{topic}.md` with `--quick`. It is never committed and takes no part in a task. Like a root capture, it reaches the team only through `/promote`.
 
 ## The Promotion Lifecycle
 
@@ -138,14 +137,11 @@ Workspace context follows naming conventions rather than a directory hierarchy. 
 | `/aside` | `research_{topic}.md`, or `braindump_{topic}.md` with `--quick` |
 | `/promote` | keeps the source file's prefix |
 
-These type prefixes apply to the working documents under `shared/` and `team-member/{user}/`. Files in `shared/locked/` use bare names, because the location already says what they are. A draft adds the `local-only-` prefix to stay gitignored until it is promoted — which is what `/handoff` and `/braindump` write outside a session or a task, and what `/aside` always writes. Topics are named without a date prefix; the frontmatter has `updated:` for timestamps.
+These type prefixes apply to the working documents under `shared/` and `team-member/{user}/`. Files in `shared/locked/` use bare names, because the location already says what they are. A draft adds the `local-only-` prefix to stay gitignored until it is promoted — which is what `/handoff` and `/braindump` write in a chat with no drawer, and what `/aside` always writes. Topics are named without a date prefix; the frontmatter has `updated:` for timestamps.
 
-In-flight artifacts are named by the work they belong to, and they do not go in `workspace-context/`:
+In-flight artifacts are named by the work they belong to, and they do not go in `workspace-context/`: a task keeps its spec as `design-{topic}.md` and its plan as `plan-{topic}.md`, in its chat's drawer at `workspace-scratchpad/chats/{chat}/`.
 
-- A session keeps its tracker at `work-sessions/{name}/workspace/session.md`, with its spec as `design-{topic}.md` and its plan as `plan-{topic}.md` beside it.
-- A task uses the same `design-{topic}.md` and `plan-{topic}.md` names, in its chat's drawer at `workspace-scratchpad/chats/{chat}/`.
-
-The principle behind both is one topic per file. A handoff about authentication and a braindump about database migration are two files, not two sections in one file. Different topics have different lifecycles, different audiences, and different promotion paths. Keeping them separate means each can be promoted, archived, or deleted independently.
+The principle is one topic per file. A handoff about authentication and a braindump about database migration are two files, not two sections in one file. Different topics have different lifecycles, different audiences, and different promotion paths. Keeping them separate means each can be promoted, archived, or deleted independently.
 
 If you cannot name a file cleanly, you are probably conflating topics. The name forces clarity.
 
@@ -160,7 +156,7 @@ The split is simple:
 - **Should it outlive this machine?** → `workspace-context/` (tracked in git)
 - **Will I read it once and discard?** → `workspace-scratchpad/` (gitignored)
 
-A spec or plan belongs to the work it serves, so it goes in that work's own area — the session worktree or the task's drawer — rather than in `workspace-context/`. When the work completes, `/complete-work` offers to promote whatever deserves to outlive it.
+A spec or plan belongs to the work it serves, so it goes in that work's own area — the task's drawer — rather than in `workspace-context/`. When the work completes, `/complete-work` offers to promote whatever deserves to outlive it.
 
 That makes one corner of the scratchpad worth more than the rest. A task's drawer is machine-local and backed up nowhere, and the session log, `session-log.jsonl`, is a history no other file keeps. Promote what matters before you retire a machine.
 
@@ -171,7 +167,7 @@ That makes one corner of the scratchpad worth more than the rest. A task's drawe
 - Workspace context is markdown files in git — no database, no external service.
 - Three levels under `workspace-context/`: `shared/locked/` (canonical, loaded every session), `shared/` (team-visible), `team-member/{user}/` (personal, and the default).
 - Canonical loads in full through the generated `canonical.md`; the other two levels load as generated indexes.
-- `/handoff`, `/braindump` and `/aside` are the capture skills. The first two follow where the chat is working: a legacy session's tracker, otherwise the chat's drawer, or — in a chat with no drawer — a gitignored `local-only-` draft. `/aside` always writes a `local-only-` draft.
+- `/handoff`, `/braindump` and `/aside` are the capture skills. The first two write to the chat's drawer, or — in a chat with no drawer — a gitignored `local-only-` draft. `/aside` always writes a `local-only-` draft.
 - Content flows upward through `/promote`. Promotion to canonical is a high bar.
 - A `local-only-` file is never loaded by the generated catalogs; import it from CLAUDE.md if you want it in the window.
 - For things you genuinely do not want preserved, use `workspace-scratchpad/` — gitignored and lazy-created.

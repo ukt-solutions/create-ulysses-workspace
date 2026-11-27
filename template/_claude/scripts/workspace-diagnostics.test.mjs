@@ -375,7 +375,7 @@ console.log('# cwd-independence regression test');
   writeFileSync(join(fixtureRoot, 'workspace.json'), JSON.stringify({ workspace: { templateVersion: '9.9.9' } }));
   const projectsDir = join(claudeHome, 'projects', deriveProjectsSlug(fixtureRoot));
   writeTranscript(projectsDir, 'cwd-indep-session', [
-    assistantRecord({ content: [skillToolUse('pause-work')] }),
+    assistantRecord({ content: [skillToolUse('promote')] }),
   ]);
 
   const before = readdirSync(otherCwd);
@@ -390,7 +390,7 @@ console.log('# cwd-independence regression test');
 
   assert(agg.templateVersion === '9.9.9', 'correct templateVersion read despite different process.cwd()');
   const skillMap = Object.fromEntries(agg.transcripts.skillCounts.map((s) => [s.name, s.count]));
-  assertEq(skillMap['pause-work'], 1, 'correct skill counts read despite different process.cwd()');
+  assertEq(skillMap['promote'], 1, 'correct skill counts read despite different process.cwd()');
 
   const after = readdirSync(otherCwd);
   assertEq(after, before, 'nothing was written into the unrelated cwd directory');

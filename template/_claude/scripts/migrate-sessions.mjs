@@ -74,8 +74,8 @@
 //                 --launcher <root> counts the remaining sessions from
 //                 the launcher when --root is that worktree). Kept for
 //                 back-compat: new work is a task whatever the key holds,
-//                 so the write brings an older workspace.json in line with
-//                 the template and routes nothing.
+//                 so the write only stops an older workspace.json from
+//                 still saying "session" — it routes nothing.
 //
 // NOTHING HERE DELETES — with one deliberate exception: --remove-shell,
 // whose target is a folder provably empty of files and symlinks
@@ -615,8 +615,8 @@ function readTracker(wsDir) {
   if (!existsSync(trackerPath)) return null;
   try {
     const fields = readSessionFields(trackerPath);
-    // normalizeRepos parity with cleanup-work-session.mjs: a scalar or
-    // null repos field must never iterate as characters.
+    // An older or hand-edited tracker may carry repos as a scalar or null;
+    // a string must never iterate as characters.
     const rawRepos = fields.repos;
     const repos = Array.isArray(rawRepos) ? rawRepos.map(String)
       : rawRepos == null || rawRepos === '' ? [] : [String(rawRepos)];
@@ -1257,10 +1257,10 @@ function sessionTips(gitFn, rootDir, folder) {
   if (discovered) {
     const nested = join(wsDir, 'repos');
     if (existsSync(nested)) {
-      // Mirror cleanup's discovery: every entry that statSync reports as
-      // a directory (symlinks to directories included). Entries that are
-      // not really worktrees are caught by the structure allowlist, but
-      // the deletion set stays a superset either way.
+      // Every entry that statSync reports as a directory (symlinks to
+      // directories included). Entries that are not really worktrees are
+      // caught by the structure allowlist, but the tip set stays a superset
+      // either way.
       repos = readdirSync(nested).filter((n) => {
         try {
           return statSync(join(nested, n)).isDirectory();
@@ -1275,8 +1275,8 @@ function sessionTips(gitFn, rootDir, folder) {
     branch = wsWt ? wsWt.branch : null;
   }
 
-  // Tips: the branch ref in every repo cleanup will delete it from, plus
-  // every worktree HEAD. Deduped per repo+sha, branch names preferred.
+  // Tips: the branch ref in every repo the session names, plus every
+  // worktree HEAD. Deduped per repo+sha, branch names preferred.
   const tips = [];
   const seen = new Map();
   const addTip = (repoDir, repo, kind, ref, sha) => {
@@ -2126,8 +2126,8 @@ function isLinkedWorktree(gitFn, rootDir) {
 /**
  * Write workspace.sessionModel: "task", keeping every other key untouched.
  * Kept for back-compat: new work is a task whatever the key holds, so the
- * write brings an older workspace.json in line with the template and routes
- * nothing. From the launcher this also reports the remaining sessions; from
+ * write only stops an older workspace.json from still saying "session" — it
+ * routes nothing. From the launcher this also reports the remaining sessions; from
  * a task worktree (the S6 flow) there is no sessions directory to read —
  * pass `launcher` (CLI `--launcher <root>`) to count them from the launcher
  * anyway, or get remainingSessions null with a note saying where the real

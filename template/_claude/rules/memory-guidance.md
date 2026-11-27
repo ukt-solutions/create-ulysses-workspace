@@ -56,10 +56,9 @@ corrections about project conventions, external URLs and API quirks, tooling wor
 Don't save: temporary debugging state, file contents (re-read them), anything already in a
 workspace-context file or a rule.
 
-When work is in flight, its decisions and progress go in the lifecycle's own state — the
-session tracker body at `work-sessions/{name}/workspace/session.md` (session model) or the
-chat drawer at `workspace-scratchpad/chats/{chat}/` (task model) — which `/complete-work`
-consumes. Auto-memory is for what outlives the work. Never both.
+When work is in flight, its decisions and progress go in the chat drawer at
+`workspace-scratchpad/chats/{chat}/`, which `/complete-work` consumes. Auto-memory is for
+what outlives the work. Never both.
 
 For the full routing procedure, the frontmatter schema, the generator invocations, and the
 belongs/doesn't-belong lists behind the canonical test, invoke the `context-placement`

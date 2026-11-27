@@ -191,6 +191,11 @@ console.log('# maintenance-audit');
       join(r, 'workspace-context', 'shared', 'unsure.md'),
       '---\ndescription: Unsure.\nconfidence: maybe\n---\nHm.\n',
     );
+    // A tracker left over from the session lifecycle, as broken as a tracker
+    // can be: a missing name, a branch that is gone, a repo the manifest
+    // does not know. Section 2 no longer walks session trackers, so none of
+    // it reaches the frontmatter findings — the session is section 3's to
+    // report, as one legacy-session info line.
     mkdirSync(join(r, 'work-sessions', 'demo', 'workspace'), { recursive: true });
     writeFileSync(
       join(r, 'work-sessions', 'demo', 'workspace', 'session.md'),
@@ -210,33 +215,10 @@ console.log('# maintenance-audit');
     'resolved lifecycles collapse into one info line naming the file (gh:190)');
   assertTrue(fm.some((f) => f.severity === 'warning' && f.file === 'workspace-context/shared/unsure.md' && f.message.includes('confidence')),
     'invalid confidence value is a warning');
-  const tracker = 'work-sessions/demo/workspace/session.md';
-  assertTrue(fm.some((f) => f.severity === 'warning' && f.file === tracker && f.message.includes("'name'")),
-    'tracker missing required field is a warning');
-  assertTrue(fm.some((f) => f.severity === 'warning' && f.file === tracker && f.message.includes('bugfix/gone')),
-    'tracker referencing a deleted branch is a warning');
-  assertTrue(fm.some((f) => f.severity === 'warning' && f.file === tracker && f.message.includes('ghost-repo')),
-    'tracker referencing an unknown repo is a warning');
+  assertEq(fm.filter((f) => f.file.startsWith('work-sessions/')), [], 'a leftover session tracker gets no frontmatter findings');
+  assertTrue(bySection(result, 'structure').some((f) => f.severity === 'info' && f.message.includes('old session model')),
+    'the leftover session is reported once, in section 3');
   assertEq(result.summary.exitCode, 1, 'frontmatter issue exits 1');
-  cleanup(root);
-}
-
-// 3b. section 2 — a tracker whose repos all resolve finds nothing
-{
-  const root = makeWorkspace({}, (r) => {
-    const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
-    config.repos['my-app'] = { remote: 'x', branch: 'main' };
-    writeFileSync(join(r, 'workspace.json'), JSON.stringify(config, null, 2) + '\n');
-    mkdirSync(join(r, 'work-sessions', 'demo', 'workspace'), { recursive: true });
-    writeFileSync(
-      join(r, 'work-sessions', 'demo', 'workspace', 'session.md'),
-      '---\nname: demo\nstatus: active\nbranch: main\nrepos:\n  - my-app\n  - .\nupdated: 2026-09-30\n---\nWork.\n',
-    );
-    writeCatalogs(r);
-  });
-  const result = await audit(root);
-  const fm = bySection(result, 'frontmatter');
-  assertEq(fm.filter((f) => f.file.includes('session.md')), [], 'clean tracker produces no frontmatter findings');
   cleanup(root);
 }
 
@@ -846,9 +828,10 @@ console.log('# maintenance-audit');
   assertTrue(threw !== null && threw.message.includes('--wat'), 'unknown argument throws');
 }
 
-// 14. identical findings are reported once — a file reached through two
-//     walk roots (here: the sessions dir nested inside workspace-context,
-//     so the tracker is both walked and appended) must not double-report.
+// 14. a tracker-shaped file inside workspace-context is audited once, as the
+//     context file it is. Section 2 has one walk root now — it no longer
+//     appends session trackers — so a sessions dir nested in the context
+//     tree is reached by the context walk alone.
 {
   const root = makeWorkspace({}, (r) => {
     const config = JSON.parse(readFileSync(join(r, 'workspace.json'), 'utf8'));
@@ -865,7 +848,8 @@ console.log('# maintenance-audit');
   const dup = result.issues.filter(
     (f) => f.section === 'frontmatter' && f.message.includes('bugfix/gone'),
   );
-  assertEq(dup.length, 1, 'the same file walked twice yields one finding, not two');
+  assertEq(dup.length, 1, 'the file is audited once: neither skipped as a tracker nor reported twice');
+  assertEq(dup[0]?.file, 'workspace-context/work-sessions/demo/workspace/session.md', 'and reported under its path in the context tree');
   cleanup(root);
 }
 

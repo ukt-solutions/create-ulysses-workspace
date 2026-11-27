@@ -9,6 +9,9 @@ import {
   writeFileSync,
   readFileSync,
   rmSync,
+  existsSync,
+  readdirSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -1290,105 +1293,234 @@ console.log('# classify-update');
   rmSync(retired, { recursive: true, force: true });
   rmSync(crlf, { recursive: true, force: true });
 
-  // retired prose: the workspace carries a bullet exactly as an earlier
-  // template shipped it, this payload's template no longer does, and the
-  // bullet is no longer true. The merge would keep it as a line of the
-  // workspace's own — contradicting the line that replaced it, at the end of
-  // its own section — so it is dropped and named instead. Only a false line
-  // is retired: the bullet describing a session's folder is not shipped by
-  // this template either, but it still holds for the sessions a workspace
-  // has, so the merge keeps it as the workspace's, once. A reworded copy of
-  // the retired line is the workspace's too, and stays.
+  // Retired prose. A line the template shipped in an earlier version, no
+  // longer carries, and that is no longer true would otherwise be kept as a
+  // line of the workspace's own — in every workspace that upgrades, beside
+  // the line that replaced it. So it is dropped, and named. A line can be
+  // retired two ways: word for word, or by the shape that makes it the
+  // template's. What the cases share:
   const launcherLine = '- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`';
   const sessionLine = '- Each session is a self-contained folder at `work-sessions/{name}/` containing the worktree, nested project worktrees, and the session tracker';
-  const reworded = launcherLine.replace('all work happens', 'most work happens');
+  // The session lifecycle's skill-list entries, as every template that
+  // shipped them wrote them.
+  const pauseLine = '- `/pause-work` — suspend work, push, draft PR';
+  const syncLine = '- `/sync-work` — push branches without ceremony';
+  const startQuick = '- `/start-work` to start a task';
+  const startSkill = '- `/start-work [issue|handoff|blank]` — start a task, or resume one this chat already has';
+  // The compaction line, before and after. The template reworded it instead
+  // of dropping it, and plain prose that was reworded is kept in the
+  // workspace's old wording — so the old one has to be retired by shape.
+  const compactLine = "Files in `workspace-context/`, the session tracker (`session.md`) or chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` survive compaction — they're on disk; re-read them on demand.";
+  const newCompactLine = "Files in `workspace-context/` or the chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` in them, survive compaction — they're on disk; re-read them on demand.";
   const taskTemplate = [
     '## Workspace: {{project-name}}',
     '',
     '## Quick Reference',
     '- This root is the launcher — all work happens in task worktrees',
+    startQuick,
     '- From root: only `local-only-*` is writable',
     '',
+    '## Skills',
+    startSkill,
+    '',
+    '## Compact Instructions',
+    '',
+    'When auto-compacting context, preserve in the summary:',
+    '',
+    newCompactLine,
+    '',
   ].join('\n');
-  const prose = setupWorkspace();
-  const prosePayload = setupPayload(prose);
-  writeFileSync(join(prosePayload, 'CLAUDE.md.tmpl'), taskTemplate);
-  writeFileSync(join(prose, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
-  writeFileSync(
-    join(prose, 'CLAUDE.md'),
+  // One --merge-claude-md run: a workspace whose CLAUDE.md is `lines` joined
+  // with `eol`, merged with `template`. Returns the parsed JSON with the
+  // workspace root beside it; the caller removes the root.
+  const mergeWith = (lines, template, eol = '\n') => {
+    const root = setupWorkspace();
+    const payload = setupPayload(root);
+    writeFileSync(join(payload, 'CLAUDE.md.tmpl'), template);
+    writeFileSync(join(root, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
+    writeFileSync(join(root, 'CLAUDE.md'), lines.join(eol));
+    const r = spawnSync(
+      process.execPath,
+      [join(here, 'classify-update.mjs'), '--root', root, '--payload', payload, '--merge-claude-md'],
+      { cwd: tmpdir(), encoding: 'utf8' },
+    );
+    assertEq(r.status, 0, `--merge-claude-md exits 0 (stderr: ${r.stderr.trim().slice(0, 200)})`);
+    return { root, ...JSON.parse(r.stdout) };
+  };
+  const gone = (parsed, line, why) => {
+    const merged = parsed.claudeMd.split(/\r?\n/);
+    assertTrue(!merged.includes(line) && !merged.includes('  ' + line), why);
+  };
+
+  // Word for word: the launcher bullet is named once however often it
+  // appears and gone with its indented copy. A copy the workspace reworded
+  // is its own line and stays.
+  const reworded = launcherLine.replace('all work happens', 'most work happens');
+  const wordForWord = mergeWith(
+    ['## Workspace: acme', '', '## Quick Reference', launcherLine, '  ' + launcherLine, reworded, '- From root: only `local-only-*` is writable', ''],
+    taskTemplate,
+  );
+  assertEq(wordForWord.droppedLines, [launcherLine],
+    'the retired line the workspace still carries is named once, however often it appears');
+  gone(wordForWord, launcherLine, 'the retired bullet is gone, indented copy included');
+  assertTrue(wordForWord.claudeMd.includes(reworded), 'a copy the workspace reworded is its own line and survives');
+  assertTrue(wordForWord.claudeMd.includes('- This root is the launcher — all work happens in task worktrees'),
+    "the template's replacement is what remains");
+  rmSync(wordForWord.root, { recursive: true, force: true });
+
+  // By shape: the session lifecycle's four lines, exactly as the templates
+  // shipped them. Kept, they would advertise skills that no longer exist and
+  // a layout nothing writes to.
+  const lifecycle = mergeWith(
     [
       '## Workspace: acme',
       '',
       '## Quick Reference',
-      launcherLine,
-      '  ' + launcherLine, // indentation is not part of the line
       sessionLine,
-      reworded,
-      '- From root: only `local-only-*` is writable',
+      '  ' + sessionLine,
       '',
-    ].join('\n'),
+      '## Skills',
+      pauseLine,
+      '  ' + pauseLine,
+      syncLine,
+      '- `/acme-deploy` — ours',
+      '',
+      '## Compact Instructions',
+      '',
+      compactLine,
+      '',
+    ],
+    taskTemplate,
   );
-  const r6 = spawnSync(
-    process.execPath,
-    [join(here, 'classify-update.mjs'), '--root', prose, '--payload', prosePayload, '--merge-claude-md'],
-    { cwd: tmpdir(), encoding: 'utf8' },
-  );
-  assertEq(r6.status, 0, `--merge-claude-md with retired prose exits 0 (stderr: ${r6.stderr.trim().slice(0, 200)})`);
-  const parsed6 = JSON.parse(r6.stdout);
-  assertEq(parsed6.droppedLines, [launcherLine],
-    'the retired line the workspace still carries is named once, however often it appears');
-  const merged6 = parsed6.claudeMd.split('\n');
-  assertTrue(!merged6.includes(launcherLine) && !merged6.includes('  ' + launcherLine),
-    'the retired bullet is gone, indented copy included');
-  assertEq(merged6.filter((l) => l === sessionLine).length, 1,
-    'the bullet that still holds for the sessions a workspace has is kept, once, and not retired');
-  assertTrue(merged6.includes(reworded), 'a copy the workspace reworded is its own line and survives');
-  assertTrue(merged6.includes('- This root is the launcher — all work happens in task worktrees'),
-    "the template's replacement is what remains");
+  assertEq(lifecycle.droppedLines, [pauseLine, syncLine, sessionLine, compactLine],
+    'each retired line is named once, in the wording the workspace carries, however often it appears');
+  for (const line of [pauseLine, syncLine, sessionLine, compactLine]) {
+    gone(lifecycle, line, `retired by shape, indented copy included: ${line}`);
+  }
+  assertTrue(lifecycle.claudeMd.includes('- `/acme-deploy` — ours'), "a skill entry of the workspace's own survives beside them");
+  assertEq(lifecycle.claudeMd.split('\n').filter((l) => l === newCompactLine).length, 1,
+    "the template's reworded compaction line is there once, with no stale copy beside it");
+  assertTrue(!lifecycle.claudeMd.includes('session.md'), 'nothing in the merged file names a session tracker');
+  rmSync(lifecycle.root, { recursive: true, force: true });
 
-  // a payload whose template still ships the line merges it like any other
-  // template line: retiring is the template's statement, not this script's
-  const older = setupWorkspace();
-  const olderPayload = setupPayload(older);
-  writeFileSync(
-    join(olderPayload, 'CLAUDE.md.tmpl'),
-    ['## Workspace: {{project-name}}', '', '## Quick Reference', launcherLine, ''].join('\n'),
+  // By shape, across small wording differences: another description,
+  // argument hint, bullet character, separator and tail.
+  const rewordedPause = '- `/pause-work [name]` – suspend the current session (our wording)';
+  const rewordedSync = '* `/sync-work`: push it all';
+  const rewordedSession = '- Each session is a self-contained folder at `work-sessions/{name}/` — our own tail';
+  const rewordedLines = mergeWith(
+    ['## Workspace: acme', '', '## Quick Reference', rewordedSession, '', '## Skills', rewordedPause, rewordedSync, ''],
+    taskTemplate,
   );
-  writeFileSync(join(older, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
-  writeFileSync(join(older, 'CLAUDE.md'), ['## Workspace: acme', '', '## Quick Reference', launcherLine, ''].join('\n'));
-  const r7 = spawnSync(
-    process.execPath,
-    [join(here, 'classify-update.mjs'), '--root', older, '--payload', olderPayload, '--merge-claude-md'],
-    { cwd: tmpdir(), encoding: 'utf8' },
-  );
-  assertEq(r7.status, 0, `--merge-claude-md against a payload that still ships the line exits 0 (stderr: ${r7.stderr.trim().slice(0, 200)})`);
-  const parsed7 = JSON.parse(r7.stdout);
-  assertEq(parsed7.droppedLines, [], 'a line this payload still ships is never dropped');
-  assertTrue(parsed7.claudeMd.includes(launcherLine), 'it merges like any other template line');
-  rmSync(prose, { recursive: true, force: true });
-  rmSync(older, { recursive: true, force: true });
+  assertEq(rewordedLines.droppedLines, [rewordedPause, rewordedSync, rewordedSession],
+    'a reworded description, argument hint, bullet character or separator does not rescue the line');
+  for (const line of [rewordedPause, rewordedSync, rewordedSession]) {
+    assertTrue(!rewordedLines.claudeMd.includes(line), `reworded, and still retired: ${line}`);
+  }
+  rmSync(rewordedLines.root, { recursive: true, force: true });
 
-  // retired prose under CRLF: the drop leaves the file's other EOLs alone
-  const proseCrlf = setupWorkspace();
-  const proseCrlfPayload = setupPayload(proseCrlf);
-  writeFileSync(join(proseCrlfPayload, 'CLAUDE.md.tmpl'), taskTemplate);
-  writeFileSync(join(proseCrlf, 'workspace.json'), JSON.stringify({ workspace: { name: 'acme' } }) + '\n');
-  writeFileSync(
-    join(proseCrlf, 'CLAUDE.md'),
-    ['## Workspace: acme', '', '## Quick Reference', launcherLine, '- Ours, kept.', ''].join('\r\n'),
+  // Never a line of the workspace's own. Prose that mentions a removed skill
+  // is not an entry; neither is a sentence that merely starts with one; and
+  // the same sentence about some other folder is the workspace's. The
+  // compaction line is recognised only by the clause that names the tracker:
+  // the workspace's own sentence about files that survive compaction is kept,
+  // tracker or no.
+  const ours = [
+    '- `/acme-deploy` — ours',
+    'We used to run `/pause-work` every Friday before `/sync-work`.',
+    '- `/pause-work` the branch by hand, then `/release`',
+    '- `/sync-work` is gone; push with git',
+    '- Each session is logged in `notes/sessions/`',
+    '- Each session is a self-contained folder at `notes/sessions/`',
+    "Files in `workspace-context/` or `notes/` survive compaction — ours.",
+    "We keep files in `workspace-context/`, the session tracker (`session.md`) aside.",
+    // Skills of the workspace's own whose names merely begin with a removed
+    // one. The name must end at the entry's own backtick or at a space
+    // before its argument hints: a hyphen is a word boundary to `\b`, so a
+    // word-boundary check would take `/pause-work-lite` for `/pause-work`.
+    '- `/pause-work-lite` — my own thing',
+    '- `/sync-work-items` — mine',
+    '- `/pause-work.v2` — ours too',
+    '- `/pause-workflows` — our own skill, whose name begins the same way',
+    '- `/sync-worker` — ours as well',
+  ];
+  const own = mergeWith(
+    ['## Workspace: acme', '', '## Our notes', ...ours, '', '## Skills', '- `/acme-deploy` — ours', ''],
+    taskTemplate,
   );
-  const r8 = spawnSync(
-    process.execPath,
-    [join(here, 'classify-update.mjs'), '--root', proseCrlf, '--payload', proseCrlfPayload, '--merge-claude-md'],
-    { cwd: tmpdir(), encoding: 'utf8' },
+  assertEq(own.droppedLines, [], "nothing of the workspace's own is retired");
+  for (const line of ours) {
+    assertTrue(own.claudeMd.includes(line), `a line of the workspace's own survives: ${line}`);
+  }
+  rmSync(own.root, { recursive: true, force: true });
+
+  // A skill entry the template still ships is replaced rather than retired.
+  // Both /start-work lines once promised a session the skill does not
+  // resume; an upgraded workspace gets the task-only wording in their place,
+  // once each, and nothing is named as dropped.
+  const staleStart = mergeWith(
+    [
+      '## Workspace: acme',
+      '',
+      '## Quick Reference',
+      '- `/start-work` to start a task, or resume a `work-sessions/` session the workspace already has',
+      '',
+      '## Skills',
+      '- `/start-work [issue|handoff|blank]` — start a task, or resume an existing session',
+      '',
+    ],
+    taskTemplate,
   );
-  assertEq(r8.status, 0, `--merge-claude-md with retired prose under CRLF exits 0 (stderr: ${r8.stderr.trim().slice(0, 200)})`);
-  const parsed8 = JSON.parse(r8.stdout);
-  assertEq(parsed8.droppedLines, [launcherLine], 'CRLF retires the prose too');
-  assertTrue(!parsed8.claudeMd.includes(launcherLine), 'the retired bullet is gone under CRLF as well');
-  assertTrue(!/[^\r]\n/.test(parsed8.claudeMd), 'no bare LF sneaks into the CRLF result');
-  assertTrue(parsed8.claudeMd.includes('- Ours, kept.'), 'the workspace line beside it survives');
-  rmSync(proseCrlf, { recursive: true, force: true });
+  assertEq(staleStart.droppedLines, [], 'a skill the template still ships is replaced, not retired');
+  assertEq(staleStart.claudeMd.split('\n').filter((l) => l.startsWith('- `/start-work')),
+    [startQuick, startSkill], 'each /start-work entry takes the template\'s wording, once');
+  assertTrue(!staleStart.claudeMd.includes('resume an existing session') && !staleStart.claudeMd.includes('`work-sessions/` session'),
+    'no copy survives beside it still promising a session');
+  rmSync(staleStart.root, { recursive: true, force: true });
+
+  // A payload whose template still ships the lines merges them like any
+  // other template line: retiring is the template's statement, not this
+  // script's.
+  const olderTemplate = [
+    '## Workspace: {{project-name}}',
+    '',
+    '## Quick Reference',
+    launcherLine,
+    sessionLine,
+    '',
+    '## Skills',
+    pauseLine,
+    syncLine,
+    '',
+    '## Compact Instructions',
+    '',
+    compactLine,
+    '',
+  ].join('\n');
+  const stillShipped = [launcherLine, sessionLine, pauseLine, syncLine, compactLine];
+  const older = mergeWith(
+    ['## Workspace: acme', '', '## Quick Reference', launcherLine, sessionLine, '', '## Skills', pauseLine, syncLine, '', '## Compact Instructions', '', compactLine, ''],
+    olderTemplate,
+  );
+  assertEq(older.droppedLines, [], 'a line this payload still ships is never dropped, word for word or by shape');
+  for (const line of stillShipped) {
+    assertEq(older.claudeMd.split('\n').filter((l) => l === line).length, 1, `it merges like any other template line: ${line}`);
+  }
+  rmSync(older.root, { recursive: true, force: true });
+
+  // Under CRLF the drop leaves the file's other EOLs alone.
+  const proseCrlf = mergeWith(
+    ['## Workspace: acme', '', '## Quick Reference', launcherLine, sessionLine, '- Ours, kept.', '', '## Skills', pauseLine, syncLine, '', '## Compact Instructions', '', compactLine, ''],
+    taskTemplate,
+    '\r\n',
+  );
+  assertEq(proseCrlf.droppedLines, [launcherLine, pauseLine, syncLine, sessionLine, compactLine], 'CRLF retires the prose too');
+  for (const line of stillShipped) {
+    assertTrue(!proseCrlf.claudeMd.includes(line), `retired under CRLF as well: ${line}`);
+  }
+  assertTrue(!/[^\r]\n/.test(proseCrlf.claudeMd), 'no bare LF sneaks into the CRLF result');
+  assertTrue(proseCrlf.claudeMd.includes('- Ours, kept.'), 'the workspace line beside them survives');
+  rmSync(proseCrlf.root, { recursive: true, force: true });
 
   // no template in the payload → named error
   const bare = setupWorkspace();
@@ -1403,6 +1535,263 @@ console.log('# classify-update');
   rmSync(root, { recursive: true, force: true });
   rmSync(gained, { recursive: true, force: true });
   rmSync(bare, { recursive: true, force: true });
+}
+
+
+// 16. CLI --prune-empty — the folders a deletion left empty. /workspace-update
+//     deletes a removed file and then runs this on its path: from the file's
+//     folder upward, each empty folder goes, until a folder that is not
+//     empty. `.claude/` itself is never removed, nor is anything outside it,
+//     and a path that is not under `.claude/`, that climbs out with `..`, or
+//     that is absolute is refused before any folder is touched. The mode
+//     prints { removed: [...] } and exits 0 when there is nothing to remove.
+{
+  // One run of the mode against `root`, with the arguments in the order the
+  // skill writes them. cwd is somewhere else entirely, so a root derived from
+  // the script's location or the cwd could not find the workspace.
+  const prune = (root, files, { cwd = tmpdir(), withRoot = true } = {}) => {
+    const argv = [join(here, 'classify-update.mjs')];
+    if (withRoot) argv.push('--root', root);
+    argv.push('--prune-empty', ...files);
+    const r = spawnSync(process.execPath, argv, { cwd, encoding: 'utf8' });
+    let json = null;
+    try { json = JSON.parse(r.stdout); } catch { /* left null: nothing was printed */ }
+    return { status: r.status, json, stdout: r.stdout, stderr: r.stderr };
+  };
+  // A workspace with a skill that is one file in a folder, a hook beside
+  // another, a folder holding only a hidden file, and a nested chain.
+  const fixture = () => {
+    const root = mkdtempSync(join(tmpdir(), 'prune-test-'));
+    const file = (rel, content = 'x') => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), content);
+    };
+    file('.claude/skills/pause-work/SKILL.md');
+    file('.claude/skills/promote/SKILL.md');
+    file('.claude/hooks/session-start.mjs');
+    file('.claude/hooks/other.mjs');
+    file('.claude/dirty/x.md');
+    file('.claude/dirty/.DS_Store', '');
+    file('.claude/a/b/c.js');
+    file('.claude/solo/only.js');
+    file('README.md');
+    return root;
+  };
+  // Every folder under .claude/, as workspace-relative paths with forward
+  // slashes, so an expected list reads the way the mode reports.
+  const folders = (root) => {
+    const out = [];
+    const walk = (rel) => {
+      for (const e of readdirSync(join(root, rel), { withFileTypes: true })) {
+        if (!e.isDirectory()) continue;
+        const relChild = `${rel}/${e.name}`;
+        out.push(relChild);
+        walk(relChild);
+      }
+    };
+    walk('.claude');
+    return out.sort();
+  };
+  const roots = [];
+  const withFixture = (fn) => {
+    const root = fixture();
+    roots.push(root);
+    fn(root);
+  };
+
+  // A skill folder emptied by its one file: the folder goes, and nothing
+  // above it that still has content does.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/skills/pause-work/SKILL.md'));
+    const r = prune(root, ['.claude/skills/pause-work/SKILL.md']);
+    assertEq(r.status, 0, 'pruning an emptied skill folder exits 0');
+    assertEq(r.json, { removed: ['.claude/skills/pause-work'] }, 'the folder that held the skill is removed, and reported');
+    assertTrue(existsSync(join(root, '.claude/skills/promote/SKILL.md')), 'the skill beside it is untouched');
+    assertEq(folders(root), ['.claude/a', '.claude/a/b', '.claude/dirty', '.claude/hooks', '.claude/skills', '.claude/skills/promote', '.claude/solo'],
+      'every other folder under .claude/ is where it was');
+  });
+
+  // Nested empty folders: the whole chain that the deletion emptied goes,
+  // reported bottom-up, and .claude/ stays.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/a/b/c.js'));
+    const r = prune(root, ['.claude/a/b/c.js']);
+    assertEq(r.status, 0, 'pruning a nested chain exits 0');
+    assertEq(r.json, { removed: ['.claude/a/b', '.claude/a'] }, 'both folders of the chain are removed, the deeper first');
+    assertTrue(existsSync(join(root, '.claude')), '.claude/ itself is never removed');
+  });
+
+  // A folder that still holds a file is not empty, whether or not the file
+  // the mode was given is the one still there.
+  withFixture((root) => {
+    const stillThere = prune(root, ['.claude/skills/promote/SKILL.md']);
+    assertEq([stillThere.status, stillThere.json], [0, { removed: [] }], 'a file that still exists leaves its folder, and the mode exits 0');
+    assertTrue(existsSync(join(root, '.claude/skills/promote/SKILL.md')), 'and the file itself is untouched: the mode removes folders, never files');
+    rmSync(join(root, '.claude/dirty/x.md'));
+    const hidden = prune(root, ['.claude/dirty/x.md']);
+    assertEq([hidden.status, hidden.json], [0, { removed: [] }], 'a folder that still holds a .DS_Store is not empty');
+    assertTrue(existsSync(join(root, '.claude/dirty/.DS_Store')), 'the hidden file stays');
+  });
+
+  // The walk stops at the first folder that is not empty, so a component
+  // folder survives while any of its files does, and goes once none does.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/hooks/other.mjs'));
+    assertEq(prune(root, ['.claude/hooks/other.mjs']).json, { removed: [] }, 'a hook folder with a hook still in it stays');
+    rmSync(join(root, '.claude/hooks/session-start.mjs'));
+    assertEq(prune(root, ['.claude/hooks/session-start.mjs']).json, { removed: ['.claude/hooks'] }, 'with its last file gone, the folder goes with it');
+    assertTrue(existsSync(join(root, '.claude')), '.claude/ survives that too');
+  });
+
+  // A missing path is nothing to remove, not an error: the deletion may
+  // already have taken the whole folder.
+  withFixture((root) => {
+    assertEq([prune(root, ['.claude/nope/x.md']).status, prune(root, ['.claude/nope/x.md']).json], [0, { removed: [] }], 'a path whose folders do not exist exits 0 with nothing removed');
+    rmSync(join(root, '.claude/a/b'), { recursive: true });
+    assertEq(prune(root, ['.claude/a/b/c.js']).json, { removed: ['.claude/a'] }, 'a folder the deletion took already is walked through, so the folder it emptied above still goes');
+    assertEq(prune(mkdtempSync(join(tmpdir(), 'prune-test-')), ['.claude/skills/x/SKILL.md']).status, 0, 'a root without .claude/ is nothing to remove');
+  });
+
+  // Several paths in one run, and the default root.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/skills/pause-work/SKILL.md'));
+    rmSync(join(root, '.claude/skills/promote/SKILL.md'));
+    const both = prune(root, ['.claude/skills/pause-work/SKILL.md', '.claude/skills/promote/SKILL.md']);
+    assertEq(both.json, { removed: ['.claude/skills/pause-work', '.claude/skills/promote', '.claude/skills'] },
+      'each path is pruned in turn, here leaving skills/ empty, so it goes too');
+    assertEq(both.status, 0, 'and the run exits 0');
+  });
+  withFixture((root) => {
+    rmSync(join(root, '.claude/solo/only.js'));
+    const r = prune(root, ['.claude/solo/only.js'], { cwd: root, withRoot: false });
+    assertEq([r.status, r.json], [0, { removed: ['.claude/solo'] }], 'without --root the mode works from the cwd, as the skill runs it');
+  });
+
+  // How a path may be spelled. Backslashes are separators wherever the mode
+  // runs, a leading `./` and a `..` that stays inside .claude/ are accepted,
+  // and the report always uses forward slashes.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/skills/pause-work/SKILL.md'));
+    const spellings = [
+      'with backslashes for separators', '.claude\\skills\\pause-work\\SKILL.md',
+      'with a leading ./', './.claude/skills/pause-work/SKILL.md',
+      'with a .. that stays inside .claude/', '.claude/skills/promote/../pause-work/SKILL.md',
+    ];
+    for (let i = 0; i < spellings.length; i += 2) {
+      const r = prune(root, [spellings[i + 1]]);
+      assertEq([r.status, r.json], [0, { removed: i === 0 ? ['.claude/skills/pause-work'] : [] }],
+        `a path ${spellings[i]} is the same path${i === 0 ? ', so its folder goes the first time' : ', so there is nothing left to remove'}`);
+    }
+    assertTrue(existsSync(join(root, '.claude/skills/promote/SKILL.md')), 'and the folder the `..` stepped out of is untouched');
+  });
+
+  // `.claude` itself as the path is nothing to prune: the walk starts at the
+  // file's folder, and never anywhere but strictly inside .claude/.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/solo/only.js'));
+    for (const path of ['.claude', '.claude/', './.claude']) {
+      const r = prune(root, [path]);
+      assertEq([r.status, r.json], [0, { removed: [] }], `the path ${JSON.stringify(path)} removes nothing, though a folder under .claude/ sits empty`);
+      assertTrue(existsSync(join(root, '.claude')) && existsSync(join(root, 'README.md')), `and nothing was removed for ${JSON.stringify(path)}`);
+    }
+  });
+
+  // Refused paths: not under .claude/, climbing out of it, absolute, empty.
+  // Nothing is removed for any of them — the emptied skill folder is left
+  // for the caller to see — and the reason is on stderr, not stdout.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/skills/pause-work/SKILL.md'));
+    mkdirSync(join(root, 'outside'));
+    // Each entry also names what its stderr must say: a refusal is clear
+    // when it states the actual problem, not a generic one.
+    const notUnder = /not under \.claude\//;
+    const climbs = /climbs out of \.claude\/ with "\.\."/;
+    const absolute = /refuses an absolute path/;
+    const refused = [
+      ['a path outside .claude/', 'README.md', notUnder],
+      ['a sibling folder whose name merely starts the same way', '.claude-other/x.md', notUnder],
+      ['a path that climbs out of .claude/ at once', '.claude/../README.md', climbs],
+      ['a path that climbs out from deeper in', '.claude/skills/../../outside/x.md', climbs],
+      ['a path that climbs out with backslashes for separators', '.claude\\..\\..\\README.md', climbs],
+      ['an absolute path to a file that is under .claude/', join(root, '.claude/skills/pause-work/SKILL.md'), absolute],
+      ['a Windows path from a drive letter', 'C:\\ws\\.claude\\skills\\pause-work\\SKILL.md', absolute],
+      ['a Windows path from a drive letter with forward slashes', 'C:/ws/.claude/skills/pause-work/SKILL.md', absolute],
+      ['a Windows path that is only drive-relative', 'C:.claude/skills/pause-work/SKILL.md', absolute],
+      ['a UNC path', '\\\\server\\share\\ws\\.claude\\skills\\pause-work\\SKILL.md', absolute],
+      ['an empty path', '', /refuses an empty path/],
+    ];
+    for (const [label, path, says] of refused) {
+      const r = prune(root, [path]);
+      assertEq(r.status, 1, `${label} is refused`);
+      assertTrue(says.test(r.stderr), `${label}: the error names the problem (got: ${r.stderr.trim().slice(0, 160)})`);
+      assertTrue(r.stderr.startsWith('classify-update:'), `${label}: the refusal is on stderr, in the script's own voice`);
+      assertTrue(r.stdout === '', `${label}: nothing is printed to stdout`);
+      assertTrue(existsSync(join(root, '.claude/skills/pause-work')), `${label}: no folder was removed`);
+      assertTrue(existsSync(join(root, 'README.md')) && existsSync(join(root, 'outside')), `${label}: nothing outside .claude/ was touched either`);
+    }
+    // One refused path refuses the whole run: the good path's folder stays.
+    rmSync(join(root, '.claude/skills/promote/SKILL.md'));
+    const mixed = prune(root, ['.claude/skills/promote/SKILL.md', 'README.md']);
+    assertEq(mixed.status, 1, 'a refused path among good ones refuses the run');
+    assertTrue(existsSync(join(root, '.claude/skills/promote')) && existsSync(join(root, '.claude/skills/pause-work')),
+      'and nothing was removed: every path is checked before any folder is');
+  });
+
+  // The mode needs a path, does not share a run with another mode, and
+  // does not make unknown flags known.
+  withFixture((root) => {
+    const bare = prune(root, []);
+    assertEq(bare.status, 1, '--prune-empty with no path is an error');
+    assertTrue(/at least one|--prune-empty needs/.test(bare.stderr), 'and says so');
+    const scripted = join(here, 'classify-update.mjs');
+    const withOther = spawnSync(process.execPath, [scripted, '--root', root, '--prune-empty', '--merge-claude-md', '.claude/solo/only.js'], { cwd: tmpdir(), encoding: 'utf8' });
+    assertEq(withOther.status, 1, '--prune-empty is not combined with another mode');
+    const unknown = spawnSync(process.execPath, [scripted, '--root', root, '--prune-empty', '--nope', '.claude/solo/only.js'], { cwd: tmpdir(), encoding: 'utf8' });
+    assertEq([unknown.status, /Unknown arg: --nope/.test(unknown.stderr)], [1, true], 'an unknown flag after --prune-empty is still an unknown flag, not a path');
+    assertTrue(existsSync(join(root, '.claude/solo/only.js')), 'and none of that removed anything');
+  });
+
+  // A symbolic link inside .claude/ is not a folder of the workspace's own:
+  // the walk neither removes it nor follows it out of .claude/.
+  withFixture((root) => {
+    const outside = mkdtempSync(join(tmpdir(), 'prune-outside-'));
+    roots.push(outside);
+    try {
+      symlinkSync(outside, join(root, '.claude/skills', 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if (!['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) throw err;
+      console.log('  (skip: symlink unavailable on this machine)');
+      return;
+    }
+    const r = prune(root, ['.claude/skills/link/SKILL.md']);
+    assertEq([r.status, r.json], [0, { removed: [] }], 'a symlinked folder is left alone');
+    assertTrue(existsSync(join(root, '.claude/skills', 'link')) && existsSync(outside), 'both the link and what it points at are untouched');
+  });
+
+  // A link on the way down is the harder case: the file's folder is a real
+  // directory, but it is reached through a .claude/skills that points
+  // somewhere else, so its real path is not inside .claude/'s. lstat alone
+  // would call it a real directory; only its real path says otherwise.
+  withFixture((root) => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'prune-elsewhere-'));
+    roots.push(elsewhere);
+    mkdirSync(join(elsewhere, 'pause-work'));
+    mkdirSync(join(elsewhere, 'promote'));
+    rmSync(join(root, '.claude', 'skills'), { recursive: true });
+    try {
+      symlinkSync(elsewhere, join(root, '.claude', 'skills'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if (!['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) throw err;
+      console.log('  (skip: symlink unavailable on this machine)');
+      return;
+    }
+    const r = prune(root, ['.claude/skills/pause-work/SKILL.md']);
+    assertEq([r.status, r.json], [0, { removed: [] }], 'a folder reached through a link is not removed, empty as it is');
+    assertTrue(existsSync(join(elsewhere, 'pause-work')) && existsSync(join(elsewhere, 'promote')), 'what the link points at is untouched');
+    assertTrue(existsSync(join(root, '.claude', 'skills')) && existsSync(join(root, '.claude', 'hooks', 'other.mjs')), 'and so is everything of the workspace’s own');
+  });
+
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
 }
 
 console.log('');

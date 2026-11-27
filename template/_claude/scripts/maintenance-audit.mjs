@@ -10,11 +10,11 @@
 //   1. cross-reference  — skills vs the CLAUDE.md skill list (both
 //                         directions), dangling @-imports in CLAUDE.md's
 //                         import graph
-//   2. frontmatter      — live workspace-context/*.md and session trackers
-//                         parse, reference live branches/repos, and are not
-//                         stale. Historical material (paths the indexer's
-//                         .indexignore excludes, anything under an archive/
-//                         directory) and closed-out lifecycles are skipped
+//   2. frontmatter      — live workspace-context/*.md parse, reference live
+//                         branches/repos, and are not stale. Historical
+//                         material (paths the indexer's .indexignore
+//                         excludes, anything under an archive/ directory)
+//                         and closed-out lifecycles are skipped
 //   3. structure        — workspace.json and CLAUDE.md present and parseable,
 //                         manifest repos cloned, expected directories there,
 //                         no stale workspace-context/locked/ directory (older
@@ -29,8 +29,8 @@
 //                         one info line, decided by the sessions directory
 //                         alone
 //   4. git              — launcher on its default branch with a clean tracked
-//                         tree. Audited from a linked worktree (task or
-//                         session), the launcher-level questions — the
+//                         tree. Audited from a linked worktree (a task
+//                         worktree), the launcher-level questions — the
 //                         launcher's branch and dirty tree, manifest repos
 //                         cloned — are asked against the launcher (the parent
 //                         of the git common dir), while the worktree's own
@@ -203,8 +203,7 @@ export async function runAudit({
   const changedSet = new Set(changed.map((c) => toRootRelative(absRoot, c)));
   const findings = [];
   // Identical findings are reported once (gh:180 fix round): a file reached
-  // through two walk roots — e.g. a session tracker living inside the
-  // workspace-context tree — must not double-report. (The dogfood run's
+  // through two walk roots must not double-report. (The dogfood run's
   // apparent duplicates were subtler still: one release branch is referenced
   // by both its notes-* and questions-* archive artifacts, so the same
   // message appeared under two file paths. Scoping section 2 to live content
@@ -266,12 +265,11 @@ export async function runAudit({
       ? status.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
       : [];
     const branches = git(['branch', '--all', '--format=%(refname:short)']);
-    // A linked worktree (task worktree of the workspace repo, session
-    // workspace) has its own git dir under the repo's common dir, so the two
-    // rev-parse paths differ. Launcher-level state — cloned repos, the
-    // launcher's branch — lives at the launcher, the parent of the common
-    // dir; the worktree's own branch and dirty tree are expected mid-task,
-    // not drift (gh:183).
+    // A linked worktree (a task worktree of the workspace repo) has its own
+    // git dir under the repo's common dir, so the two rev-parse paths differ.
+    // Launcher-level state — cloned repos, the launcher's branch — lives at
+    // the launcher, the parent of the common dir; the worktree's own branch
+    // and dirty tree are expected mid-task, not drift (gh:183).
     let launcherRoot = null;
     let launcherBranch = null;
     let launcherPorcelain = [];
@@ -521,13 +519,6 @@ export async function runAudit({
       }
     };
     walk(join(absRoot, wcDir));
-    const sessionsRoot = join(absRoot, sessionsDir);
-    if (existsSync(sessionsRoot)) {
-      for (const name of readdirSync(sessionsRoot).sort()) {
-        const tracker = join(sessionsRoot, name, 'workspace', 'session.md');
-        if (existsSync(tracker)) files.push(tracker);
-      }
-    }
     if (files.length === 0) return; // a missing wcDir is section 3's finding
 
     const rels = files.map((f) => toPosix(relative(absRoot, f)));
@@ -542,8 +533,7 @@ export async function runAudit({
     // workspace under ~85 findings. Historical means: excluded from the
     // index by .indexignore (same interpretation as build-workspace-context
     // — prefix per line, trailing slash matches a directory), or inside any
-    // directory named archive/. Session trackers are always live state and
-    // never excluded.
+    // directory named archive/.
     const ignorePrefixes = readIgnorePrefixes(join(absRoot, wcDir));
     const isHistorical = (rel) => {
       if (!rel.startsWith(`${wcDir}/`)) return false;
@@ -562,7 +552,6 @@ export async function runAudit({
       if (isAutoFileRel(rel, wcDir)) continue;
 
       const content = readFileSync(files[i], 'utf8');
-      const isTracker = rel.startsWith(`${sessionsDir}/`) && rel.endsWith('/workspace/session.md');
       if (!content.startsWith('---')) {
         add('frontmatter', 'warning', rel, 'no YAML frontmatter — workspace-context files carry it by convention');
         continue;
@@ -576,11 +565,6 @@ export async function runAudit({
       }
       const f = parsed.fields;
 
-      if (isTracker) {
-        for (const key of ['name', 'status', 'branch']) {
-          if (!f[key]) add('frontmatter', 'warning', rel, `session tracker is missing its '${key}' field`);
-        }
-      }
       // Branch liveness is a property of live files: a resolved or otherwise
       // closed-out file legitimately references a branch deleted at
       // completion. Only active — or unlabeled — files flag it.
@@ -633,7 +617,7 @@ export async function runAudit({
     const dirty = gitInfo.porcelain.filter((l) => !l.startsWith('??'));
     const untracked = gitInfo.porcelain.filter((l) => l.startsWith('??'));
     if (gitInfo.launcherRoot) {
-      // Auditing a worktree (task or session): its feature branch and dirty
+      // Auditing a task worktree: its feature branch and dirty
       // tree are the in-flight work itself, so only the worktree's own checks
       // are skipped — the launcher-level questions are still asked, and
       // answered against the launcher.

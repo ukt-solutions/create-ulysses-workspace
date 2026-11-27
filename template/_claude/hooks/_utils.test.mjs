@@ -1,16 +1,12 @@
 #!/usr/bin/env node
-// Unit tests for _utils.mjs: the session tracker path helpers, the config
-// summary line the session-start hook injects, and the legacy-session
-// detection the nudge, the audit and /workspace-update share.
+// Unit tests for _utils.mjs: the config summary line the session-start hook
+// injects, and the legacy-session detection the nudge, the audit and
+// /workspace-update share.
 // Run: node .claude/hooks/_utils.test.mjs
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  sessionFilePath,
-  sessionWorktreePath,
-  sessionFolderPath,
-  getSessionTrackers,
   configSummary,
   listLegacySessions,
 } from './_utils.mjs';
@@ -29,82 +25,13 @@ function assertEq(actual, expected, msg) {
   }
 }
 
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'utils-test-'));
-  writeFileSync(
-    join(root, 'workspace.json'),
-    JSON.stringify({
-      workspace: { workSessionsDir: 'work-sessions', scratchpadDir: 'workspace-scratchpad' },
-    })
-  );
-  mkdirSync(join(root, 'work-sessions', 'demo', 'workspace'), { recursive: true });
-  writeFileSync(
-    join(root, 'work-sessions', 'demo', 'workspace', 'session.md'),
-    '---\ntype: session-tracker\nname: demo\nstatus: active\n---\n\nbody\n'
-  );
-  return root;
-}
-
-// sessionFilePath points inside the worktree
-{
-  const root = fixture();
-  try {
-    assertEq(
-      sessionFilePath(root, 'demo'),
-      join(root, 'work-sessions', 'demo', 'workspace', 'session.md'),
-      'sessionFilePath resolves to in-worktree tracker'
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-// sessionWorktreePath returns the workspace worktree root
-{
-  const root = fixture();
-  try {
-    assertEq(
-      sessionWorktreePath(root, 'demo'),
-      join(root, 'work-sessions', 'demo', 'workspace'),
-      'sessionWorktreePath returns worktree root'
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-// sessionFolderPath still returns the session parent folder
-{
-  const root = fixture();
-  try {
-    assertEq(
-      sessionFolderPath(root, 'demo'),
-      join(root, 'work-sessions', 'demo'),
-      'sessionFolderPath unchanged'
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-// getSessionTrackers walks the in-worktree path
-{
-  const root = fixture();
-  try {
-    const trackers = getSessionTrackers(root);
-    assertEq(trackers.length, 1, 'getSessionTrackers finds demo session');
-    assertEq(trackers[0].name, 'demo', 'tracker name parsed');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
 // configSummary leaves sessionModel out of the line, whatever the file holds
 {
   // What the line says when tracker, forge and repos are all absent.
   const BARE = 'tracker: off | forge: auto (from origin) | repos: none';
 
-  // The template ships "task", and a fresh scaffold's line is the bare one.
+  // A scaffolded workspace prints the bare line, whether or not its file
+  // carries the key.
   assertEq(
     configSummary({ workspace: { sessionModel: 'task' }, repos: {} }),
     BARE,

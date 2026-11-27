@@ -26,7 +26,7 @@ The `/release` skill is a per-repo operation — each repo has its own release c
 
 ## Where the Notes Come From
 
-The forge. GitHub's generated notes — merged PR titles, grouped and linked — are the release notes. Because PR bodies are written from the session tracker, the linked issue, and the commits (a short summary plus a Verification section), everything a reader needs is already at the forge. Duplicating that into workspace files bought nothing: workspaces that don't publish never consumed the notes, and a template-level notes mechanism would clash with projects that already use changesets, semantic-release, or their own tooling.
+The forge. GitHub's generated notes — merged PR titles, grouped and linked — are the release notes. Because PR bodies are written from the branch's commits, the linked issue and the chat's notes (a short summary plus a Verification section), everything a reader needs is already at the forge. Duplicating that into workspace files bought nothing: workspaces that don't publish never consumed the notes, and a template-level notes mechanism would clash with projects that already use changesets, semantic-release, or their own tooling.
 
 A repo's `CHANGELOG.md`, if it has one, is historical — this skill does not write it. Repos with their own release tooling simply don't use this skill; their bumps and tags happen in their own pipeline.
 

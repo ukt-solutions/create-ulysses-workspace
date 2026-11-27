@@ -1,217 +1,150 @@
-# Work Sessions
+# Tasks
 
-Work in a workspace has had two lifecycles. New work is always a **task**: one tracker issue, one branch, one worktree per repo the work touches, and a chat that stays at the workspace root. The **work session** is the older lifecycle — a coherent piece of effort (a feature, a bugfix, a refactor) that spans one or more Claude Code conversations inside a self-contained folder with a branch, a set of changes, a pull request and a context tracker. No new session starts, and nothing is deleted: the sessions a workspace already has keep resuming and completing until `/migrate-sessions` drains them.
+Work in a workspace has one lifecycle: the **task**. A task is one tracker issue, one branch, one worktree per repo the work touches, and a chat that stays at the workspace root. There is no folder to create and no tracker file to keep. The issue, the branch and the chat's record are the entire state.
 
-This chapter explains how those sessions work, what they create, and how they enable parallel and multi-repo workflows, then describes the task model in [its last section](#the-task-model).
+This chapter explains what a task is, where it lives on disk, how several run at once, how one stays a single unit of work across repositories, and what became of the sessions earlier versions had.
 
 ---
 
-## What a Session Is
+## What a Task Is
 
-A work session is a named entity that binds together a branch, one or more worktrees, and a context tracker. One is resumed with `/start-work`, worked on across as many conversations as needed, and finished with `/complete-work`. Between conversations, the session persists — its state is recorded in a single session tracker file, and the self-contained session folder on disk is ready to resume.
+A task binds an issue to a branch, and the branch to one worktree per repository it touches. It is started with `/start-work`, worked on for as long as it takes, and finished with `/complete-work`.
 
-Sessions are not chat sessions. A chat session is a single Claude Code conversation — it starts when you open a terminal and ends when you close it. A work session spans multiple chat sessions. You might start a feature in the morning, pause for lunch, resume in the afternoon, and complete it the next day. That is one work session across three or four chat sessions.
+A task is not a chat session. A chat session is a single Claude Code conversation — it starts when you open a terminal and ends when you close it. A task can span several. You might start a fix in the morning, hand it off at lunch, and complete it the next day from another chat. That is one task across three or four chat sessions.
 
-This distinction matters because context works differently at each boundary. When a chat session ends, Claude's conversation memory is gone. When a work session persists, the session tracker preserves the state so the next chat can pick up where the last one left off.
+The distinction matters because context works differently at each boundary. When a chat session ends, Claude's conversation memory is gone. A task carries nothing in memory across that line. What it keeps is on disk — the branch with its commits, the issue with its discussion, and the chat's record and drawer — and the next chat reads it from there.
 
-## The Session Lifecycle
+## The Task Lifecycle
 
-Every session follows the same arc:
+Every task follows the same arc:
 
-**Start** — No new session starts now; this is how one began under the session lifecycle, and it is the shape of every session still on disk. `/start-work` took a description of the work, the repos to include, and a branch name, and created a `work-sessions/{name}/` folder containing a workspace worktree with nested project worktrees and an initialized session tracker.
+**Start** — `/start-work` identifies or creates the tracker issue and claims it. You pick the repos — the workspace repo itself can be one of them — and confirm a branch of `{prefix}/{slug}`. The skill creates one worktree per repo and records the task on the chat's record.
 
-**Work** — You make changes in the worktrees. As you go, you can capture context with `/braindump` or `/handoff`, and back up your work with `/sync-work`. The session tracker's body accumulates progress across conversations.
+**Work** — You make changes in the worktrees. As you go, capture context with `/braindump` or `/handoff`. Both write to the chat's drawer.
 
-**Pause (optional)** — `/pause-work` suspends the session. It captures the current state, pushes all branches, and creates draft pull requests. The session folder stays in place — worktrees stay, the tracker stays, and you can resume later.
-
-**Complete** — `/complete-work` finalizes everything. It rebases your branches, builds the PR bodies from the session's accumulated context, pushes all repos, creates pull requests, and presents a unified merge prompt. After merging, it tears down the worktrees in the correct order and removes the entire session folder.
+**Complete** — `/complete-work` finalizes the task. It rebases each worktree onto its default branch, asks which of the chat's notes deserve to move into `workspace-context/`, builds a PR body per repo, and presents one summary with a single merge approval. After the merge it closes the linked issue and tears down the worktrees and the record entries.
 
 ```
-/start-work → work → /sync-work (backup) → work → /complete-work
-                  ↘ /pause-work (suspend) ... /start-work (resume) ↗
+/start-work → work → /complete-work
+                  ↘ /handoff → pick the task up again from the same issue ↗
 ```
 
 The lifecycle skills are covered in detail in [Chapter 6](06-skills.md). This chapter focuses on the mechanics underneath.
 
-## The Session Folder
+## Where a Task Lives
 
-Each session lives in its own folder at `work-sessions/{session-name}/`. That folder is self-contained: everything the session needs is inside it.
+A task has no folder of its own. Its worktrees sit inside the repositories they belong to, and its state sits in the scratchpad beside the chat that owns it:
 
 ```
-work-sessions/fix-auth/
-└── workspace/                         # Workspace worktree (on session branch)
-    ├── .claude/                       # Settings, active-session pointer
-    ├── CLAUDE.md                      # Inherited from the workspace branch
-    ├── session.md                     # Session tracker — on the session branch
-    ├── design-auth-redesign.md        # Spec — on the session branch
-    ├── plan-auth-redesign.md          # Plan — on the session branch
-    ├── workspace-context/              # Workspace context, on this branch
-    └── repos/                         # Real directory (not symlink)
-        ├── my-app/                    # Project worktree on bugfix/fix-auth
-        └── my-api/                    # Project worktree on bugfix/fix-auth
+my-workspace/
+├── repos/                              # Source clones — gitignored
+│   ├── my-app/                         # Stays on main, untouched
+│   │   └── .claude/worktrees/
+│   │       └── bugfix-fix-auth/        # Task worktree for my-app
+│   └── my-api/                         # Stays on main, untouched
+│       └── .claude/worktrees/
+│           └── bugfix-fix-auth/        # Task worktree for my-api
+├── .claude/worktrees/
+│   └── bugfix-fix-auth/                # When the task touches the workspace repo itself
+└── workspace-scratchpad/               # Machine-local — gitignored
+    └── chats/
+        ├── fix-login.json              # The chat's record: the tasks it has open
+        └── fix-login/                  # The chat's drawer: work in progress
 ```
 
-Session content — tracker, specs, plans — lives at the top of the workspace worktree and is tracked on the session branch. Pushing the branch carries the durable session thinking across machines. `/complete-work` offers to promote whatever deserves to survive into `workspace-context/`, then removes the files from the branch before the final PR so main's top level stays free of session-scoped files.
+A worktree is named after its branch with `/` replaced by `-`, so `bugfix/fix-auth` lives at `repos/my-app/.claude/worktrees/bugfix-fix-auth/`. That is the same location Claude Code's own worktree feature uses, so a task started here and one started natively converge on a single layout.
 
-The `work-sessions/` folder itself is fully gitignored at the workspace root — nothing at the launcher level is tracked. The tracking happens inside each session's worktree, on the session branch, where it naturally belongs.
+The workspace repo itself is addressed as `.`. Its worktree lives at `.claude/worktrees/{slug}/`, one level up — again where Claude Code puts worktrees of the repository it was launched in. The workspace `.gitignore` covers all of it: `repos` for the source clones and every worktree inside them, and `.claude/worktrees/` for the workspace repo's own.
 
-The workspace worktree is where Claude runs when working on this session. It contains a real `repos/` directory (not a symlink), with each project worktree nested inside it. From inside the workspace worktree, all project worktrees are accessible at `repos/{repo-name}/` — the same path convention skills use everywhere else.
+## The Chat Record and the Drawer
 
-The workspace `.gitignore` has a single `repos` line (no trailing slash) that covers both the workspace root's source-clone directory and every workspace worktree's nested `repos/`. One line, both uses.
+Each chat has a record at `workspace-scratchpad/chats/{chat}.json`, and a drawer beside it at `workspace-scratchpad/chats/{chat}/`. The record is the task's bookkeeping. The drawer is where its thinking accumulates.
 
-## The Session Tracker
+The record lists the chat's open tasks. A task that touches two repositories is two entries sharing a branch:
 
-The session tracker is `work-sessions/{name}/workspace/session.md`. It is a single markdown file with two halves: YAML frontmatter holds the machine state, and the body holds human content.
-
-```markdown
----
-type: session-tracker
-name: fix-auth
-description: Fix authentication timeout on mobile
-status: active
-branch: bugfix/fix-auth
-created: 2026-04-13T10:00:00.000Z
-user: alice
-repos:
-  - my-app
-  - my-api
-workItem: gh:42
-chatSessions:
-  - id: aa3c952e-dbff-4055-8bcc-e5f217618d57
-    names: []
-    started: 2026-04-13T10:00:00.000Z
-    ended: null
-author: alice
-updated: 2026-04-13
----
-
-# Work Session: fix-auth
-
-## Progress
-
-Decisions made, work completed, blockers hit. Updated across chats.
+```json
+{
+  "chat": "fix-login",
+  "sessionId": "aa3c952e-dbff-4055-8bcc-e5f217618d57",
+  "scope": { "epic": null, "labels": [], "paths": [] },
+  "concerns": [],
+  "tasks": [
+    { "workItem": "gh:42", "branch": "bugfix/fix-auth", "repo": "my-app" },
+    { "workItem": "gh:42", "branch": "bugfix/fix-auth", "repo": "my-api" }
+  ]
+}
 ```
 
-Machine state lives in the frontmatter: the current status (`active`, `paused`), the branch, the list of repos, the `workItem` linkage to a configured tracker (an adapter-prefixed ID like `gh:42` for GitHub Issues), and the chat sessions that have contributed to this work session. Hooks and scripts read and update these fields via a small parser at `.claude/lib/session-frontmatter.mjs` that rewrites only the fields that changed, leaving every other byte of the file untouched.
+`workItem` is the adapter-prefixed issue ID — `gh:42` for GitHub Issues — or `null` for a task started without a tracker. The prefix makes it self-describing across adapter swaps. The tracker itself remains authoritative for status, assignment, labels and milestone; the record holds only the pointer.
 
-Human content lives in the body: decisions, progress, next steps, captured reasoning from `/handoff` and `/braindump`. This is what `/complete-work` draws on for the PR body at the end of the session.
+The drawer holds what is not ready for the team: designs, plans, goal artifacts, braindumps and research, written by `/braindump`, `/handoff` and the skills that draft specs. Nothing there is committed, because the drawer is gitignored. At completion, `/complete-work` lists the drawer and asks what deserves to move into `workspace-context/`.
 
-Because the tracker is a single tracked file, the session's durable thinking travels with the workspace branch. Push on one machine, pull on another, and the tracker (and any specs or plans) is already there. Worktrees are local — they get recreated the first time you resume the session on each machine.
+Both are machine-local. The SessionStart hook injects two lines into every chat, so skills never have to guess either: `Chat record: {chat}` names the record, and `Workspace root: {path}` anchors the launcher. And because a drawer belongs to one chat on one machine, nothing in it reaches another chat by itself. Whatever the next chat needs in order to continue a task — or a teammate on another machine — goes on the issue as a comment.
 
 ## Worktrees
 
-A session's worktrees are lightweight git checkouts that exist alongside the original repo clones. Each session has one workspace worktree plus one worktree per project repo, and all of them are nested inside the session folder:
+A task's worktrees are lightweight git checkouts that exist alongside the original repo clones. The clones themselves are never disturbed: they stay on their default branch, and worktrees are created from them. This lets you run several tasks in parallel without any branch-switching conflicts, and it keeps the launcher — which never leaves its default branch — always ready to start the next one.
 
-```
-repos/                              # Source clones at workspace root
-├── my-app/                         # Stays on main, untouched
-└── my-api/                         # Stays on main, untouched
+## Multi-Repo Tasks
 
-work-sessions/fix-auth/workspace/   # Workspace worktree
-└── repos/                          # Real directory inside the worktree
-    ├── my-app/                     # Project worktree on bugfix/fix-auth
-    └── my-api/                     # Project worktree on bugfix/fix-auth
-```
-
-The source clones at the workspace root are never disturbed — they stay on their default branch. Worktrees are created from them and live inside the session folder. This lets you run multiple sessions in parallel without any branch-switching conflicts.
-
-Multi-repo sessions work because all repos in a session share the same branch name. If `fix-auth` is on `bugfix/fix-auth`, every repo in the session has a `bugfix/fix-auth` branch and a worktree on it. The same name across repos makes the relationship traceable — you can find all the pieces of a multi-repo change by searching for the branch name.
-
-### Teardown order matters
-
-When a session completes, tearing down the worktrees has to happen in a specific order. The cleanup script enforces it automatically:
-
-1. Remove each nested **project** worktree from its project repo (`git -C repos/{repo} worktree remove ...`)
-2. Remove the **workspace** worktree from the workspace repo
-3. Run `git worktree prune` on each project repo as a safety net
-4. Delete the local branches
-5. `rm -rf work-sessions/{name}/`
-
-If you remove the workspace worktree first, git happily deletes the directory tree including the nested project worktrees' `.git` files — but it leaves orphan worktree records in the project repos marked `prunable`. The operation looks successful but the project repos are now inconsistent. The safe order keeps both sides in sync.
-
-## Multi-Repo Sessions
-
-A work session can span multiple project repositories. A session was set up with one or more repos from the workspace manifest. All selected repos get the same branch name, so the session is traceable as one unit of work even though it touches multiple repos.
+A task can span several project repositories. All of them get the same branch name, so the task is traceable as one unit of work even though it touches several repos. You can find every piece of a multi-repo change by searching for the branch name.
 
 This is essential for changes that cross repository boundaries. A UI change in the frontend repo that requires an API change in the backend repo belongs in one unit of work, not two.
 
-If a session was started with one repo and another is needed before it is done, it can still be added. The `/start-work` skill detects the active session and offers to add a repo. The repo-write-detection hook also watches for this — if you try to write to a repo that is in the workspace but not in the current session, Claude is nudged to offer adding it before proceeding.
+At completion, a multi-repo task lands as one. `/complete-work` creates a pull request for each project repo — and one for the workspace repo when there is context to promote — presents them as a single summary, and asks "Merge all?" The pull requests merge together or none does.
 
-At completion, multi-repo sessions merge atomically. `/complete-work` creates a pull request for each project repo plus one for the workspace, presents them as a unified summary, and prompts "Merge all?" All PRs merge together or none do.
+## Parallel Tasks
 
-## Parallel Sessions
-
-Because each session lives in its own self-contained folder with its own worktrees, several sessions can be worked on at the same time. Open a terminal, resume a session, and work. Open another terminal, resume a different one. They do not interfere with each other.
+Because each task has its own branch and its own worktrees, several can be worked on at the same time, in one chat or in several. Open a terminal, start or pick up a task, and work. Open another terminal and do the same with a different one. They do not interfere with each other.
 
 ```
-Terminal 1:                                  Terminal 2:
-work-sessions/fix-auth/workspace/            work-sessions/add-search/workspace/
-  Session: fix-auth                            Session: add-search
-  Branch: bugfix/fix-auth                      Branch: feature/add-search
-  Repos: my-app, my-api                        Repos: my-app
+Chat 1:                                     Chat 2:
+Task: fix-auth                              Task: add-search
+Branch: bugfix/fix-auth                     Branch: feature/add-search
+Repos: my-app, my-api                       Repos: my-app
 ```
 
-Both sessions can touch the same repo (in this example, both include `my-app`) because each has its own worktree. Git worktrees share the object store but have independent working directories and indexes.
-
-When you run `/start-work` with no arguments and the workspace still has sessions, it walks `work-sessions/` and lists the active or paused ones so you can choose which one to resume. Choosing "Start something new" begins a task, which is what the same command does outright once no session is left:
-
-```
-Active work sessions:
-  1. fix-auth (active, last chat ended 2h ago)
-     "Fix authentication timeout on mobile"
-     Branch: bugfix/fix-auth | Repos: my-app, my-api
-
-  2. add-search (paused, last chat ended 1d ago)
-     "Add full-text search to listings"
-     Branch: feature/add-search | Repos: my-app
-
-  [N] Start something new
-
-Which one?
-```
+Both tasks can touch the same repo (in this example, both include `my-app`) because each has its own worktree. Git worktrees share the object store but have independent working directories and indexes.
 
 ## Resuming Across Conversations
 
-When you resume a session in a new conversation, the system reconstructs context. The session tracker's frontmatter tells Claude what the session is about, which repos are involved, and what branch to work on. The tracker's body provides accumulated progress notes from previous conversations.
+A task is picked up again by its issue. `/start-work gh:42` checks whether a chat already has a task for that issue. If one does, it makes sure the worktrees are there and asks which way to take it: adopt the task into this chat, leave it with the chat that owns it, or — when that chat is this one — simply continue. On another machine the same command builds the worktrees from the branch that was pushed.
 
-The history reconstruction mechanism goes further: it checks whether the previous conversation's work was captured in the tracker body. If there is a gap — work happened but was not captured — it scans the conversation history and generates a summary to fill the gap. This means you do not lose context between conversations even if you forget to `/handoff` or `/braindump` at the end.
+What the next chat knows about the work is what was put on disk. `/handoff` captures where things stand and what comes next, and `/start-work handoff` lists the handoffs to resume from. A task started with no tracker has no issue to resume from, so its handoff carries the next steps instead.
 
-The practical result is that each new conversation starts with awareness of everything the session has done so far, even if it happened days ago in a different conversation or on a different machine.
-
-## The Task Model
-
-The task model is how all new work starts. It covers the most common shape of work: one issue, one branch, done in a chat. Nothing selects it: `workspace.sessionModel` in `workspace.json` ships as `"task"` and routes nothing, and it stays only because an update never removes a key. The sessions a workspace already has keep resuming under the session model until they are drained.
-
-Upgrading a workspace to this template moves nothing and deletes nothing. New work starts as a task from the next `/start-work`, the sessions already under `work-sessions/` stay where they are, and three things say so until they are drained: a line from the session-start hook, an info finding in the maintenance audit, and a line in `/workspace-update`'s report. Each counts the sessions directory's entries whose names do not start with a dot, and none of them reads `workspace.sessionModel`.
-
-A task is a tracker issue plus a branch plus one worktree per repo the work touches:
-
-- Project repos: `repos/{repo}/.claude/worktrees/{slug}/`, where `{slug}` is the branch with `/` replaced by `-`
-- The workspace repo itself, addressed as `.`: `.claude/worktrees/{slug}/` — the same location Claude Code's native worktree feature uses, so the two converge
-
-There is no session folder and no `session.md`. The chat stays at the workspace root (the launcher, which never leaves its default branch) and reaches the worktrees by path. Per-chat state is machine-local: the **chat record** at `workspace-scratchpad/chats/{chat}.json` lists the chat's open tasks, and the **chat drawer** at `workspace-scratchpad/chats/{chat}/` holds in-progress designs, plans, goal artifacts, braindumps and research until completion routes them. The SessionStart hook injects a `Chat record:` line naming the record and a `Workspace root:` line anchoring the launcher, so skills never guess either.
-
-`/start-work` starts a task: pick or create the tracker issue (or skip tracking entirely), pick the repo(s) — the workspace repo can be one of them — propose the branch, create one worktree per repo with `.claude/scripts/task-worktree.mjs`, and record the task on the chat record. An issue can be named on the command line instead (`/start-work gh:42`), or a handoff picked from a list (`/start-work handoff`): the work item it names is the task to start or resume, and without one its next steps are the work at hand. When the workspace still has sessions, they are offered first, so one can be resumed rather than a task started. The record, the issue, and the branch are the entire state.
-
-`/complete-work` under the task model begins with a pre-flight: every task worktree must be clean, and when the chat's drawer holds a `goal-*.md` artifact every `/goal` sub-branch must already be merged into the task branch. It then rebases each worktree onto its default branch, offers to promote drawer items into `workspace-context/` (through a workspace-repo worktree on the task's branch, so nothing lands on the launcher's default branch), writes a short PR body per repo into the drawer, then hands the rest to `.claude/scripts/task-pr.mjs` — one command pushes and opens one PR per repo (the workspace repo included), recording local-mode repos for a local merge instead, a second merges them in order and closes the issue — and finally tears the worktrees down and clears the record entries.
-
-### Local mode
+## Local mode
 
 A repo whose origin is not a forge — no origin remote at all, or `merge: "local"` under `repos.{repo}` in `workspace.json` (`workspace.merge` for the workspace repo `.`) — completes the task in **local mode**: nothing is pushed and no PR is opened for it. The override exists for a clone whose origin is a third-party upstream nobody here may push to; an origin that is neither forge-hosted nor overridden stops completion with the setting spelled out. Merging a local repo fast-forwards its default branch in the repo's own source clone (`repos/{repo}`, or the launcher for `.`), which must be sitting clean on that branch; a branch that will not fast-forward stops the run and asks for a rebase first. The ordering is unchanged — project repos first, the workspace repo last — and mixed forge/local tasks complete in one run. A workspace with no tracker works the same way: the task is recorded keyed by repo + branch, and completion simply has no issue to close.
 
-### CI checks and merge approval
+## CI checks and merge approval
 
 Before anything merges, the CI of every PR is read through the forge adapter — GitHub's `gh pr checks`, GitLab's head pipeline — and the gate is all-or-nothing: one red or still-running PR stops the whole completion with nothing merged, because a task's PRs describe each other and may not land part-way. The stop lists every PR's state; re-running once checks finish picks the task back up, and `--wait` polls instead — every still-pending PR each round, then one final read of all of them before anything merges so a PR that went red during the wait is caught — up to a timeout. Checks can lag PR creation, so a PR opened within the last 90 seconds that reports no checks is re-read — all such PRs per round behind one shared pause — twice at most before "none" is accepted. A repo with no CI and a green one both proceed; a GitLab pipeline waiting on a manual job says so; `--skip-checks` is the escape hatch, recorded in the output rather than passed silently. Local-mode repos have no forge to ask, so no checks gate them.
 
-Who says merge is the `mergeApproval` setting: `ask` (the default) keeps today's shape — one question after the summary merges everything — while `operator` has completion stop after the PRs are created and their checks read, reporting the links and leaving the merging to a person. One `operator` entry anywhere governs the whole task — the workspace PR cannot merge ahead of the code PRs it describes, so the task cannot merge part-way. The operator either says merge in a later turn (the merge command then runs with `--approved`, which it demands otherwise) or merges without the command — in the forge UI, or for a local-mode repo by fast-forwarding the branch into its default branch by hand — where the completion re-run detects the merged PRs and carries on to the close and teardown. The setting is per repo — `repos.{repo}.mergeApproval`, or `workspace.mergeApproval` for the workspace repo `.`.
+Who says merge is the `mergeApproval` setting: `ask` (the default) keeps one question after the summary that merges everything, while `operator` has completion stop after the PRs are created and their checks read, reporting the links and leaving the merging to a person. One `operator` entry anywhere governs the whole task — the workspace PR cannot merge ahead of the code PRs it describes, so the task cannot merge part-way. The operator either says merge in a later turn (the merge command then runs with `--approved`, which it demands otherwise) or merges without the command — in the forge UI, or for a local-mode repo by fast-forwarding the branch into its default branch by hand — where the completion re-run detects the merged PRs and carries on to the close and teardown. The setting is per repo — `repos.{repo}.mergeApproval`, or `workspace.mergeApproval` for the workspace repo `.`.
 
-Several tasks can be open at once across chats; each is just a branch plus its worktrees. The session lifecycle is no longer a choice for new work: a long multi-chat effort starts as a task too, and its thinking lives in the chat drawer until completion routes it. Both lifecycles coexist in one workspace only while its existing sessions are drained.
+A long multi-chat effort is a task too. Its thinking lives in the chat's drawer until completion routes it.
 
-Lane chats — one long-lived chat per workstream, hopping between pieces of work over days — sit at the launcher across both lifecycles. Detection meets them there: `task-worktree.mjs --detect --chat` also matches the chat's session id (`--session-id`, the chat record's `sessionId`, or `$CLAUDE_CODE_SESSION_ID`) against each session's `chatSessions` frontmatter, so `/complete-work` can finish an old `work-sessions/` session from the launcher chat that drove it — and when the chat has both open tasks and matching sessions, detection reports `mixed` and the operator picks which to finish. `/start-work gh:N` on an issue that already has a task finds the owning chat with `chat-record.mjs --owner gh:N`, reuses the existing worktrees (`--create` never duplicates), and either adopts the task into this chat or messages the owner by name. What a handoff leaves behind goes on the issue as a comment, not in the drawer — the drawer is per-chat and machine-local, and no other chat can read it.
+## Sessions from Earlier Versions
+
+A workspace made on an earlier version of the template may still hold **sessions**, the lifecycle those versions had. A session was a coherent piece of effort spanning one or more conversations, kept in a self-contained `work-sessions/{name}/` folder with a workspace worktree, nested project worktrees and a `session.md` tracker. That lifecycle is removed: no skill starts, resumes or completes a session now.
+
+Upgrading moves nothing and deletes nothing. The folders stay where they are, and three things report how many there are until they are drained: a line from the session-start hook, an info finding in the maintenance audit, and a line in `/workspace-update`'s report. Each counts the sessions directory's entries whose names do not start with a dot, so an archive under `.archived/` never counts. A chat opened inside one of their worktrees is pointed the same way: `/complete-work` finds no task there and names `/migrate-sessions`, and so does the line the repo-write-detection hook adds to its warning.
+
+An older `workspace.json` may still carry two keys from that lifecycle, because an update never removes a key. `sessionModel` selects nothing and is read by nothing. `workSessionsDir` only names where the leftover sessions sit, `work-sessions` by default.
 
 ## Migrating an Existing Workspace
 
-A workspace that grew up on sessions drains them with `/migrate-sessions`. New work already starts as a task — nothing selects the lifecycle any more — so what is left under `work-sessions/` is work from before the task lifecycle. The skill inventories the directory and proposes one of six outcomes per session — **MERGEABLE** (real content survives: files on the branch, commits ahead in a project repo, or uncommitted work), **ABANDONED** (stale, artifact-only), **ACTIVE** (worked on recently), **UNKNOWN** (no activity signal at all — never assumed abandoned), **ORPHAN_SHELL** (a broken folder with no worktree left), or **LEAVE** (a symlinked "foreign" entry that is never followed) — with the evidence behind each: recency, content beyond session artifacts, commits ahead, per-remote divergence, and whether anything exists on a remote. Proposals are only proposals: the operator decides each session, one at a time, and every session leaves one of three ways. A session is **finished** when its work should land. The skill rebases the session's worktrees, graduates or strips the session artifacts so none of them reaches the default branch, and hands the push, the PRs, the ordered merge and the issue close to `.claude/scripts/task-pr.mjs`, the task lifecycle's own script, pointed at the session's worktrees with `--worktree`. The folder is archived once everything has merged; after a squash merge that archive asks for `--allow-unbacked`, because the branch's own commits are on no remote although their content is on the default branch. A session is **archived** when its work should not land — the folder moves to `work-sessions/.archived/`, git's worktree links follow it, and every commit and file comes along. Before that, an optional backup tags each session's branches as `drain/{session}/…` locally and pushes those tags only to remotes the operator explicitly allows — never to a third-party upstream or a read-only mirror. A session still being worked is left for a later run. An **orphan shell** is removed only after a scripted second check finds nothing but empty directories in it. That is the one deletion the migration performs: every other file, commit, and untracked edit either stays in place or rides into the archive, and deleting an archive later is a separate, manual decision. The skill can also write `workspace.sessionModel: "task"` on a branch — merged through a PR when the workspace repo has a forge remote, or fast-forwarded locally when it has none — never as a direct edit on the launcher's tracked `workspace.json`. That write brings an older file in line with the template; it routes nothing.
+A workspace that grew up on sessions drains them with `/migrate-sessions`. Every entry under the sessions directory is work from before the task lifecycle, and this skill is how each one leaves. It inventories the directory and proposes one of six outcomes per session — **MERGEABLE** (real content survives: files on the branch, commits ahead in a project repo, or uncommitted work), **ABANDONED** (stale, artifact-only), **ACTIVE** (worked on recently), **UNKNOWN** (no activity signal at all — never assumed abandoned), **ORPHAN_SHELL** (a broken folder with no worktree left), or **LEAVE** (a symlinked "foreign" entry that is never followed) — with the evidence behind each: recency, content beyond session artifacts, commits ahead, per-remote divergence, and whether anything exists on a remote. Proposals are only proposals: the operator decides each session, one at a time, and every session leaves one of three ways.
+
+A session is **finished** when its work should land. The skill rebases the session's worktrees, graduates or strips the session artifacts so none of them reaches the default branch, and hands the push, the PRs, the ordered merge and the issue close to `.claude/scripts/task-pr.mjs`, the task lifecycle's own script, pointed at the session's worktrees with `--worktree`. The folder is archived once everything has merged; after a squash merge that archive asks for `--allow-unbacked`, because the branch's own commits are on no remote although their content is on the default branch.
+
+A session is **archived** when its work should not land. The folder moves to `work-sessions/.archived/`, git's worktree links follow it, and every commit and file comes along. Before that, an optional backup tags each session's branches as `drain/{session}/…` locally and pushes those tags only to remotes the operator explicitly allows — never to a third-party upstream or a read-only mirror.
+
+An **orphan shell** is removed only after a scripted second check finds nothing but empty directories in it. That is the one deletion the migration performs: every other file, commit, and untracked edit either stays in place or rides into the archive, and deleting an archive later is a separate, manual decision.
+
+A session still being worked is left for a later run. Nothing resumes it as a session, so it leaves through Finish or Archive when the operator is ready for either.
+
+The skill can also write `workspace.sessionModel: "task"` on a branch — merged through a PR when the workspace repo has a forge remote, or fast-forwarded locally when it has none — never as a direct edit on the launcher's tracked `workspace.json`. The template no longer carries the key. The write only keeps an older file from still saying `"session"`, and it routes nothing.
 
 The rule that holds it together: a migration only ever touches the workspace it runs in. Never point it at another workspace, and never batch several workspaces through one run — each workspace drains its own sessions from its own root.
 
@@ -219,10 +152,9 @@ The rule that holds it together: a migration only ever touches the workspace it 
 
 ## Key Takeaways
 
-- New work is a task: one issue, one branch, one worktree per repo it touches, and no folder. Nothing in `workspace.json` selects the lifecycle.
-- A work session is the legacy unit of tracked work — one branch, one self-contained folder, one lifecycle. No new session starts; the ones a workspace has stay supported until `/migrate-sessions` drains them.
-- Each session lives at `work-sessions/{name}/` with its own workspace worktree and nested project worktrees.
-- The session tracker (`session.md`) is one markdown file with machine state in frontmatter and human content in the body — tracked in git so it travels across machines.
-- Multi-repo sessions use the same branch name across all repos for traceability.
-- Parallel sessions run in separate terminals, each in their own folder, without conflict.
-- Teardown order is mandatory: project worktrees first, then the workspace worktree, then the session folder.
+- Work is a task: one issue, one branch, one worktree per repo it touches. There is no folder and no tracker file, and nothing in `workspace.json` selects a lifecycle.
+- A task's state is the issue, the branch, and the chat's record and drawer under `workspace-scratchpad/`. Both are machine-local, which is why what another chat needs goes on the issue.
+- A task's worktrees live at `repos/{repo}/.claude/worktrees/{slug}/`, and at `.claude/worktrees/{slug}/` for the workspace repo itself. The source clones are never disturbed.
+- Multi-repo tasks share one branch name across all repos for traceability, and their pull requests merge together or not at all.
+- Parallel tasks run in separate worktrees, in one chat or several, without conflict.
+- Sessions from earlier versions are resumed and completed by no skill. `/migrate-sessions` is how each one leaves: finished, archived, or — for an empty shell — removed.

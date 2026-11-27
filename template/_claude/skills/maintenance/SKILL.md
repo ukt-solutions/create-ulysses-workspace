@@ -32,9 +32,8 @@ The script checks the CLAUDE.md skill list against `.claude/skills/` in both dir
 Semantic drift between context files — one saying "2 mandatory rules" when there are now 4, or two files contradicting each other — is not mechanically decidable; cleanup step 11's reconciliation covers it.
 
 ### 2. Frontmatter integrity
-For each non-gitignored workspace-context `.md` and each `work-sessions/*/workspace/session.md`, the script checks:
+For each non-gitignored workspace-context `.md`, the script checks:
 - Frontmatter parses
-- Session trackers carry `name`, `status`, `branch`
 - `branch` references a branch that still exists
 - `repo`/`repos` reference repos in workspace.json
 - `lifecycle: active` untouched in 7+ days (stale candidate)
@@ -59,7 +58,7 @@ The remaining worktree-level checks are not carried by the script; perform them 
 - Worktrees with no recent commits? (orphaned)
 - Local branches with no remote tracking? (unpushed work)
 - Worktrees whose branch has already been merged? (cleanup candidates)
-- Orphan worktree records in project repos — run `git -C repos/{repo} worktree list` for each repo and flag any `prunable` markers. These usually come from a workspace-first teardown (the unsafe order) leaving stale admin records behind. Suggest `git worktree prune` on the affected repo.
+- Orphan worktree records in project repos — run `git -C repos/{repo} worktree list` for each repo and flag any `prunable` markers. These are usually left behind when a worktree folder is removed by hand instead of with `git worktree remove`. Suggest `git worktree prune` on the affected repo.
 - Task-model state (gh:146), three checks (command values go in single quotes, and a `'` inside a value is written `'\''`):
   - **Unrecorded task worktrees** — list `repos/*/.claude/worktrees/*` and `.claude/worktrees/*`, read each candidate's branch (`git -C '{path}' rev-parse --abbrev-ref HEAD`), and keep only those on a task-prefixed branch (`feature/`, `bugfix/`, `chore/`) — Claude Code's own worktrees carry other branch names, so the prefix filter skips them without guessing a name convention. Cross-reference the chat records (`node .claude/scripts/chat-record.mjs --root . --list`): a task-prefixed worktree no record entry claims is *unrecorded* — it may be a legitimate no-tracker task (those are never recorded), so present it and ask before suggesting `node .claude/scripts/task-worktree.mjs --root . --remove --repo '{repo}' --branch '{branch}'`.
   - **Stale record entries** — a record task entry whose worktree is gone (neither `repos/{repo}/.claude/worktrees/{slug}/` nor, for `repo: "."`, `.claude/worktrees/{slug}/` exists). Suggest `node .claude/scripts/chat-record.mjs --root . --remove-task --chat '{chat}' --work-item '{workItem}' --branch '{branch}' --repo '{repo}'` (omit `--repo` when the entry has none). Always pass `--branch`: without it the removal takes every branch of the item/repo (gh:206), a sibling branch with a live worktree included.
@@ -121,8 +120,7 @@ When stale candidates are found, surface them as warnings in the output format a
 
 ### 10. Stale context
 - Ephemeral files not updated in 7+ days — suggest resolve, update, or archive
-- `work-sessions/{name}/` folders whose worktrees are gone — suggest cleanup
-- Session trackers whose branches have been merged — suggest `/complete-work` post-flight cleanup
+- Sessions still under the old session lifecycle (audit section 3's info line) — suggest `/migrate-sessions`, which finishes, archives or removes each one with you
 - Unrecorded task-prefixed worktrees (no chat-record entry claims them; may be no-tracker tasks) — ask, then suggest `task-worktree.mjs --remove`
 - Leftover Claude Code agent worktrees (gh:205) — the audit script's info findings (or `summary.agentWorktrees` via `--json`) carry each one's facts with a scripted `removable` verdict and the `reasons` behind it. Offer removal one worktree at a time, always asking first, and only for entries marked `removable: true` — the script has already verified the directory matches git's record of the worktree, it is clean (untracked files count as dirty), it holds no work of its own (`commitsBeyond: 0`, or only non-merge commits whose patch-ids all landed on the base per `git cherry`; a squash merge leaves patch-ids unmatched and is deliberately not removable), it is unlocked, idle for over an hour, and claimed by no chat-record task. Never widen these criteria by hand. For `removable: false` entries, report the `reasons` and leave the worktree alone — locked means locked: Claude Code considers an agent running, and nothing in this flow overrides it. Removal, run from the launcher root, is `git -C <repo-dir> worktree remove <absolute-path>` (never `-f` — a refusal means the worktree no longer matches the recorded facts) then `git -C <repo-dir> branch -D <branch>`, with `<repo-dir>` the owning repo — the workspace root itself for `repo: "."`, `repos/{repo}/` otherwise — and `<absolute-path>` the entry's `absolutePath` fact. Never touch task worktrees: task-prefixed branches never reach the agent list, and claimed agent branches are already excluded by the script.
 - Chat-record task entries whose worktree is gone — suggest `chat-record.mjs --remove-task`
@@ -221,19 +219,18 @@ Act on section 8's findings, one at a time, asking first.
 Issues (3):
   ✗ workspace-context/team-member/alice/old-handoff.md references branch feature/old
     but that branch was deleted
-  ✗ 2 inflight files exist but no active work session (orphaned?)
+  ✗ 2 inflight files exist but no open task owns them (orphaned?)
   ✗ Canonical exceeds budget: 47 KB / 40 KB. 2 reference files were stubbed;
     canonical is still 6.8 KB over. Run /maintenance cleanup to triage.
 
 Warnings (2):
   ⚠ workspace-context/team-member/alice/workspace-analytics.md not updated in 8 days
-  ⚠ Worktree work-sessions/old-feature/workspace has no commits in 5 days
+  ⚠ Worktree repos/my-app/.claude/worktrees/old-feature has no commits in 5 days
 
 Cleanup suggestions (2):
   ⊕ workspace-branching.md and persistent-work-sessions.md overlap
     significantly — merge into one?
-  ⊕ migration-recipes.md still says "/sync handles dogfood" but
-    /sync was replaced by /sync-work — update?
+  ⊕ onboarding.md still says "/braindump side" but /aside replaced it — update?
 
 OK (6):
   ✓ All CLAUDE.md skill references valid

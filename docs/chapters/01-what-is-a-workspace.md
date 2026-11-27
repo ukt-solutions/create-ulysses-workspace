@@ -10,7 +10,7 @@ This chapter introduces the workspace model: what the pieces are, how they fit t
 
 A workspace is a git repository that wraps your project repositories with shared conventions. It is not a monorepo — your project code stays in its own repos. The workspace adds structure around them: rules for Claude to follow, skills for common workflows, shared context for team knowledge, and hooks for automation.
 
-The workspace root is a launcher, not a working directory. It stays on its default branch at all times. All real work happens in git worktrees that branch off for each piece of work — one worktree per repo the task touches. Sessions, the older lifecycle, kept their worktrees in a self-contained folder instead; no new session starts, and the ones a workspace already has keep working where they are until `/migrate-sessions` drains them. This separation means the root is always clean, always ready to launch new work, and never blocked by work in progress.
+The workspace root is a launcher, not a working directory. It stays on its default branch at all times. All real work happens in git worktrees that branch off for each piece of work — one worktree per repo the task touches. This separation means the root is always clean, always ready to launch new work, and never blocked by work in progress.
 
 Think of it like a workbench. The workbench itself doesn't move — your tools and materials are arranged on it. When you start a project, you pull materials to a work area. When you finish, you clean up and the bench is ready for the next thing.
 
@@ -40,7 +40,7 @@ For solo developers, you use the template and personal layers. For teams, you us
 
 ## Directory Layout
 
-A workspace has a predictable structure. With one task in flight and one legacy session still to drain, it looks like this:
+A workspace has a predictable structure. With one task in flight, it looks like this:
 
 ```
 my-workspace/
@@ -51,15 +51,6 @@ my-workspace/
 │   ├── my-app/                 # Cloned project repo (stays on default branch)
 │   │   └── .claude/worktrees/  # Task worktrees for this repo, one per branch
 │   └── my-api/                 # Another project repo
-├── work-sessions/              # Legacy sessions only — one folder per session started before tasks
-│   └── fix-auth/               # A single session — self-contained
-│       └── workspace/          # Workspace worktree for this session
-│           ├── repos/          # Real directory with nested project worktrees
-│           │   ├── my-app/     # Project worktree on the session branch
-│           │   └── my-api/     # Another project worktree
-│           ├── session.md      # Session tracker — frontmatter + body (tracked)
-│           ├── design-auth.md  # Spec — tracked, consumed by /complete-work
-│           └── plan-auth.md    # Plan — tracked, consumed by /complete-work
 ├── workspace-context/          # Team and personal knowledge (tracked in git)
 │   ├── shared/                 # Team-visible working documents
 │   │   ├── locked/             # Canonical team truths — loaded every turn
@@ -84,9 +75,7 @@ Each directory has one job:
 
 **repos/** holds source clones of your project repositories. These are cloned here during setup and stay on their default branch — they are never disturbed by work. The whole directory is gitignored: the workspace tracks configuration, not code. A task's worktree for a project repo lives inside that repo's clone, at `repos/{repo}/.claude/worktrees/{slug}/`, where `{slug}` is the branch name with `/` replaced by `-`. That is the same location Claude Code's own worktree feature uses, so the two converge on one layout.
 
-**work-sessions/** holds the legacy sessions a workspace still has — one self-contained folder per session started before the task lifecycle: its own workspace worktree (with nested project worktrees inside it), plus a tracked session tracker and any specs or plans for that session. No new session starts. These keep resuming and completing where they are, and `/migrate-sessions` drains them. Worktrees are gitignored, but the tracker, specs, and plans are tracked so durable session thinking travels across machines via the workspace branch. [Chapter 2](02-work-sessions.md) covers the session lifecycle in detail, and its last section covers the task lifecycle, which is how all new work starts.
-
-**.claude/worktrees/** is where a task's worktree for the workspace repo itself lives, at `.claude/worktrees/{slug}/`. A task creates one worktree per repo it touches, and the workspace repo can be one of them. Like every task worktree, it is removed when the task completes.
+**.claude/worktrees/** is where a task's worktree for the workspace repo itself lives, at `.claude/worktrees/{slug}/`. A task creates one worktree per repo it touches, and the workspace repo can be one of them. Like every task worktree, it is removed when the task completes. [Chapter 2](02-work-sessions.md) covers tasks in detail.
 
 **workspace-context/** is the memory system. Files here are tracked in git and shared across the team, apart from `local-only-*` drafts. It has three levels — `shared/locked/` for canonical team truths, `shared/` for team-visible working documents, and `team-member/{user}/` for each person's context — plus two generated catalogs, `canonical.md` and `index.md`, that CLAUDE.md imports. [Chapter 3](03-workspace-context.md) covers this in depth.
 
@@ -102,15 +91,13 @@ The workspace configuration file declares which repos belong to the workspace an
 {
   "workspace": {
     "name": "my-workspace",
-    "templateVersion": "0.26.0-beta.0",
+    "templateVersion": "0.28.0-beta.0",
     "versionCheck": { "ambient": true },
     "scratchpadDir": "workspace-scratchpad",
-    "workSessionsDir": "work-sessions",
     "workspaceContextDir": "workspace-context",
     "alwaysLoadedBudgetBytes": 65536,
     "subagentContextMaxBytes": 32768,
     "subagentInlineMaxBytes": 8192,
-    "sessionModel": "task",
     "tracker": null,
     "forge": { "type": "github" },
     "repoRemotes": true,
@@ -131,13 +118,13 @@ The workspace configuration file declares which repos belong to the workspace an
 
 The `repos` object is the manifest of project repositories. Each entry names a repo, its remote URL, and its default branch. Skills use this manifest to create worktrees, push branches, and create pull requests. When you start work, you choose which repos to include — it can span one or many.
 
-The `workspace` object holds the directory locations and the template version, together with the settings the skills read: the issue tracker and the forge, whether the project clones are registered as remotes of the workspace repo (`repoRemotes`), and the context budgets. `/workspace-init` sets most of them, and you rarely need to touch them again. `sessionModel` is in the file as well: the template ships `"task"`, and the key routes nothing, because new work is always a task — it stays because an update never removes a key, so an older workspace keeps whatever it holds. [VERSIONING.md](../../VERSIONING.md) documents every field.
+The `workspace` object holds the directory locations and the template version, together with the settings the skills read: the issue tracker and the forge, whether the project clones are registered as remotes of the workspace repo (`repoRemotes`), and the context budgets. `/workspace-init` sets most of them, and you rarely need to touch them again. A workspace upgraded from an earlier version may also carry `sessionModel` and `workSessionsDir`, keys of the session lifecycle those versions had. The template no longer ships either. They stay in an older file because an update never removes a key: the first is read by nothing, and the second only names where leftover sessions sit. [VERSIONING.md](../../VERSIONING.md) documents every field.
 
 `repoRemotes` is on unless it is `false`. On, every project clone is mirrored onto the workspace repo as a remote named `repo-{name}`, so that Claude Code Desktop can match a pull request in that project to a chat started at the workspace root; [Chapter 7](07-hooks-and-scripts.md#repo-remotesmjs) describes how. `false` removes what that added — the remotes the script created, and the hand-made ones it adopted — and leaves every other remote as it is.
 
 ## How Repos Relate to the Workspace
 
-Your project code lives in its own repositories. The workspace does not contain your code — it wraps it. Repos are cloned into the `repos/` directory during setup, and they stay on their default branch at all times. When you start work, the workspace creates a worktree (a lightweight git checkout) for each repo the work touches, so the original clone is never disturbed. A task's worktrees sit under each repo's `.claude/worktrees/` — `repos/{repo}/.claude/worktrees/{slug}/`, or `.claude/worktrees/{slug}/` for the workspace repo itself. A legacy session keeps its worktrees nested inside the session's folder.
+Your project code lives in its own repositories. The workspace does not contain your code — it wraps it. Repos are cloned into the `repos/` directory during setup, and they stay on their default branch at all times. When you start work, the workspace creates a worktree (a lightweight git checkout) for each repo the work touches, so the original clone is never disturbed. A task's worktrees sit under each repo's `.claude/worktrees/` — `repos/{repo}/.claude/worktrees/{slug}/`, or `.claude/worktrees/{slug}/` for the workspace repo itself.
 
 This means you can run several pieces of work in parallel, each with its own set of worktrees, each on its own branch, without any conflict. One terminal can be working on a feature while another terminal fixes a bug — both in the same workspace, neither blocking the other.
 
@@ -145,7 +132,7 @@ The workspace repository and the project repositories are independent git repos.
 
 ## Convention Over Configuration
 
-The workspace relies on naming conventions rather than configuration files or runtime logic. A file named `design-auth-system.md` is a spec. A file named `local-only-notes.md` is personal. A file ending in `.md.skip` is available but inactive. A file named `handoff_auth.md` under `workspace-context/` is a handoff. A directory named `work-sessions/fix-auth/` is the self-contained folder for the `fix-auth` session.
+The workspace relies on naming conventions rather than configuration files or runtime logic. A file named `design-auth-system.md` is a spec. A file named `local-only-notes.md` is personal. A file ending in `.md.skip` is available but inactive. A file named `handoff_auth.md` under `workspace-context/` is a handoff. A directory named `chats/fix-login/` under the scratchpad is one chat's drawer.
 
 These conventions are simple enough to memorize and consistent enough to automate. Hooks use naming patterns to detect state. Skills use naming patterns to find files. The maintenance skill uses naming patterns to identify stale artifacts. No registry, no database, no runtime — just files named in predictable ways.
 
@@ -156,7 +143,7 @@ This approach has a deliberate tradeoff: you trade the precision of explicit con
 ## Key Takeaways
 
 - A workspace wraps your project repos with shared conventions — it does not contain your code.
-- The workspace root stays on its default branch. All work happens in worktrees: a task's under `repos/{repo}/.claude/worktrees/{slug}/` and `.claude/worktrees/{slug}/`, a legacy session's under `work-sessions/{name}/`.
+- The workspace root stays on its default branch. All work happens in worktrees: a task's under `repos/{repo}/.claude/worktrees/{slug}/` and `.claude/worktrees/{slug}/`.
 - Three layers: template (generic), team workspace (shared), personal (gitignored).
 - `workspace.json` declares which repos belong and configures workspace behavior.
 - Convention over configuration — naming patterns do the heavy lifting, not runtime logic.

@@ -130,7 +130,7 @@ node .claude/scripts/build-workspace-context.mjs --write --root .
 ls .claude/rules/
 ```
 
-The template ships nine active rules and nine optional ones, which sit deactivated with a `.skip` extension until someone renames them. For your team, you might activate:
+The template ships eight active rules and nine optional ones, which sit deactivated with a `.skip` extension until someone renames them. For your team, you might activate:
 - `scope-guard.md.skip` → `scope-guard.md` if scope creep is a recurring problem
 - `documentation.md.skip` → `documentation.md` if you want Claude to maintain docs alongside code
 

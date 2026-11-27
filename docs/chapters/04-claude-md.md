@@ -25,7 +25,7 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 
 ## Quick Reference
 - This root is the launcher — all work happens in task worktrees at `repos/{repo}/.claude/worktrees/{slug}/` (`.claude/worktrees/{slug}/` for the workspace repo)
-- `/start-work` to start a task, or resume a `work-sessions/` session the workspace already has
+- `/start-work` to start a task
 - From root: only `local-only-*` and `workspace-scratchpad/` are writable
 - Team knowledge lives in `workspace-context/`
 - Run `/rename` to label this chat before `/clear` — keeps the chat findable in your CLI history after the context is wiped
@@ -41,21 +41,19 @@ Config lives in `workspace.json` — read it when a skill needs a value.
 
 ## Skills
 - `/workspace-init` — first-time workspace setup (clone repos, install template, activate rules)
-- `/start-work [issue|handoff|blank]` — start a task, or resume an existing session
+- `/start-work [issue|handoff|blank]` — start a task, or resume one this chat already has
 - `/handoff [name]` — save workstream state
 - `/braindump [name]` — capture discussion/reasoning
 - `/aside [--quick] <thought>` — capture a drive-by idea without interrupting current work
-- `/pause-work` — suspend work, push, draft PR
 - `/complete-work` — finalize the work — rebase, PR, merge, close the issue
 - `/promote` — move personal memory to shared context
 - `/release [version]` — cut a versioned release: bump, tag, forge release with generated notes
-- `/sync-work` — push branches without ceremony
 - `/workspace-update` — apply template updates, verified by a post-update audit
 - `/setup-tracker` — wire this workspace to an issue tracker (GitHub Issues shipped; others pluggable)
 - `/maintenance [audit|cleanup]` — scripted health audit and cleanup
 - `/context-placement` — decide where durable content belongs and what each destination costs before writing it
 - `/goal-driven-work` — run multi-phase autonomous work under `/goal` with phase artifacts and agent-team dispatch
-- `/migrate-sessions` — drain session-model work sessions and switch the workspace to the task lifecycle
+- `/migrate-sessions` — drain the work sessions left over from the old session lifecycle
 - `/build-docs-site` — build a comprehensive Docusaurus documentation site for a project
 
 ## Compact Instructions
@@ -72,7 +70,7 @@ Drop from the summary:
 - Exploratory reads that did not lead to a change
 - Conversational asides
 
-Files in `workspace-context/`, the session tracker (`session.md`) or chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` survive compaction — they're on disk; re-read them on demand.
+Files in `workspace-context/` or the chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` in them, survive compaction — they're on disk; re-read them on demand.
 ```
 
 Each section has a purpose:
@@ -83,9 +81,9 @@ Each section has a purpose:
 
 **Team Knowledge** imports three files. `@workspace-context/canonical.md` carries the canonical truths verbatim: every file in `workspace-context/shared/locked/`, read on every turn. `@workspace-context/index.md` lists every file under `workspace-context/shared/`, one line each — the canonical files first, then the team-visible working documents — so Claude knows what exists. The working documents are never loaded as content; they are read on demand. `@CODEBASE.md` is an optional file-tree map that `/workspace-init` offers to generate, to help Claude navigate the code without exhaustive exploration. The two catalogs are generated from the files on disk — [Chapter 3](03-workspace-context.md) explains how.
 
-**Skills** lists the available workflow commands — all seventeen the template ships, each with a one-line summary. This serves as both documentation for you and a reference for Claude to know what skills exist.
+**Skills** lists the available workflow commands — all fifteen the template ships, each with a one-line summary. This serves as both documentation for you and a reference for Claude to know what skills exist.
 
-**Compact Instructions** tells Claude what to carry through an auto-compaction and what to drop. It ends by naming what survives compaction because it is on disk: files in `workspace-context/`, the session tracker or the task's chat drawer, and any `design-*.md` or `plan-*.md`.
+**Compact Instructions** tells Claude what to carry through an auto-compaction and what to drop. It ends by naming what survives compaction because it is on disk: files in `workspace-context/` or the task's chat drawer, and any `design-*.md` or `plan-*.md` in them.
 
 ## The @-Reference Pattern
 
@@ -99,7 +97,7 @@ You can add your own @-references. If your project has a critical architecture d
 
 The always-loaded context has a token cost. Every file pulled into CLAUDE.md is read on every turn, consuming context window space that could otherwise hold conversation history or tool results.
 
-Measure it rather than estimating it. `.claude/scripts/context-footprint.mjs --root .` lists every contributor — CLAUDE.md, each import, each unconditional rule — and checks the total against the budget. On a fresh workspace built from the v0.26 template the total is about 25KB, which the script estimates at roughly 6,000 tokens: just over 3% of a 200k window, before any canonical file exists. Seven of the nine active rules are in that total. The other two declare `paths:` in their frontmatter and are counted only when a matching file is read.
+Measure it rather than estimating it. `.claude/scripts/context-footprint.mjs --root .` lists every contributor — CLAUDE.md, each import, each unconditional rule — and checks the total against the budget. On a fresh workspace built from the current template the total is about 23KB, which the script estimates at roughly 5,800 tokens: just under 3% of a 200k window, before any canonical file exists. Seven of the eight active rules are in that total. The eighth declares `paths:` in its frontmatter and is counted only when a matching file is read.
 
 Canonical context is one line item in that total, and the one a team controls. That is why `/workspace-init` targets under 10KB for it. At the script's estimate of four bytes to a token, 10KB is another 2,500 tokens on every turn, on top of what the template itself costs.
 
@@ -116,7 +114,7 @@ The practical implication: do not put large documents in canonical context. A 5,
 When Claude processes a turn, configuration loads in a specific order. Understanding this order helps you know where to put things and what takes priority:
 
 1. **CLAUDE.md** — the entry point. Quick reference, @-references, skill listing.
-2. **SessionStart hook context** — the workspace summary line (tracker, forge, repos), chat record, a line naming any work sessions still under the old session model, and the open sessions, injected when the chat begins.
+2. **SessionStart hook context** — the workspace summary line (tracker, forge, repos), the chat record and workspace root, the shared-context catalog, and a line naming any work sessions still to drain, injected when the chat begins.
 3. **Rules** — the active `.md` files in `.claude/rules/`. Behavioral constraints. A rule with `paths:` joins the set when a matching file is read.
 4. **Canonical context** — through the `@workspace-context/canonical.md` import. Every file in `workspace-context/shared/locked/`.
 5. **Skills** — loaded on invocation, not on every turn.
@@ -139,7 +137,7 @@ CLAUDE.md is a template file that you own. The scaffold provides a default, but 
 
 The one thing to preserve is the pair of `@workspace-context/` imports. They are how Claude stays aware of team knowledge — removing them disconnects Claude from the workspace's shared memory. The connection to `workspace.json` needs no import to preserve: the SessionStart hook summarizes it in every chat, and skills read the file when they need it.
 
-Your edits survive upgrades. CLAUDE.md is a template file, so `/workspace-update` merges a new template into your customized copy — and asks about anything it cannot merge cleanly — instead of overwriting it. The one thing the merge takes away is what the template itself has retired and your copy still carries word for word: an include it no longer ships, or a bullet that is no longer true. Each is dropped from the merged result and named in the diff you approve. A bullet the template has merely stopped shipping — the one describing a session's folder, for as long as sessions exist — is kept as yours.
+Your edits survive upgrades. CLAUDE.md is a template file, so `/workspace-update` merges a new template into your customized copy — and asks about anything it cannot merge cleanly — instead of overwriting it. The one thing the merge takes away is what the template itself has retired because it is no longer true: an include it no longer ships, a bullet it no longer ships, or one of the session lifecycle's own lines — its two skill entries, the bullet describing a session's folder, and the compaction line that named its tracker — wherever your copy still carries them. Each is dropped from the merged result and named in the diff you approve. A bullet the template has merely stopped shipping, and that is still true, is kept as yours.
 
 ---
 
@@ -147,6 +145,6 @@ Your edits survive upgrades. CLAUDE.md is a template file, so `/workspace-update
 
 - CLAUDE.md is the entry point — Claude reads it on every turn in the highest-priority context position.
 - The `@` imports pull in the canonical truths and the index of team-visible context without duplication; workspace.json is summarized by the SessionStart hook instead of imported, and skills read it on demand.
-- Always-loaded context is a cost you can measure: `context-footprint.mjs --root .` prices it against `workspace.alwaysLoadedBudgetBytes`. A fresh v0.26 workspace is about 25KB, roughly 6,000 tokens.
+- Always-loaded context is a cost you can measure: `context-footprint.mjs --root .` prices it against `workspace.alwaysLoadedBudgetBytes`. A fresh workspace is about 23KB, roughly 5,800 tokens.
 - Loading order: CLAUDE.md → hook-injected workspace summary → rules → canonical context → skills on invocation.
 - Customize CLAUDE.md for your project, but preserve the `@workspace-context/` imports that connect Claude to the workspace's shared memory.

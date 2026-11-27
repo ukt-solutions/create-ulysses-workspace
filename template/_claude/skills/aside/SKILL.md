@@ -112,11 +112,11 @@ Topics that would benefit from deeper exploration or user input.}
 - **Collision handling:** Helper auto-appends `-2`, `-3`, …
 - **Always `local-only-`** — gitignored, never auto-committed.
 
-## Session Behavior
+## Standing in the Task Lifecycle
 
-Asides are session-agnostic. Regardless of whether a work session is active:
+An aside stands apart from the task lifecycle. Whether or not a task is active:
 - Files always go to `workspace-context/team-member/{user}/`
-- No interaction with the session tracker
+- No interaction with the chat record or its drawer
 - No interaction with `/complete-work` synthesis
 
 ## Lifecycle

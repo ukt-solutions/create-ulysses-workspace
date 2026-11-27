@@ -2,16 +2,12 @@
 // Tests for session-end.mjs
 // Run: node template/_claude/hooks/session-end.test.mjs
 //
-// Each case builds a real workspace in a temp directory (a workspace repo, a
-// project repo with a bare origin, a copy of .claude/), creates a session
-// with create-work-session.mjs (renaming its folder where a case needs a name
-// that script no longer accepts), points .claude/.active-session.json at it,
-// and runs the hook as a subprocess with a SessionEnd payload on stdin.
-// The pointer file is untrusted input: its session name becomes a path and a
-// commit message. The cases below carry a shell payload that would create a
-// file named PWNED and names that would escape work-sessions/; the hook must
-// never run the payload, never touch a tracker outside work-sessions/, and
-// never crash — a SessionEnd hook that throws breaks the user's session end.
+// The hook has one job: append a line to the workspace session log. Each case
+// builds a real workspace in a temp directory (a workspace repo and a copy of
+// .claude/) and runs the hook as a subprocess with a SessionEnd payload on
+// stdin. A SessionEnd hook that throws breaks the user's session end, so the
+// line must be written whatever the hook is given — and nothing else may be
+// written: the cases snapshot the workspace around the run.
 //
 // The fixture copies .claude/ rather than symlinking it: the hook derives
 // the workspace root from import.meta.url, and a symlink would resolve it to
@@ -20,9 +16,9 @@
 import { execFileSync, spawnSync } from 'child_process';
 import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, mkdtempSync,
-  readdirSync, realpathSync, renameSync,
+  realpathSync, readdirSync, statSync,
 } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { join, dirname, resolve, relative } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 
@@ -55,7 +51,10 @@ function gitEnv(base) {
   };
 }
 
-function makeWorkspace() {
+// A workspace on branch main with .claude/ installed and one commit.
+// workspace is written as the file's `workspace` object; withUser adds a
+// settings.local.json naming the machine's user.
+function makeWorkspace({ workspace = { name: 'fixture' }, withUser = true } = {}) {
   // realpath: macOS tmpdir() is a /var → /private/var symlink, while the
   // hook's root comes from import.meta.url, which Node resolves.
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'send-test-')));
@@ -69,138 +68,137 @@ function makeWorkspace() {
 
   git(ws, 'init', '-q', '-b', 'main');
   cpSync(CLAUDE_DIR, join(ws, '.claude'), { recursive: true });
-  writeFileSync(join(ws, 'workspace.json'), JSON.stringify({
-    workspace: { name: 'fixture', scratchpadDir: 'workspace-scratchpad', workSessionsDir: 'work-sessions' },
-    repos: { app: { remote: 'none', branch: 'main' } },
-  }, null, 2));
-  writeFileSync(join(ws, '.gitignore'), '.claude\nrepos\nwork-sessions\nworkspace-scratchpad\n');
+  if (withUser) {
+    writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ workspace: { user: 'alice' } }, null, 2));
+  }
+  writeFileSync(join(ws, 'workspace.json'), JSON.stringify({ workspace, repos: {} }, null, 2));
+  // The scratchpad is ignored, so the log the hook writes never shows up as
+  // a change to the tracked tree.
+  writeFileSync(join(ws, '.gitignore'), '.claude/settings.local.json\nworkspace-scratchpad/\nscratch-custom/\n');
   writeFileSync(join(ws, 'README.md'), '# fixture\n');
   git(ws, 'add', '-A');
   git(ws, 'commit', '-q', '-m', 'init');
-
-  const origin = join(base, 'origins', 'app.git');
-  const repo = join(ws, 'repos', 'app');
-  mkdirSync(origin, { recursive: true });
-  mkdirSync(repo, { recursive: true });
-  git(origin, 'init', '-q', '--bare', '-b', 'main');
-  git(repo, 'init', '-q', '-b', 'main');
-  writeFileSync(join(repo, 'README.md'), '# app\n');
-  git(repo, 'add', '-A');
-  git(repo, 'commit', '-q', '-m', 'init');
-  git(repo, 'remote', 'add', 'origin', origin);
-  git(repo, 'push', '-q', 'origin', 'main');
-
   return { base, ws, cwd, env, git };
 }
 
-function runScript(fx, script, args) {
-  const r = spawnSync(process.execPath, [join(fx.ws, '.claude', 'scripts', script), ...args], {
-    cwd: fx.cwd, env: fx.env, encoding: 'utf-8',
-  });
-  let json = null;
-  try { json = JSON.parse(r.stdout.trim().split('\n').filter(Boolean).pop()); } catch {}
-  return { json, stdout: r.stdout, stderr: r.stderr };
-}
-
-function createSession(fx, name, branch) {
-  const r = runScript(fx, 'create-work-session.mjs',
-    ['--session-name', name, '--branch', branch, '--repo', 'app', '--user', 'u']);
-  if (r.json?.success !== true) throw new Error(`fixture session was not created: ${r.stdout}${r.stderr}`);
-  return join(fx.ws, 'work-sessions', name, 'workspace');
-}
-
-// Run the hook with the active-session pointer naming `pointerName`.
-function runHook(fx, pointerName) {
-  writeFileSync(join(fx.ws, '.claude', '.active-session.json'),
-    JSON.stringify({ name: pointerName, rootPath: fx.ws }));
+function runHook(fx, payload) {
+  const input = payload === undefined ? '' : JSON.stringify(payload);
   const r = spawnSync(process.execPath, [join(fx.ws, '.claude', 'hooks', 'session-end.mjs')], {
-    cwd: fx.cwd, env: fx.env, encoding: 'utf-8',
-    input: JSON.stringify({ session_id: 's1', reason: 'test' }),
+    cwd: fx.cwd, env: fx.env, encoding: 'utf-8', input,
   });
   return { status: r.status, stdout: r.stdout.trim(), stderr: r.stderr };
 }
 
-// Every entry under dir (outside .git) named PWNED*: a payload that ran.
-function findPwned(dir) {
-  const hits = [];
-  const walk = (d) => {
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      if (e.name === '.git') continue;
-      if (/^PWNED/.test(e.name)) hits.push(join(d, e.name));
-      if (e.isDirectory()) walk(join(d, e.name));
-    }
-  };
-  walk(dir);
-  return hits;
+function readLog(fx, dir = 'workspace-scratchpad') {
+  const path = join(fx.ws, dir, 'session-log.jsonl');
+  return existsSync(path) ? readFileSync(path, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
 }
 
-function withFixture(fn) {
-  const fx = makeWorkspace();
+// Every file under the workspace, outside .git and the scratchpads, with its
+// bytes — what "the hook writes nothing but the log" is checked against.
+function snapshot(fx) {
+  const out = {};
+  const skip = new Set(['workspace-scratchpad', 'scratch-custom']);
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === '.git' || skip.has(e.name)) continue;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else out[relative(fx.ws, full)] = readFileSync(full, 'utf8');
+    }
+  };
+  walk(fx.ws);
+  return out;
+}
+
+function withFixture(opts, fn) {
+  const fx = makeWorkspace(opts);
   try { fn(fx); }
   finally { try { rmSync(fx.base, { recursive: true, force: true, maxRetries: 3 }); } catch {} }
 }
 
-// === A valid session: the safety capture is committed on the session branch ===
-withFixture((fx) => {
-  const wt = createSession(fx, 'demo', 'feature/demo');
-  const r = runHook(fx, 'demo');
-  assertEq(r.status, 0, `valid session exits 0 (stderr: ${r.stderr.trim().slice(0, 200)})`);
-  assertEq(r.stdout, '{}', 'valid session responds with {}');
-  assertEq(fx.git(wt, 'log', '-1', '--format=%s').trim(), 'chore: session-end safety capture for demo',
-    'safety capture committed');
-  assert(/### Session ended/.test(readFileSync(join(wt, 'session.md'), 'utf-8')), 'tracker body gains the safety note');
-  assertEq(r.stderr.trim(), '', 'valid session writes nothing to stderr');
+// === One end is one line, carrying what the hook was given ===
+withFixture({}, (fx) => {
+  const head = fx.git(fx.ws, 'rev-parse', 'HEAD').trim();
+  const before = snapshot(fx);
+  const r = runHook(fx, { session_id: 's1', reason: 'exit' });
+  assertEq(r.status, 0, `the hook exits 0 (stderr: ${r.stderr.trim().slice(0, 200)})`);
+  assertEq(r.stdout, '{}', 'it responds with {}');
+  assertEq(r.stderr.trim(), '', 'and writes nothing to stderr');
+
+  const log = readLog(fx);
+  assertEq(log.length, 1, 'one end appends exactly one line');
+  const entry = log[0];
+  assertEq(entry.event, 'session_end', 'the line is a session_end event');
+  assertEq(entry.reason, 'exit', "the payload's reason is recorded");
+  assertEq(entry.session_id, 's1', "the payload's session id is recorded");
+  assertEq(entry.user, 'alice', 'the user comes from .claude/settings.local.json');
+  assertEq(entry.workspace_branch, 'main', 'the branch is the one the workspace repo is on');
+  assert(!Number.isNaN(Date.parse(entry.date)), 'the date is an ISO timestamp');
+  assertEq(Object.keys(entry).sort(), ['date', 'event', 'reason', 'session_id', 'user', 'workspace_branch'],
+    'the line carries exactly these fields');
+
+  assertEq(snapshot(fx), before, 'the hook writes nothing but the log');
+  assertEq(fx.git(fx.ws, 'rev-parse', 'HEAD').trim(), head, 'no commit is made');
+  assertEq(fx.git(fx.ws, 'status', '--porcelain').trim(), '', 'the tracked tree stays clean');
 });
 
-// === An existing session with a shell-metacharacter name stays literal ===
-// create-work-session now refuses such names, but a session created before
-// that rule can still carry one, and the hook must finish it safely. Build it
-// the way it would exist: create a session, then move its folder to the old
-// name and let git repair the worktree links.
-withFixture((fx) => {
-  const name = 'a$(touch PWNED)';
-  createSession(fx, 'legacy', 'feature/dollar');
-  renameSync(join(fx.ws, 'work-sessions', 'legacy'), join(fx.ws, 'work-sessions', name));
-  const wt = join(fx.ws, 'work-sessions', name, 'workspace');
-  fx.git(fx.ws, 'worktree', 'repair', wt);
-  fx.git(join(fx.ws, 'repos', 'app'), 'worktree', 'repair', join(wt, 'repos', 'app'));
-  const r = runHook(fx, name);
-  assertEq(r.status, 0, 'metacharacter name exits 0');
-  assertEq(fx.git(wt, 'log', '-1', '--format=%s').trim(), `chore: session-end safety capture for ${name}`,
-    'commit message carries the session name literally');
-  assertEq(findPwned(fx.base), [], 'metacharacter name: no payload ran');
+// === Each end is its own line, in order ===
+withFixture({}, (fx) => {
+  runHook(fx, { session_id: 's1', reason: 'exit' });
+  const r = runHook(fx, { session_id: 's2', reason: 'other' });
+  assertEq(r.status, 0, 'a second end exits 0');
+  assertEq(readLog(fx).map((e) => [e.session_id, e.reason]), [['s1', 'exit'], ['s2', 'other']],
+    'the second end appends after the first instead of replacing it');
 });
 
-// === An invalid name in the pointer skips the capture and never crashes ===
-for (const name of ['../escape', 'a/b', 'a\\b', '.hidden', '', 42, null]) {
-  withFixture((fx) => {
-    const wt = createSession(fx, 'demo', 'feature/demo');
-    // A tracker planted where the invalid name would resolve, so a hook that
-    // follows the name reads, appends to and commits it.
-    const planted = typeof name === 'string' && name !== ''
-      ? join(fx.ws, 'work-sessions', name, 'workspace', 'session.md')
-      : null;
-    let before = null;
-    if (planted) {
-      mkdirSync(dirname(planted), { recursive: true });
-      writeFileSync(planted, readFileSync(join(wt, 'session.md'), 'utf-8'));
-      before = readFileSync(planted, 'utf-8');
-    }
-    const mainHead = fx.git(fx.ws, 'rev-parse', 'HEAD').trim();
-    const sessionHead = fx.git(wt, 'rev-parse', 'HEAD').trim();
+// === What the hook is not given falls back to a default; nothing throws ===
+withFixture({ withUser: false }, (fx) => {
+  // No reason and no session id in the payload, and no user on this machine.
+  const bare = runHook(fx, {});
+  assertEq(bare.status, 0, 'a payload with no fields exits 0');
+  const entry = readLog(fx)[0];
+  assertEq(entry.reason, 'unknown', 'a missing reason is "unknown"');
+  assertEq(entry.session_id, null, 'a missing session id is null');
+  assertEq(entry.user, 'unknown', 'with no settings.local.json the user is "unknown"');
 
-    const label = `pointer name ${JSON.stringify(name)}`;
-    const r = runHook(fx, name);
-    assertEq(r.status, 0, `${label}: hook exits 0`);
-    assertEq(r.stdout, '{}', `${label}: hook still responds with {}`);
-    assert(/invalid session name/i.test(r.stderr), `${label}: stderr says why the capture was skipped (stderr: ${r.stderr.trim().slice(0, 200)})`);
-    if (planted) assertEq(readFileSync(planted, 'utf-8'), before, `${label}: the tracker the name pointed at is untouched`);
-    assertEq(fx.git(fx.ws, 'rev-parse', 'HEAD').trim(), mainHead, `${label}: main gained no commit`);
-    assertEq(fx.git(wt, 'rev-parse', 'HEAD').trim(), sessionHead, `${label}: the real session gained no commit`);
-    assert(existsSync(join(fx.ws, 'workspace-scratchpad', 'session-log.jsonl')), `${label}: the session log is still written`);
-    assertEq(findPwned(fx.base), [], `${label}: no payload ran`);
-  });
-}
+  // Stdin that is not JSON at all.
+  const garbage = runHook(fx, undefined);
+  assertEq([garbage.status, garbage.stdout], [0, '{}'], 'empty stdin still ends the chat cleanly');
+  assertEq(readLog(fx).length, 2, 'and still appends a line');
+  assertEq(readLog(fx)[1].reason, 'unknown', 'with the default reason');
+});
+
+// === A workspace that is not a git repository still gets its line ===
+withFixture({}, (fx) => {
+  rmSync(join(fx.ws, '.git'), { recursive: true, force: true });
+  const r = runHook(fx, { session_id: 's1', reason: 'exit' });
+  assertEq(r.status, 0, `the hook exits 0 outside a repository (stderr: ${r.stderr.trim().slice(0, 200)})`);
+  assertEq(readLog(fx)[0]?.workspace_branch, 'unknown', 'with no branch to read, the field is "unknown"');
+});
+
+// === A detached HEAD ends the chat cleanly too ===
+withFixture({}, (fx) => {
+  fx.git(fx.ws, 'checkout', '-q', '--detach');
+  const r = runHook(fx, { session_id: 's1', reason: 'exit' });
+  assertEq(r.status, 0, 'the hook exits 0 on a detached HEAD');
+  assertEq(readLog(fx).length, 1, 'and writes its line');
+});
+
+// === The log lands in the configured scratchpad ===
+withFixture({ workspace: { name: 'fixture', scratchpadDir: 'scratch-custom' } }, (fx) => {
+  // An older workspace.json still carries the keys of the session lifecycle;
+  // they change nothing here.
+  writeFileSync(join(fx.ws, 'workspace.json'), JSON.stringify({
+    workspace: { name: 'fixture', scratchpadDir: 'scratch-custom', workSessionsDir: 'work-sessions', sessionModel: 'session' },
+    repos: {},
+  }, null, 2));
+  const r = runHook(fx, { session_id: 's1', reason: 'exit' });
+  assertEq(r.status, 0, 'the hook exits 0 with a custom scratchpad directory');
+  assertEq(readLog(fx, 'scratch-custom').length, 1, 'the log is written under the configured scratchpadDir');
+  assert(!existsSync(join(fx.ws, 'workspace-scratchpad')), 'and not under the default name');
+  assert(statSync(join(fx.ws, 'scratch-custom')).isDirectory(), 'the directory is created when it is missing');
+});
 
 console.log(`Passed: ${passed}, Failed: ${failed}`);
 if (failed > 0) process.exit(1);

@@ -1,12 +1,12 @@
 # Source clones — cloned separately per user and not part of the workspace repo
-# NOTE: no trailing slash. The same pattern covers both this top-level repos/
-# and the real repos/ directory nested inside each work-session's workspace
-# worktree, where project worktrees live as siblings.
+# NOTE: no trailing slash, so the pattern matches `repos` at any depth: this
+# top-level directory, and the `repos/` folders still nested inside worktrees
+# left over from the session lifecycle of earlier template versions.
 repos
 
-# Work sessions — the folder is local-only at the workspace root.
-# Session content (tracker, specs, plans) lives inside each session's
-# workspace worktree at the top of the session branch, not on main.
+# Work sessions — kept for workspaces that still hold folders from the session
+# lifecycle of earlier template versions. New work never writes here;
+# /migrate-sessions drains what is left.
 work-sessions/
 
 # Disposable workspace-scoped scratchpad (session log, hook debug output)
@@ -17,6 +17,8 @@ workspace-scratchpad/
 
 # Personal overrides
 .claude/settings.local.json
+# A pointer file the session lifecycle of earlier template versions wrote inside
+# each of its worktrees; a leftover stays ignored.
 .claude/.active-session.json
 CLAUDE.local.md
 

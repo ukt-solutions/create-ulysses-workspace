@@ -70,7 +70,7 @@ assertEq(
 // 2. Fresh-scaffold shape: the template's own values
 assertEq(
   configSummary({
-    workspace: { name: 'demo', sessionModel: 'task', tracker: null, forge: { type: 'github' } },
+    workspace: { name: 'demo', tracker: null, forge: { type: 'github' } },
     repos: {},
   }),
   'tracker: off | forge: github | repos: none',
