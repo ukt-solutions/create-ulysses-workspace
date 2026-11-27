@@ -22,13 +22,13 @@ The public contract is what a workspace may rely on.
 
 ### Skills
 
-The slash commands, each a directory under `.claude/skills/`: `/aside`, `/braindump`, `/build-docs-site`, `/complete-work`, `/context-placement`, `/goal-driven-work`, `/handoff`, `/maintenance`, `/migrate-sessions`, `/pause-work`, `/promote`, `/release`, `/setup-tracker`, `/start-work`, `/sync-work`, `/workspace-init`, `/workspace-update`.
+The slash commands, each a directory under `.claude/skills/`: `/aside`, `/braindump`, `/build-docs-site`, `/complete-work`, `/context-placement`, `/goal-driven-work`, `/handoff`, `/maintenance`, `/migrate-sessions`, `/promote`, `/release`, `/setup-tracker`, `/start-work`, `/workspace-init`, `/workspace-update`.
 
 The name is the contract. The wording of a skill is not.
 
 ### Rules
 
-The file names under `.claude/rules/`. Active: `coherent-revisions.md`, `forge-operations.md`, `git-conventions.md`, `goal-driven-work.md`, `honest-pushback.md`, `memory-guidance.md`, `task-list-mirroring.md`, `work-item-tracking.md`, `workspace-structure.md`.
+The file names under `.claude/rules/`. Active: `coherent-revisions.md`, `forge-operations.md`, `git-conventions.md`, `goal-driven-work.md`, `honest-pushback.md`, `memory-guidance.md`, `work-item-tracking.md`, `workspace-structure.md`.
 
 Optional, shipped as `.md.skip`: `agent-rules`, `cloud-infrastructure`, `config-review`, `documentation`, `local-dev-environment`, `product-integrity`, `scope-guard`, `superpowers-workflow`, `token-economics`. A workspace activates one by renaming it to `.md`, and an update leaves an activated rule active.
 
@@ -72,7 +72,7 @@ The fields under `workspace`, and what they mean. An absent field behaves as its
 | `name` | The workspace's name, shown at session start. |
 | `templateVersion` | The template version the workspace is on. Scaffolding sets it and `/workspace-update` advances it. |
 | `initialized` | `true` once `/workspace-init` has finished. `/workspace-update` requires it. |
-| `sessionModel` | Selects nothing. New work is always a task. The template ships `"task"`, and an older workspace keeps whatever it holds, because a field is never removed. |
+| `sessionModel` | No longer shipped, and read by nothing. New work is always a task. An older workspace keeps whatever it holds, because a field is never removed. |
 | `tracker` | The issue tracker, or `null` for none. `type` is `github-issues` or `gitlab-issues`. `repo` is the slug, or `"auto"` to take it from the git remote. `host` names a self-managed GitLab. `epics: "native"` selects GitLab group epics, and absent means label mode. `epicLabelPrefix` defaults to `epic:`. |
 | `forge` | The code host for pull requests and releases. `type` is `github` or `gitlab`, and with no `type` the host is read from each repo's origin. `repo` and `host` read as they do in `tracker`. `false` turns forge operations off. |
 | `merge` | `"local"` finishes tasks for the workspace repo without pushing or opening a PR. |
@@ -86,7 +86,8 @@ The fields under `workspace`, and what they mean. An absent field behaves as its
 | `subagentInlineMaxBytes` | Locked files up to this size are inlined into a subagent's context. Larger ones become pointers. |
 | `subagentContextMaxBytes` | The ceiling on what a subagent receives in all. Past it, the largest inlined files become pointers, largest first. |
 | `greeting` | Shipped by the template and read by nothing, so it has no effect. It may be removed before 1.0.0. |
-| `scratchpadDir`, `workSessionsDir`, `workspaceContextDir` | Where the scratchpad, work sessions and workspace context live: `workspace-scratchpad`, `work-sessions` and `workspace-context` by default. |
+| `scratchpadDir`, `workspaceContextDir` | Where the scratchpad and workspace context live: `workspace-scratchpad` and `workspace-context` by default. |
+| `workSessionsDir` | No longer shipped. It named the sessions directory of the session lifecycle, `work-sessions` by default, and is still read by the one thing that counts leftover sessions, so an older workspace's own value keeps pointing there. |
 
 `repos` has one entry per project repository, keyed by its directory under `repos/`. An entry carries `remote` and `branch`, the default branch that worktrees start from and PRs target (`main` when absent). It may also carry `primary: true`, which makes it the repo that `/start-work` and `/release` default to, and `merge`, `mergeApproval` and `release`, which mean what they mean under `workspace` but for that repository alone.
 
@@ -111,7 +112,7 @@ Three forms, and one flag, are the contract:
 
 - `workspace-context/` and its three levels: `shared/locked/` for canonical team truths, which every session loads through `canonical.md`; `shared/` for team-visible working documents; `team-member/{user}/` for one person's context.
 - `repos/{repo}/`, the source clones, each kept on its default branch.
-- Worktrees. A task keeps a project repo's worktree at `repos/{repo}/.claude/worktrees/{slug}/` and the workspace repo's own at `.claude/worktrees/{slug}/`. `{slug}` is the branch name with `/` replaced by `-`. A session, the legacy lifecycle, keeps its worktrees at `work-sessions/{name}/workspace/`, with a project repo's at `work-sessions/{name}/workspace/repos/{repo}/`.
+- Worktrees. A task keeps a project repo's worktree at `repos/{repo}/.claude/worktrees/{slug}/` and the workspace repo's own at `.claude/worktrees/{slug}/`. `{slug}` is the branch name with `/` replaced by `-`. A workspace upgraded from an earlier version may still hold worktrees at `work-sessions/{name}/workspace/`, left over from the session lifecycle. The template leaves them alone until `/migrate-sessions` drains them.
 
 ### `.claude/template-modifications.json`
 
@@ -130,7 +131,7 @@ Paths are relative to `.claude/`. `localFiles` lists files the workspace owns ou
 
 ### Lifecycles
 
-One lifecycle starts work: **task**. Every piece of new work is a task, whatever `workspace.json` holds. **session** is the legacy lifecycle. No new session starts, and the sessions a workspace already has keep resuming and completing until `/migrate-sessions` drains them: finished through the task lifecycle's pull-request script, archived, or, for an empty orphan shell, removed. `workspace.sessionModel` remains a field because fields are never removed. It no longer selects anything.
+One lifecycle starts work: **task**. Every piece of new work is a task, whatever `workspace.json` holds. The **session** lifecycle is removed: `/start-work` neither starts nor resumes a session, and no other skill completes one. A workspace that still holds sessions from it drains them with `/migrate-sessions`, which finishes each through the task lifecycle's pull-request script, archives it, or, for an empty orphan shell, removes it. `workspace.sessionModel` remains a field because fields are never removed. It selects nothing.
 
 ## Major (breaking)
 
