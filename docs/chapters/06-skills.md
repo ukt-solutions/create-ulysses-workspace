@@ -98,7 +98,7 @@ Starts new work as a task, or resumes a task a chat already has. Which one it do
 
 ### /complete-work
 
-Finalizes the work — rebase, PR, merge, and close the linked issue. It handles every project repo in the work and the workspace repo.
+Finalizes the work — rebase, PR, merge, and close the linked issue. It handles every project repo in the work and the workspace repo. Run inside a worktree that the old session lifecycle left behind, it finds no task and points at `/migrate-sessions` instead.
 
 **The flow** starts with a pre-flight — every task worktree clean, and, when the chat's drawer holds a goal artifact, every `/goal` sub-branch already merged into the task branch. It then rebases each worktree onto its base and routes the durable thinking in the chat's drawer, asking what deserves to move into `workspace-context/`. The rest goes to `task-pr.mjs`: one PR per repo with a body written for it, the CI checks read for every PR, a merge that follows the task's merge-approval setting, the linked issue closed, and finally the worktrees torn down. [Chapter 2](02-work-sessions.md#ci-checks-and-merge-approval) has the detail.
 

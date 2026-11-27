@@ -128,7 +128,7 @@ A long multi-chat effort is a task too. Its thinking lives in the chat's drawer 
 
 A workspace made on an earlier version of the template may still hold **sessions**, the lifecycle those versions had. A session was a coherent piece of effort spanning one or more conversations, kept in a self-contained `work-sessions/{name}/` folder with a workspace worktree, nested project worktrees and a `session.md` tracker. That lifecycle is removed: no skill starts, resumes or completes a session now.
 
-Upgrading moves nothing and deletes nothing. The folders stay where they are, and three things report how many there are until they are drained: a line from the session-start hook, an info finding in the maintenance audit, and a line in `/workspace-update`'s report. Each counts the sessions directory's entries whose names do not start with a dot, so an archive under `.archived/` never counts.
+Upgrading moves nothing and deletes nothing. The folders stay where they are, and three things report how many there are until they are drained: a line from the session-start hook, an info finding in the maintenance audit, and a line in `/workspace-update`'s report. Each counts the sessions directory's entries whose names do not start with a dot, so an archive under `.archived/` never counts. A chat opened inside one of their worktrees is pointed the same way: `/complete-work` finds no task there and names `/migrate-sessions`, and so does the line the repo-write-detection hook adds to its warning.
 
 An older `workspace.json` may still carry two keys from that lifecycle, because an update never removes a key. `sessionModel` selects nothing and is read by nothing. `workSessionsDir` only names where the leftover sessions sit, `work-sessions` by default.
 

@@ -2,20 +2,23 @@
 // Unit tests for repo-write-detection.mjs.
 // Run: node .claude/hooks/_repo-write-detection.test.mjs
 //
-// Two layers:
+// Three layers:
 //  - the pure isTaskWorktreeWrite predicate (path arithmetic, incl.
 //    symlinked workspaces and traversal attempts);
 //  - spawn-level runs of the real hook, covering the entry guard through a
 //    symlinked hook path (gh:132 round 2, N1) and the Bash carve-out's
-//    judge-what-remains semantics (N2).
+//    judge-what-remains semantics (N2);
+//  - a chat opened inside a leftover session worktree: the launcher is
+//    found from the filesystem, and the warning carries one line pointing
+//    at /migrate-sessions.
 import { spawnSync } from 'node:child_process';
 import {
-  cpSync, mkdtempSync, mkdirSync, symlinkSync, rmSync,
+  cpSync, mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync, realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isTaskWorktreeWrite } from './repo-write-detection.mjs';
+import { isTaskWorktreeWrite, leftoverSessionLauncher } from './repo-write-detection.mjs';
 
 let failed = 0;
 let passed = 0;
@@ -162,6 +165,83 @@ try {
   check(String(wsMixed.stdout).includes(WARN), true, 'workspace worktree + .claude path in one command warns', 'judged on the .claude token');
 } finally {
   rmSync(fx, { recursive: true, force: true });
+}
+
+// === A chat opened inside a leftover session worktree ===
+// The session lifecycle of earlier template versions kept each session as a
+// worktree inside the launcher's sessions directory. No skill resumes or
+// completes one now, and nothing in such a worktree detects as a task, so
+// the hook's warning carries one line saying where the checkout should go:
+// /migrate-sessions, run from the launcher.
+const fx2 = makeFixture();
+try {
+  const writeConfig = (dir, workspace) => writeFileSync(join(dir, 'workspace.json'), JSON.stringify({ workspace, repos: {} }));
+  writeConfig(fx2, { name: 'fixture', scratchpadDir: 'workspace-scratchpad' });
+  const launcher = resolve(fx2);
+  const sessionWt = join(fx2, 'work-sessions', 'alpha', 'workspace');
+  // A worktree checks out the launcher's tracked files, so it carries its
+  // own copy of .claude/ and of workspace.json.
+  cpSync(join(fx2, '.claude'), join(sessionWt, '.claude'), { recursive: true });
+  writeConfig(sessionWt, { name: 'fixture', scratchpadDir: 'workspace-scratchpad' });
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  // --- the launcher, from the filesystem alone ---
+  check(same(leftoverSessionLauncher(sessionWt), { launcher, sessionsDir: join(launcher, 'work-sessions') }), true,
+    'the launcher is found for a session worktree', `got ${JSON.stringify(leftoverSessionLauncher(sessionWt))}`);
+  check(same(leftoverSessionLauncher(join(sessionWt, 'repos', 'app', 'src')), { launcher, sessionsDir: join(launcher, 'work-sessions') }), true,
+    'and from deep inside one', 'a directory below the worktree root');
+  check(leftoverSessionLauncher(fx2), null, 'the launcher itself is not inside its sessions directory', 'the sessions directory does not contain itself');
+  const taskWt = join(fx2, '.claude', 'worktrees', 'ws-task');
+  mkdirSync(taskWt, { recursive: true });
+  check(leftoverSessionLauncher(taskWt), null, 'a task worktree of the workspace repo is not a session worktree', '.claude/worktrees/{slug}');
+  check(leftoverSessionLauncher(join(fx2, 'elsewhere', 'nested')), null, 'an unrelated directory is not one either', 'the workspace.json above it names a sessions directory that does not contain it');
+
+  // A configured sessions directory is the one that counts.
+  writeConfig(fx2, { name: 'fixture', scratchpadDir: 'workspace-scratchpad', workSessionsDir: 'old-sessions' });
+  const customWt = join(fx2, 'old-sessions', 'beta', 'workspace');
+  mkdirSync(customWt, { recursive: true });
+  check(same(leftoverSessionLauncher(customWt), { launcher, sessionsDir: join(launcher, 'old-sessions') }), true,
+    'a custom workSessionsDir is honoured', 'workspace.workSessionsDir names the directory');
+  check(leftoverSessionLauncher(sessionWt), null, 'and the default name no longer counts for it', 'work-sessions/ is ignored when unconfigured');
+  writeConfig(fx2, { name: 'fixture', scratchpadDir: 'workspace-scratchpad' });
+
+  // --- the real hook, run from each kind of checkout ---
+  const sessionHook = join(sessionWt, '.claude', 'hooks', 'repo-write-detection.mjs');
+  const taskHook = join(taskWt, '.claude', 'hooks', 'repo-write-detection.mjs');
+  cpSync(CLAUDE_DIR, join(taskWt, '.claude'), { recursive: true }); // from the template: a folder cannot be copied into itself
+  writeConfig(taskWt, { name: 'fixture', scratchpadDir: 'workspace-scratchpad' });
+  const launcherHook = join(fx2, '.claude', 'hooks', 'repo-write-detection.mjs');
+  // The hook answers with JSON; the warning is its additionalContext, a
+  // string of lines.
+  const contextOf = (r) => { try { return JSON.parse(r.stdout).additionalContext || ''; } catch { return ''; } };
+  const pointerLines = (r) => contextOf(r).split('\n').filter((l) => l.includes('/migrate-sessions'));
+  const stillWarns = (r) => contextOf(r).includes(WARN);
+  const edit = (file_path) => ({ tool_name: 'Edit', tool_input: { file_path } });
+
+  const inSession = runHook(sessionHook, edit(join(sessionWt, 'repos', 'app', 'src', 'a.ts')), sessionWt);
+  check(inSession.status, 0, 'the hook exits 0 from inside a leftover session worktree', 'a hook that throws breaks the tool call');
+  check(stillWarns(inSession), true, 'an Edit into the session\'s project worktree still warns', 'work belongs in a task worktree');
+  check(pointerLines(inSession).length, 1, 'and the warning carries exactly one line pointing at /migrate-sessions', `got ${JSON.stringify(inSession.stdout)}`);
+  check(pointerLines(inSession)[0]?.endsWith(realpathSync(launcher)), true, 'which names the launcher to run it from', `line: ${pointerLines(inSession)[0]}`);
+  check(/inside work-sessions\/\./.test(contextOf(inSession)), true, 'and the sessions directory the checkout sits in', 'the default name');
+
+  const inTask = runHook(taskHook, edit(join(taskWt, 'repos', 'app', 'src', 'a.ts')), taskWt);
+  check(stillWarns(inTask) && pointerLines(inTask).length === 0, true, 'from a task worktree the warning has no such line', 'a task worktree is not inside the sessions directory');
+
+  const atLauncher = runHook(launcherHook, edit(join(fx2, 'repos', 'app', 'src', 'a.ts')), fx2);
+  check(stillWarns(atLauncher) && pointerLines(atLauncher).length === 0, true, 'nor from the launcher', 'the launcher is where /migrate-sessions runs from');
+
+  const quiet = runHook(sessionHook, { tool_name: 'Write', tool_input: { file_path: join(sessionWt, 'workspace-scratchpad', 'note.md') } }, sessionWt);
+  check(quiet.status === 0 && pointerLines(quiet).length === 0 && !stillWarns(quiet), true,
+    'with no warning due, nothing is said', 'the line rides on the warning and is not one by itself');
+
+  writeConfig(fx2, { name: 'fixture', scratchpadDir: 'workspace-scratchpad', workSessionsDir: 'old-sessions' });
+  cpSync(join(fx2, '.claude'), join(customWt, '.claude'), { recursive: true });
+  const inCustom = runHook(join(customWt, '.claude', 'hooks', 'repo-write-detection.mjs'), edit(join(customWt, 'repos', 'app', 'src', 'a.ts')), customWt);
+  check(pointerLines(inCustom).length === 1 && /inside old-sessions\/\./.test(contextOf(inCustom)), true,
+    'a custom workSessionsDir is named in the line', `got ${JSON.stringify(inCustom.stdout)}`);
+} finally {
+  rmSync(fx2, { recursive: true, force: true });
 }
 
 console.log(`Passed: ${passed}, Failed: ${failed}`);

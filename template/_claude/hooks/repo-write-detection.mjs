@@ -5,6 +5,10 @@
 //   Bare clone:         repos/{repo}/  (at workspace root)
 //   Task worktree:      repos/{repo}/.claude/worktrees/{slug}/  (gh:132)
 //   Workspace task worktree: {root}/.claude/worktrees/{slug}/  (gh:146)
+//   Leftover session worktree: {root}/{sessionsDir}/{name}/workspace/ — a
+//       checkout the session lifecycle of earlier template versions left
+//       behind. Run from inside one, the warning says where that checkout
+//       should go: /migrate-sessions, from the launcher.
 import { join, basename, resolve, relative, sep, isAbsolute, dirname } from 'path';
 import { realpathSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -12,6 +16,7 @@ import {
   getWorkspaceRoot,
   readStdin,
   respond,
+  readJSON,
   getWorkspacePaths,
 } from './_utils.mjs';
 
@@ -86,6 +91,36 @@ export function isTaskWorktreeWrite(root, filePath) {
   if (!isDescent(rel)) return false;
   const parts = rel.split(sep);
   return parts.length >= 4 && parts[1] === '.claude' && parts[2] === 'worktrees';
+}
+
+/**
+ * The launcher of a leftover session worktree, or null when {root} is not
+ * one. A worktree that the session lifecycle of earlier template versions
+ * left behind sits inside the launcher's sessions directory,
+ * {launcher}/{sessionsDir}/{name}/workspace, so the launcher is the nearest
+ * ancestor whose workspace.json names a sessions directory containing {root}.
+ *
+ * The worktree carries its own copy of workspace.json, but that names a
+ * sessions directory inside the worktree, which cannot contain the worktree
+ * itself, so it is passed over. Read from the filesystem alone — no git — and
+ * only when a warning is due, since the common path never needs it. Both
+ * sides are compared as real paths, through the deepest existing ancestor,
+ * so a symlinked temp directory or a path that does not exist yet resolves
+ * the same way as one that does.
+ */
+export function leftoverSessionLauncher(root) {
+  const rootReal = realPathDeepest(resolve(root));
+  let dir = resolve(root);
+  for (let depth = 0; depth < 16; depth += 1) {
+    if (readJSON(join(dir, 'workspace.json'))) {
+      const sessionsDir = getWorkspacePaths(dir).workSessionsDir;
+      if (isDescent(relative(realPathDeepest(sessionsDir), rootReal))) return { launcher: dir, sessionsDir };
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
 
 async function main() {
@@ -163,7 +198,17 @@ async function main() {
   const isTemplateWrite = judged.includes('.claude/') && !judged.includes(scratchpadName);
 
   if (isRepoWrite || isContextWrite || isTemplateWrite) {
-    respond("You're on main. All work should happen in a task worktree — repos/{repo}/.claude/worktrees/{slug}/, or .claude/worktrees/{slug}/ for the workspace repo itself. Run /start-work to start a task.");
+    let warning = "You're on main. All work should happen in a task worktree — repos/{repo}/.claude/worktrees/{slug}/, or .claude/worktrees/{slug}/ for the workspace repo itself. Run /start-work to start a task.";
+    // A chat opened inside a worktree the old session lifecycle left behind
+    // has no task for /start-work to resume or /complete-work to finish from
+    // here: detection says none, and the skills stop at "No active task".
+    // This is where the chat learns what to do with the checkout instead.
+    const leftover = leftoverSessionLauncher(root);
+    if (leftover) {
+      const where = relative(leftover.launcher, leftover.sessionsDir).split(sep).join('/');
+      warning += `\nThis checkout is a session worktree from the old session lifecycle, inside ${where}/. No skill resumes or completes a session now — run /migrate-sessions from the workspace root: ${leftover.launcher}`;
+    }
+    respond(warning);
     process.exit(0);
   }
 

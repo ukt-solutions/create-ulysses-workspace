@@ -85,6 +85,8 @@ The full conversation is still available when this hook fires — it is the last
 
 **Does:** Enforces write restrictions when running from the workspace root (the launcher, on its default branch). Only `workspace-scratchpad/`, `local-only-*` files and the task model's worktrees (`repos/{repo}/.claude/worktrees/{slug}/` and `.claude/worktrees/{slug}/`) are writable from the root. Attempts to write to the source clones in `repos/`, to `workspace-context/`, or to the template files under `.claude/` trigger a warning telling Claude that work belongs in a worktree. So do attempts to write under `work-sessions/`, where a workspace may still hold folders from the session lifecycle of earlier versions. A Bash command that starts with `git`, `ls`, `cat` or another utility from a short list of read-only ones passes without a warning, and so does a `node` invocation of a script under `.claude/scripts/`.
 
+The hook runs from wherever its copy of `.claude/` sits, so inside a worktree that the old session lifecycle left behind the worktree is its root, and the same warning fires. There the warning carries one line more: this checkout is a leftover session worktree, and `/migrate-sessions`, run from the workspace root, is what to do with it. The hook finds that root from the folder layout alone, and only looks when a warning is due, so the common path pays nothing for it.
+
 ### bash-output-advisory
 
 **Fires:** On every tool call (`PreToolUse`). It acts only on Bash.
