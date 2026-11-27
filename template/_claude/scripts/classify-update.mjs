@@ -164,10 +164,12 @@
 //                     missingIncludes }: CLAUDE.md with the payload's
 //                     CLAUDE.md.tmpl merged in — template lines updated, the
 //                     workspace's own lines (custom skill entries, sections)
-//                     kept — minus what the template has retired and the
-//                     workspace still carries word for word but this payload
-//                     no longer ships: @-includes (droppedIncludes names them,
-//                     gh:196) and prose lines (droppedLines names them) —
+//                     kept — minus what the template has retired but this
+//                     payload no longer ships and the workspace still
+//                     carries: @-includes, word for word (droppedIncludes
+//                     names them, gh:196), and prose lines (droppedLines
+//                     names them), word for word or by the shape that makes
+//                     them the template's —
 //                     plus the `@{path}` include lines the merged file carries
 //                     whose targets don't exist at the root (machine-local
 //                     local-only-* targets exempt). The skill shows the diff
@@ -712,19 +714,38 @@ function linkRemovedHooks(result, absRoot) {
 // update forever beside the line that replaced it. Something retired is
 // dropped only when THIS payload no longer ships it; an older payload whose
 // template still carries the line merges it like any other template line.
-// The config include was retired because the SessionStart hook now supplies
-// its summary (gh:196).
 //
 // A line is retired only once it stops being true, never merely because the
-// template stopped shipping it. The bullet that describes a session's folder
-// still holds for the sessions a workspace has, so the merge keeps it; the
-// release that removes the session lifecycle is the one that retires it.
+// template stopped shipping it. Three things have reached that point. The
+// config include, because the SessionStart hook now supplies its summary
+// (gh:196). The Quick Reference bullet that placed all work in session
+// worktrees, because new work is a task. And the session lifecycle's own
+// lines — its two skill-list entries and the bullet describing a session's
+// folder — because that lifecycle is removed: kept, they would advertise a
+// skill that no longer exists and a layout nothing writes to.
 const RETIRED_INCLUDES = ['workspace.json'];
-// The Quick Reference bullet that placed all work in session worktrees. New
-// work is a task now, so it is false — and kept, it would contradict its
-// replacement from the end of the section in every workspace that upgrades.
+// Retired word for word: the Quick Reference bullet that placed all work in
+// session worktrees. Kept, it would contradict its replacement from the end
+// of the section in every workspace that upgrades.
 const RETIRED_LINES = [
   '- This root is the launcher — all work happens in workspace worktrees at `work-sessions/{name}/workspace/`',
+];
+// Retired by shape, for lines a workspace may have reworded without making
+// them its own. Each pattern is anchored on what makes the line the
+// template's, so a different description, argument hint or dash still
+// matches while a line of the workspace's does not:
+//   - a skill-list entry is a bullet whose command token is the removed
+//     skill, followed by a separator and a description. Prose that mentions
+//     the skill is not an entry; neither is a sentence that merely starts
+//     with it (no separator), nor a skill whose name merely begins the same
+//     way (`\b`), because `[^`]*` only spans the argument hints inside the
+//     command's own backticks.
+//   - the folder bullet is recognised by its opening clause, `work-sessions/`
+//     included: the same sentence about some other folder is the
+//     workspace's.
+const RETIRED_LINE_PATTERNS = [
+  /^\s*[-*]\s+`\/(?:pause-work|sync-work)\b[^`]*`\s*(?:—|–|-|:)\s/u,
+  /^\s*[-*]\s+Each session is a self-contained folder at\s+`work-sessions\//u,
 ];
 
 function hasIncludeLine(text, name) {
@@ -745,8 +766,13 @@ function hasLine(text, line) {
  * What the template has retired and the workspace's CLAUDE.md still carries:
  * each is named in the output so the skill can call the drop out, and all of
  * them are stripped from the current text before the merge so the merged
- * result loses them. A prose line is matched whole and trimmed — one the
- * workspace reworded is not the template's any more and is left in place.
+ * result loses them.
+ *
+ * A line in RETIRED_LINES is matched whole and trimmed — one the workspace
+ * reworded is not the template's any more and is left in place. A line in
+ * RETIRED_LINE_PATTERNS is recognised by its shape, so the workspace's
+ * wording of it is what gets dropped and named, once however often it
+ * appears.
  */
 function stripRetired(currentText, nextText) {
   const droppedIncludes = [];
@@ -762,6 +788,14 @@ function stripRetired(currentText, nextText) {
     if (!hasLine(currentText, line)) continue;
     if (hasLine(nextText, line)) continue; // this payload still ships it
     droppedLines.push(line.trim());
+  }
+  const nextTrimmed = nextText.split(/\r?\n/).map((l) => l.trim());
+  const currentTrimmed = currentText.split(/\r?\n/).map((l) => l.trim());
+  for (const pattern of RETIRED_LINE_PATTERNS) {
+    if (nextTrimmed.some((l) => pattern.test(l))) continue; // this payload still ships it
+    for (const line of currentTrimmed) {
+      if (pattern.test(line) && !droppedLines.includes(line)) droppedLines.push(line);
+    }
   }
   if (droppedLines.length > 0) {
     const retired = new Set(droppedLines);
