@@ -42,5 +42,5 @@ The single biggest source of session bloat is bash output you didn't bound. The 
 ## Compaction Awareness
 
 - When approaching the compaction threshold, prioritize capturing over continuing. A `/braindump` or `/handoff` *before* compaction preserves reasoning that gets summarized away.
-- After compaction, avoid re-reading files that were already discussed — check `workspace-context/` and the session tracker first.
+- After compaction, avoid re-reading files that were already discussed — check `workspace-context/` and the chat drawer first.
 - The `PreCompact` hook will prompt for capture; treat that prompt as a real checkpoint, not a dismissable nag.

@@ -10,22 +10,13 @@
 
 ## Worktrees
 
-Work happens in worktrees, never in the source clones. New work is always a task, so the task layout is the one new work uses; the session layout remains only for sessions that predate the task lifecycle, and no new session starts.
-
-**Task model** (the default, and the only lifecycle new work uses): one worktree per repo the task touches, created and removed with `.claude/scripts/task-worktree.mjs` (the chat stays at the workspace root):
+Work happens in worktrees, never in the source clones. A task is one issue, one branch and one worktree per repo it touches, created and removed with `.claude/scripts/task-worktree.mjs`; the chat stays at the workspace root.
 
 - Project repos: `repos/{repo}/.claude/worktrees/{slug}/`, where `{slug}` is the branch with `/` replaced by `-`
 - The workspace repo itself, addressed as `.`: `.claude/worktrees/{slug}/` — Claude Code's native worktree location
 - Source clones at `repos/{repo}/` stay on their default branch; `/complete-work` tears each worktree down with `task-worktree.mjs --remove` (worktree first, then the branch)
 
-**Session model** (legacy — still supported for the sessions a workspace already has, and drained with `/migrate-sessions`): N+1 worktrees in one self-contained folder at `work-sessions/{session-name}/`:
-
-- `work-sessions/{session-name}/workspace/` — workspace worktree
-- `work-sessions/{session-name}/workspace/repos/{repo-name}/` — project worktrees nested inside it (no symlink)
-- Example, session `fix-auth` on `bugfix/fix-auth` touching `my-app` and `my-api`: `work-sessions/fix-auth/workspace/` plus `workspace/repos/my-app/` and `workspace/repos/my-api/`
-- Teardown order is mandatory: project worktrees first, then the workspace worktree, then prune — the cleanup helper enforces it
-
-The workspace `.gitignore` covers all of it: `repos` (no trailing slash) matches the root's `repos/` and every session worktree's nested `repos/`; `.claude/worktrees/` matches task worktrees of the workspace repo itself.
+The workspace `.gitignore` covers it: `.claude/worktrees/` for the workspace repo's own worktrees, and `repos` (no trailing slash) for every `repos/` directory at any depth. A workspace that still has `work-sessions/` folders from the session lifecycle of earlier template versions drains them with `/migrate-sessions`.
 
 ## Branch Maintenance
 

@@ -4,7 +4,7 @@ This is a claude-workspace. All conventions are defined in .claude/rules/.
 
 ## Quick Reference
 - This root is the launcher — all work happens in task worktrees at `repos/{repo}/.claude/worktrees/{slug}/` (`.claude/worktrees/{slug}/` for the workspace repo)
-- `/start-work` to start a task, or resume a `work-sessions/` session the workspace already has
+- `/start-work` to start a task
 - From root: only `local-only-*` and `workspace-scratchpad/` are writable
 - Team knowledge lives in `workspace-context/`
 - Run `/rename` to label this chat before `/clear` — keeps the chat findable in your CLI history after the context is wiped
@@ -20,21 +20,19 @@ Config lives in `workspace.json` — read it when a skill needs a value.
 
 ## Skills
 - `/workspace-init` — first-time workspace setup (clone repos, install template, activate rules)
-- `/start-work [issue|handoff|blank]` — start a task, or resume an existing session
+- `/start-work [issue|handoff|blank]` — start a task, or resume one this chat already has
 - `/handoff [name]` — save workstream state
 - `/braindump [name]` — capture discussion/reasoning
 - `/aside [--quick] <thought>` — capture a drive-by idea without interrupting current work
-- `/pause-work` — suspend work, push, draft PR
 - `/complete-work` — finalize the work — rebase, PR, merge, close the issue
 - `/promote` — move personal memory to shared context
 - `/release [version]` — cut a versioned release: bump, tag, forge release with generated notes
-- `/sync-work` — push branches without ceremony
 - `/workspace-update` — apply template updates, verified by a post-update audit
 - `/setup-tracker` — wire this workspace to an issue tracker (GitHub Issues shipped; others pluggable)
 - `/maintenance [audit|cleanup]` — scripted health audit and cleanup
 - `/context-placement` — decide where durable content belongs and what each destination costs before writing it
 - `/goal-driven-work` — run multi-phase autonomous work under `/goal` with phase artifacts and agent-team dispatch
-- `/migrate-sessions` — drain session-model work sessions and switch the workspace to the task lifecycle
+- `/migrate-sessions` — drain the work sessions left over from the old session lifecycle
 - `/build-docs-site` — build a comprehensive Docusaurus documentation site for a project
 
 ## Compact Instructions
@@ -51,4 +49,4 @@ Drop from the summary:
 - Exploratory reads that did not lead to a change
 - Conversational asides
 
-Files in `workspace-context/`, the session tracker (`session.md`) or chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` survive compaction — they're on disk; re-read them on demand.
+Files in `workspace-context/` or the chat drawer (`workspace-scratchpad/chats/{chat}/`), and any `design-*.md`/`plan-*.md` in them, survive compaction — they're on disk; re-read them on demand.
