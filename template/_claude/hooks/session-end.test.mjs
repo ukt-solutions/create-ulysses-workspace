@@ -3,9 +3,9 @@
 // Run: node template/_claude/hooks/session-end.test.mjs
 //
 // Each case builds a real workspace in a temp directory (a workspace repo, a
-// project repo with a bare origin, a copy of .claude/), creates a session
-// with create-work-session.mjs (renaming its folder where a case needs a name
-// that script no longer accepts), points .claude/.active-session.json at it,
+// project repo with a bare origin, a copy of .claude/), builds a session's
+// worktrees and tracker by hand (renaming its folder where a case needs a
+// name no script ever accepted), points .claude/.active-session.json at it,
 // and runs the hook as a subprocess with a SessionEnd payload on stdin.
 // The pointer file is untrusted input: its session name becomes a path and a
 // commit message. The cases below carry a shell payload that would create a
@@ -93,20 +93,43 @@ function makeWorkspace() {
   return { base, ws, cwd, env, git };
 }
 
-function runScript(fx, script, args) {
-  const r = spawnSync(process.execPath, [join(fx.ws, '.claude', 'scripts', script), ...args], {
-    cwd: fx.cwd, env: fx.env, encoding: 'utf-8',
-  });
-  let json = null;
-  try { json = JSON.parse(r.stdout.trim().split('\n').filter(Boolean).pop()); } catch {}
-  return { json, stdout: r.stdout, stderr: r.stderr };
-}
-
+// A session as it exists on disk: one branch off main in every repo, the
+// workspace worktree at work-sessions/{name}/workspace/ with the project
+// worktree nested in its repos/, and a session.md committed on the branch.
 function createSession(fx, name, branch) {
-  const r = runScript(fx, 'create-work-session.mjs',
-    ['--session-name', name, '--branch', branch, '--repo', 'app', '--user', 'u']);
-  if (r.json?.success !== true) throw new Error(`fixture session was not created: ${r.stdout}${r.stderr}`);
-  return join(fx.ws, 'work-sessions', name, 'workspace');
+  const worktree = join(fx.ws, 'work-sessions', name, 'workspace');
+  mkdirSync(join(fx.ws, 'work-sessions', name), { recursive: true });
+  fx.git(fx.ws, 'branch', '--', branch, 'main');
+  fx.git(fx.ws, 'worktree', 'add', '--', worktree, branch);
+  mkdirSync(join(worktree, 'repos'), { recursive: true });
+  fx.git(join(fx.ws, 'repos', 'app'), 'branch', '--', branch, 'origin/main');
+  fx.git(join(fx.ws, 'repos', 'app'), 'worktree', 'add', '--', join(worktree, 'repos', 'app'), branch);
+  const now = new Date().toISOString();
+  writeFileSync(join(worktree, 'session.md'), [
+    '---',
+    'type: session-tracker',
+    `name: ${name}`,
+    'status: active',
+    `branch: ${branch}`,
+    `created: ${now}`,
+    'user: u',
+    'repos:',
+    '  - app',
+    'chatSessions: []',
+    'author: u',
+    `updated: ${now.slice(0, 10)}`,
+    '---',
+    '',
+    `# Work Session: ${name}`,
+    '',
+    '## Progress',
+    '',
+    '(Updated as the session progresses)',
+    '',
+  ].join('\n'));
+  fx.git(worktree, 'add', '--', 'session.md');
+  fx.git(worktree, 'commit', '-q', '-m', `chore: initialize session tracker for ${name}`);
+  return worktree;
 }
 
 // Run the hook with the active-session pointer naming `pointerName`.
@@ -153,10 +176,10 @@ withFixture((fx) => {
 });
 
 // === An existing session with a shell-metacharacter name stays literal ===
-// create-work-session now refuses such names, but a session created before
-// that rule can still carry one, and the hook must finish it safely. Build it
-// the way it would exist: create a session, then move its folder to the old
-// name and let git repair the worktree links.
+// No script accepts such a name now, but a session created before that rule
+// can still carry one, and the hook must finish it safely. Build it the way
+// it would exist: create a session, then move its folder to the old name and
+// let git repair the worktree links.
 withFixture((fx) => {
   const name = 'a$(touch PWNED)';
   createSession(fx, 'legacy', 'feature/dollar');

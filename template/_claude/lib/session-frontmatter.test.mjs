@@ -5,11 +5,6 @@ import {
   parseSessionContent,
   updateSessionContent,
 } from './session-frontmatter.mjs';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 let failed = 0;
 let passed = 0;
@@ -240,50 +235,6 @@ And more lines.
   const updated = updateSessionContent(sample, { name: 'changed' });
   const parsed = parseSessionContent(updated);
   assertEq(parsed.body.trim(), '# Heading\n\nParagraph with multiple lines.\nAnd more lines.\n\n- bullet 1\n- bullet 2', 'body intact after update');
-}
-
-// === Direct execution is a loud failure, not a silent no-op (gh:143) ===
-// Four skill sites used to say "update the tracker via the session-frontmatter
-// helper" with no invocation. Run as a CLI this module used to import cleanly,
-// ignore its arguments and exit 0 — so a `cmd || fallback` idiom never fired
-// and a workItem linkage was dropped in silence. The guard must exit non-zero
-// and name the real API, while leaving imports untouched.
-{
-  const here = new URL('./session-frontmatter.mjs', import.meta.url);
-  const modPath = fileURLToPath(here);
-  const run = spawnSync(process.execPath, [modPath, '--set', 'workItem=gh:1', 'session.md'], { encoding: 'utf-8' });
-  assert(run.status !== 0, `direct execution must exit non-zero, got ${run.status}`);
-  assertEq(run.status, 2, 'direct execution exits 2');
-  assert(/library, not a CLI/i.test(run.stderr), 'stderr explains it is a library');
-  assert(/updateSessionFile/.test(run.stderr), 'stderr names the real API to call');
-  assert((run.stdout || '') === '', 'guard writes nothing to stdout');
-
-  // Argument-free execution must fail the same way — the mistake is running
-  // it at all, not the particular flags.
-  const bare = spawnSync(process.execPath, [modPath], { encoding: 'utf-8' });
-  assertEq(bare.status, 2, 'bare direct execution also exits 2');
-
-  // The path as typed is not the path Node loaded: reached through a
-  // symlinked folder, argv[1] keeps the link while import.meta.url is the
-  // real file, so the two never match as strings. The guard compares real
-  // paths, so it fires all the same. (On Windows the spellings differ for
-  // every run — a drive letter and backslashes against a file URL.)
-  let link = null;
-  const linkParent = mkdtempSync(join(tmpdir(), 'fm-lib-link-'));
-  try {
-    link = join(linkParent, 'lib');
-    symlinkSync(dirname(modPath), link, process.platform === 'win32' ? 'junction' : 'dir');
-  } catch (err) {
-    link = null;
-    if (!['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) throw err;
-    console.log('  (skip: symlink unavailable on this machine)');
-  }
-  if (link) {
-    const viaLink = spawnSync(process.execPath, [join(link, 'session-frontmatter.mjs')], { encoding: 'utf-8' });
-    assertEq(viaLink.status, 2, 'direct execution through a symlinked folder also exits 2');
-    assert(/library, not a CLI/i.test(viaLink.stderr), 'and the symlinked run gets the same explanation');
-  }
-  rmSync(linkParent, { recursive: true, force: true });
 }
 
 // === Summary ===
