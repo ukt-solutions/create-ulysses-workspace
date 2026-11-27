@@ -9,6 +9,9 @@ import {
   writeFileSync,
   readFileSync,
   rmSync,
+  existsSync,
+  readdirSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -1532,6 +1535,263 @@ console.log('# classify-update');
   rmSync(root, { recursive: true, force: true });
   rmSync(gained, { recursive: true, force: true });
   rmSync(bare, { recursive: true, force: true });
+}
+
+
+// 16. CLI --prune-empty — the folders a deletion left empty. /workspace-update
+//     deletes a removed file and then runs this on its path: from the file's
+//     folder upward, each empty folder goes, until a folder that is not
+//     empty. `.claude/` itself is never removed, nor is anything outside it,
+//     and a path that is not under `.claude/`, that climbs out with `..`, or
+//     that is absolute is refused before any folder is touched. The mode
+//     prints { removed: [...] } and exits 0 when there is nothing to remove.
+{
+  // One run of the mode against `root`, with the arguments in the order the
+  // skill writes them. cwd is somewhere else entirely, so a root derived from
+  // the script's location or the cwd could not find the workspace.
+  const prune = (root, files, { cwd = tmpdir(), withRoot = true } = {}) => {
+    const argv = [join(here, 'classify-update.mjs')];
+    if (withRoot) argv.push('--root', root);
+    argv.push('--prune-empty', ...files);
+    const r = spawnSync(process.execPath, argv, { cwd, encoding: 'utf8' });
+    let json = null;
+    try { json = JSON.parse(r.stdout); } catch { /* left null: nothing was printed */ }
+    return { status: r.status, json, stdout: r.stdout, stderr: r.stderr };
+  };
+  // A workspace with a skill that is one file in a folder, a hook beside
+  // another, a folder holding only a hidden file, and a nested chain.
+  const fixture = () => {
+    const root = mkdtempSync(join(tmpdir(), 'prune-test-'));
+    const file = (rel, content = 'x') => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), content);
+    };
+    file('.claude/skills/pause-work/SKILL.md');
+    file('.claude/skills/promote/SKILL.md');
+    file('.claude/hooks/session-start.mjs');
+    file('.claude/hooks/other.mjs');
+    file('.claude/dirty/x.md');
+    file('.claude/dirty/.DS_Store', '');
+    file('.claude/a/b/c.js');
+    file('.claude/solo/only.js');
+    file('README.md');
+    return root;
+  };
+  // Every folder under .claude/, as workspace-relative paths with forward
+  // slashes, so an expected list reads the way the mode reports.
+  const folders = (root) => {
+    const out = [];
+    const walk = (rel) => {
+      for (const e of readdirSync(join(root, rel), { withFileTypes: true })) {
+        if (!e.isDirectory()) continue;
+        const relChild = `${rel}/${e.name}`;
+        out.push(relChild);
+        walk(relChild);
+      }
+    };
+    walk('.claude');
+    return out.sort();
+  };
+  const roots = [];
+  const withFixture = (fn) => {
+    const root = fixture();
+    roots.push(root);
+    fn(root);
+  };
+
+  // A skill folder emptied by its one file: the folder goes, and nothing
+  // above it that still has content does.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/skills/pause-work/SKILL.md'));
+    const r = prune(root, ['.claude/skills/pause-work/SKILL.md']);
+    assertEq(r.status, 0, 'pruning an emptied skill folder exits 0');
+    assertEq(r.json, { removed: ['.claude/skills/pause-work'] }, 'the folder that held the skill is removed, and reported');
+    assertTrue(existsSync(join(root, '.claude/skills/promote/SKILL.md')), 'the skill beside it is untouched');
+    assertEq(folders(root), ['.claude/a', '.claude/a/b', '.claude/dirty', '.claude/hooks', '.claude/skills', '.claude/skills/promote', '.claude/solo'],
+      'every other folder under .claude/ is where it was');
+  });
+
+  // Nested empty folders: the whole chain that the deletion emptied goes,
+  // reported bottom-up, and .claude/ stays.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/a/b/c.js'));
+    const r = prune(root, ['.claude/a/b/c.js']);
+    assertEq(r.status, 0, 'pruning a nested chain exits 0');
+    assertEq(r.json, { removed: ['.claude/a/b', '.claude/a'] }, 'both folders of the chain are removed, the deeper first');
+    assertTrue(existsSync(join(root, '.claude')), '.claude/ itself is never removed');
+  });
+
+  // A folder that still holds a file is not empty, whether or not the file
+  // the mode was given is the one still there.
+  withFixture((root) => {
+    const stillThere = prune(root, ['.claude/skills/promote/SKILL.md']);
+    assertEq([stillThere.status, stillThere.json], [0, { removed: [] }], 'a file that still exists leaves its folder, and the mode exits 0');
+    assertTrue(existsSync(join(root, '.claude/skills/promote/SKILL.md')), 'and the file itself is untouched: the mode removes folders, never files');
+    rmSync(join(root, '.claude/dirty/x.md'));
+    const hidden = prune(root, ['.claude/dirty/x.md']);
+    assertEq([hidden.status, hidden.json], [0, { removed: [] }], 'a folder that still holds a .DS_Store is not empty');
+    assertTrue(existsSync(join(root, '.claude/dirty/.DS_Store')), 'the hidden file stays');
+  });
+
+  // The walk stops at the first folder that is not empty, so a component
+  // folder survives while any of its files does, and goes once none does.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/hooks/other.mjs'));
+    assertEq(prune(root, ['.claude/hooks/other.mjs']).json, { removed: [] }, 'a hook folder with a hook still in it stays');
+    rmSync(join(root, '.claude/hooks/session-start.mjs'));
+    assertEq(prune(root, ['.claude/hooks/session-start.mjs']).json, { removed: ['.claude/hooks'] }, 'with its last file gone, the folder goes with it');
+    assertTrue(existsSync(join(root, '.claude')), '.claude/ survives that too');
+  });
+
+  // A missing path is nothing to remove, not an error: the deletion may
+  // already have taken the whole folder.
+  withFixture((root) => {
+    assertEq([prune(root, ['.claude/nope/x.md']).status, prune(root, ['.claude/nope/x.md']).json], [0, { removed: [] }], 'a path whose folders do not exist exits 0 with nothing removed');
+    rmSync(join(root, '.claude/a/b'), { recursive: true });
+    assertEq(prune(root, ['.claude/a/b/c.js']).json, { removed: ['.claude/a'] }, 'a folder the deletion took already is walked through, so the folder it emptied above still goes');
+    assertEq(prune(mkdtempSync(join(tmpdir(), 'prune-test-')), ['.claude/skills/x/SKILL.md']).status, 0, 'a root without .claude/ is nothing to remove');
+  });
+
+  // Several paths in one run, and the default root.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/skills/pause-work/SKILL.md'));
+    rmSync(join(root, '.claude/skills/promote/SKILL.md'));
+    const both = prune(root, ['.claude/skills/pause-work/SKILL.md', '.claude/skills/promote/SKILL.md']);
+    assertEq(both.json, { removed: ['.claude/skills/pause-work', '.claude/skills/promote', '.claude/skills'] },
+      'each path is pruned in turn, here leaving skills/ empty, so it goes too');
+    assertEq(both.status, 0, 'and the run exits 0');
+  });
+  withFixture((root) => {
+    rmSync(join(root, '.claude/solo/only.js'));
+    const r = prune(root, ['.claude/solo/only.js'], { cwd: root, withRoot: false });
+    assertEq([r.status, r.json], [0, { removed: ['.claude/solo'] }], 'without --root the mode works from the cwd, as the skill runs it');
+  });
+
+  // How a path may be spelled. Backslashes are separators wherever the mode
+  // runs, a leading `./` and a `..` that stays inside .claude/ are accepted,
+  // and the report always uses forward slashes.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/skills/pause-work/SKILL.md'));
+    const spellings = [
+      'with backslashes for separators', '.claude\\skills\\pause-work\\SKILL.md',
+      'with a leading ./', './.claude/skills/pause-work/SKILL.md',
+      'with a .. that stays inside .claude/', '.claude/skills/promote/../pause-work/SKILL.md',
+    ];
+    for (let i = 0; i < spellings.length; i += 2) {
+      const r = prune(root, [spellings[i + 1]]);
+      assertEq([r.status, r.json], [0, { removed: i === 0 ? ['.claude/skills/pause-work'] : [] }],
+        `a path ${spellings[i]} is the same path${i === 0 ? ', so its folder goes the first time' : ', so there is nothing left to remove'}`);
+    }
+    assertTrue(existsSync(join(root, '.claude/skills/promote/SKILL.md')), 'and the folder the `..` stepped out of is untouched');
+  });
+
+  // `.claude` itself as the path is nothing to prune: the walk starts at the
+  // file's folder, and never anywhere but strictly inside .claude/.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/solo/only.js'));
+    for (const path of ['.claude', '.claude/', './.claude']) {
+      const r = prune(root, [path]);
+      assertEq([r.status, r.json], [0, { removed: [] }], `the path ${JSON.stringify(path)} removes nothing, though a folder under .claude/ sits empty`);
+      assertTrue(existsSync(join(root, '.claude')) && existsSync(join(root, 'README.md')), `and nothing was removed for ${JSON.stringify(path)}`);
+    }
+  });
+
+  // Refused paths: not under .claude/, climbing out of it, absolute, empty.
+  // Nothing is removed for any of them — the emptied skill folder is left
+  // for the caller to see — and the reason is on stderr, not stdout.
+  withFixture((root) => {
+    rmSync(join(root, '.claude/skills/pause-work/SKILL.md'));
+    mkdirSync(join(root, 'outside'));
+    // Each entry also names what its stderr must say: a refusal is clear
+    // when it states the actual problem, not a generic one.
+    const notUnder = /not under \.claude\//;
+    const climbs = /climbs out of \.claude\/ with "\.\."/;
+    const absolute = /refuses an absolute path/;
+    const refused = [
+      ['a path outside .claude/', 'README.md', notUnder],
+      ['a sibling folder whose name merely starts the same way', '.claude-other/x.md', notUnder],
+      ['a path that climbs out of .claude/ at once', '.claude/../README.md', climbs],
+      ['a path that climbs out from deeper in', '.claude/skills/../../outside/x.md', climbs],
+      ['a path that climbs out with backslashes for separators', '.claude\\..\\..\\README.md', climbs],
+      ['an absolute path to a file that is under .claude/', join(root, '.claude/skills/pause-work/SKILL.md'), absolute],
+      ['a Windows path from a drive letter', 'C:\\ws\\.claude\\skills\\pause-work\\SKILL.md', absolute],
+      ['a Windows path from a drive letter with forward slashes', 'C:/ws/.claude/skills/pause-work/SKILL.md', absolute],
+      ['a Windows path that is only drive-relative', 'C:.claude/skills/pause-work/SKILL.md', absolute],
+      ['a UNC path', '\\\\server\\share\\ws\\.claude\\skills\\pause-work\\SKILL.md', absolute],
+      ['an empty path', '', /refuses an empty path/],
+    ];
+    for (const [label, path, says] of refused) {
+      const r = prune(root, [path]);
+      assertEq(r.status, 1, `${label} is refused`);
+      assertTrue(says.test(r.stderr), `${label}: the error names the problem (got: ${r.stderr.trim().slice(0, 160)})`);
+      assertTrue(r.stderr.startsWith('classify-update:'), `${label}: the refusal is on stderr, in the script's own voice`);
+      assertTrue(r.stdout === '', `${label}: nothing is printed to stdout`);
+      assertTrue(existsSync(join(root, '.claude/skills/pause-work')), `${label}: no folder was removed`);
+      assertTrue(existsSync(join(root, 'README.md')) && existsSync(join(root, 'outside')), `${label}: nothing outside .claude/ was touched either`);
+    }
+    // One refused path refuses the whole run: the good path's folder stays.
+    rmSync(join(root, '.claude/skills/promote/SKILL.md'));
+    const mixed = prune(root, ['.claude/skills/promote/SKILL.md', 'README.md']);
+    assertEq(mixed.status, 1, 'a refused path among good ones refuses the run');
+    assertTrue(existsSync(join(root, '.claude/skills/promote')) && existsSync(join(root, '.claude/skills/pause-work')),
+      'and nothing was removed: every path is checked before any folder is');
+  });
+
+  // The mode needs a path, does not share a run with another mode, and
+  // does not make unknown flags known.
+  withFixture((root) => {
+    const bare = prune(root, []);
+    assertEq(bare.status, 1, '--prune-empty with no path is an error');
+    assertTrue(/at least one|--prune-empty needs/.test(bare.stderr), 'and says so');
+    const scripted = join(here, 'classify-update.mjs');
+    const withOther = spawnSync(process.execPath, [scripted, '--root', root, '--prune-empty', '--merge-claude-md', '.claude/solo/only.js'], { cwd: tmpdir(), encoding: 'utf8' });
+    assertEq(withOther.status, 1, '--prune-empty is not combined with another mode');
+    const unknown = spawnSync(process.execPath, [scripted, '--root', root, '--prune-empty', '--nope', '.claude/solo/only.js'], { cwd: tmpdir(), encoding: 'utf8' });
+    assertEq([unknown.status, /Unknown arg: --nope/.test(unknown.stderr)], [1, true], 'an unknown flag after --prune-empty is still an unknown flag, not a path');
+    assertTrue(existsSync(join(root, '.claude/solo/only.js')), 'and none of that removed anything');
+  });
+
+  // A symbolic link inside .claude/ is not a folder of the workspace's own:
+  // the walk neither removes it nor follows it out of .claude/.
+  withFixture((root) => {
+    const outside = mkdtempSync(join(tmpdir(), 'prune-outside-'));
+    roots.push(outside);
+    try {
+      symlinkSync(outside, join(root, '.claude/skills', 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if (!['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) throw err;
+      console.log('  (skip: symlink unavailable on this machine)');
+      return;
+    }
+    const r = prune(root, ['.claude/skills/link/SKILL.md']);
+    assertEq([r.status, r.json], [0, { removed: [] }], 'a symlinked folder is left alone');
+    assertTrue(existsSync(join(root, '.claude/skills', 'link')) && existsSync(outside), 'both the link and what it points at are untouched');
+  });
+
+  // A link on the way down is the harder case: the file's folder is a real
+  // directory, but it is reached through a .claude/skills that points
+  // somewhere else, so its real path is not inside .claude/'s. lstat alone
+  // would call it a real directory; only its real path says otherwise.
+  withFixture((root) => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'prune-elsewhere-'));
+    roots.push(elsewhere);
+    mkdirSync(join(elsewhere, 'pause-work'));
+    mkdirSync(join(elsewhere, 'promote'));
+    rmSync(join(root, '.claude', 'skills'), { recursive: true });
+    try {
+      symlinkSync(elsewhere, join(root, '.claude', 'skills'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if (!['EPERM', 'EACCES', 'EINVAL', 'ENOSYS'].includes(err.code)) throw err;
+      console.log('  (skip: symlink unavailable on this machine)');
+      return;
+    }
+    const r = prune(root, ['.claude/skills/pause-work/SKILL.md']);
+    assertEq([r.status, r.json], [0, { removed: [] }], 'a folder reached through a link is not removed, empty as it is');
+    assertTrue(existsSync(join(elsewhere, 'pause-work')) && existsSync(join(elsewhere, 'promote')), 'what the link points at is untouched');
+    assertTrue(existsSync(join(root, '.claude', 'skills')) && existsSync(join(root, '.claude', 'hooks', 'other.mjs')), 'and so is everything of the workspace’s own');
+  });
+
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
 }
 
 console.log('');

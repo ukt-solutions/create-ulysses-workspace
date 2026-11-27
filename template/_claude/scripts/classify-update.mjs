@@ -6,6 +6,7 @@
 //   node classify-update.mjs [--root <dir>] [--payload <dir>] [--baseline <file>]
 //   node classify-update.mjs --root <dir> --payload <dir> --write-baseline
 //   node classify-update.mjs --root <dir> --payload <dir> --merge-claude-md
+//   node classify-update.mjs --root <dir> --prune-empty <file>...
 //
 // --root     workspace root; defaults to the current working directory (never
 //            derived from this script's location — the upgrade payload runs
@@ -150,7 +151,8 @@
 // .manifest.json (payload metadata) are handled by their own steps in
 // /workspace-update and are excluded here.
 //
-// The other two modes are /workspace-update bookends:
+// The other modes serve /workspace-update: two are its bookends, and one
+// cleans up after the deletions it confirms.
 //   --write-baseline  write .claude/.template-baseline.json recording the
 //                     hash of every verbatim payload file — what the template
 //                     now ships. Run at the END of an update, after all
@@ -176,6 +178,24 @@
 //                     against the current file before writing, and asks on
 //                     each missing include instead of leaving it dangling
 //                     (gh:190).
+//   --prune-empty     remove the folders that a deletion left empty, so an
+//                     update that removes a whole skill or rule leaves no
+//                     empty folder behind for the audit to count as
+//                     installed. Run after each confirmed deletion, with the
+//                     path of the deleted file or files as the classification
+//                     prints them: relative to the workspace root and under
+//                     .claude/. From the file's own folder upward, each
+//                     empty folder goes until one that is not empty, so the
+//                     component folders that still hold files stay. .claude/
+//                     itself is never removed, nor is anything outside it, a
+//                     folder that still holds so much as a .DS_Store, or a
+//                     symbolic link. Prints JSON { removed: [folders] } and
+//                     exits 0 when there is nothing to remove, which is also
+//                     what a path whose folders are already gone amounts to.
+//                     A path that is not under .claude/, that climbs out of
+//                     it with `..`, or that is absolute is refused with exit 1
+//                     and nothing removed; every path is checked before any
+//                     folder is.
 
 import {
   existsSync,
@@ -183,8 +203,10 @@ import {
   readdirSync,
   statSync,
   realpathSync,
+  lstatSync,
+  rmdirSync,
 } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitIgnoredPaths } from './build-workspace-context.mjs';
 import { compareVersions } from '../lib/registry-check.mjs';
@@ -213,7 +235,15 @@ function isMainModule(metaUrl) {
 }
 
 function parseArgs(argv) {
-  const args = { root: process.cwd(), payload: null, baseline: null, writeBaseline: false, mergeClaudeMd: false };
+  const args = {
+    root: process.cwd(),
+    payload: null,
+    baseline: null,
+    writeBaseline: false,
+    mergeClaudeMd: false,
+    pruneEmpty: false,
+    files: [],
+  };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--root') args.root = argv[++i];
@@ -221,6 +251,10 @@ function parseArgs(argv) {
     else if (a === '--baseline') args.baseline = argv[++i];
     else if (a === '--write-baseline') args.writeBaseline = true;
     else if (a === '--merge-claude-md') args.mergeClaudeMd = true;
+    else if (a === '--prune-empty') args.pruneEmpty = true;
+    // The paths --prune-empty acts on follow its flag. Anything that looks
+    // like a flag is still parsed as one, so a typo cannot pass as a path.
+    else if (args.pruneEmpty && !a.startsWith('--')) args.files.push(a);
     else throw new Error(`Unknown arg: ${a}`);
   }
   return args;
@@ -946,10 +980,127 @@ export function mergeClaudeMd(currentText, nextText) {
   return renderBlocks(out, eol);
 }
 
+// ---------- prune: the folders a deletion leaves empty ----------
+
+// Spellings of a path that is absolute on some platform, whichever one the
+// mode runs on: a drive letter and colon (`C:\…`, `C:/…`, and the
+// drive-relative `C:…`) and a UNC root. They are recognised as text, because
+// node:path calls `C:/…` relative everywhere except Windows.
+const ABSOLUTE_AS_TEXT = /^(?:[A-Za-z]:|\/\/|\\\\)/;
+
+// True when {child} lies strictly inside {parent}: the same path is not
+// "inside" itself, and neither is a sibling whose name merely starts the
+// same way (.claude-other).
+function isInside(parent, child) {
+  return child.startsWith(parent + sep);
+}
+
+/**
+ * The path of a file under .claude/, as --prune-empty accepts it: the way the
+ * classification prints it — relative to the workspace root, `.claude/`
+ * first. Returns the path normalized with forward slashes.
+ *
+ * Throws for anything else, so that no folder is ever touched for it: a path
+ * outside .claude/, one that climbs out of it with `..`, an absolute one, or
+ * an empty one. Backslashes are read as separators on every platform, so a
+ * path means the same thing wherever it was spelled, and a `..` cannot hide
+ * behind one.
+ */
+export function prunePathUnderClaude(path) {
+  const wantsFile = 'give the path of a file under .claude/ as the classification prints it (.claude/skills/{name}/SKILL.md)';
+  if (typeof path !== 'string' || path.trim() === '') {
+    throw new Error(`--prune-empty refuses an empty path: ${wantsFile}`);
+  }
+  if (ABSOLUTE_AS_TEXT.test(path) || isAbsolute(path)) {
+    throw new Error(`--prune-empty refuses an absolute path (${path}): give it relative to the workspace root, under .claude/`);
+  }
+  const forward = path.replace(/\\/g, '/');
+  const normalized = normalize(forward).split(sep).join('/');
+  const underClaude = normalized === '.claude' || normalized.startsWith('.claude/');
+  if (!underClaude && (forward.split('/').includes('..') || normalized === '..' || normalized.startsWith('../'))) {
+    throw new Error(`--prune-empty refuses a path that climbs out of .claude/ with ".." (${path})`);
+  }
+  if (!underClaude) {
+    throw new Error(`--prune-empty refuses a path that is not under .claude/ (${path}): ${wantsFile}`);
+  }
+  return normalized;
+}
+
+/**
+ * Remove the folders that deleting {relPath} left empty, bottom-up from the
+ * file's own folder: a folder goes while it is empty, until one that is not.
+ * Returns the folders removed, as workspace-relative paths. The path is
+ * checked first, and a refused one throws before anything is removed.
+ *
+ * Nothing above .claude/ is considered and .claude/ itself stays. Only a
+ * real, empty directory is removed: a symbolic link is neither followed nor
+ * taken, and a folder goes only when its real path lies inside .claude/'s,
+ * so a link on the way down cannot lead the walk out of the workspace's own
+ * folders. A folder that is already gone — the deletion took the whole
+ * component — is walked through, because the folder above it may be what the
+ * deletion emptied. The file itself is not looked at: if it is still there,
+ * that simply leaves its folder not empty.
+ */
+export function pruneEmptyFolders(root, relPath) {
+  const rel = prunePathUnderClaude(relPath);
+  const absRoot = resolve(root);
+  const claudeDir = join(absRoot, '.claude');
+  let claudeReal;
+  try {
+    claudeReal = realpathSync(claudeDir);
+  } catch {
+    return []; // no .claude/ under this root: nothing to prune
+  }
+  const removed = [];
+  let dir = dirname(join(absRoot, rel));
+  // The loop runs only strictly inside .claude/, whatever path was given:
+  // `.claude` itself as a path would otherwise start the walk at the root.
+  while (isInside(claudeDir, dir)) {
+    let stat;
+    try {
+      stat = lstatSync(dir);
+    } catch {
+      dir = dirname(dir); // already gone: the deletion may have taken it
+      continue;
+    }
+    // lstat reports a symbolic link as a link, never as the directory it
+    // points at, so a link is neither followed nor taken here.
+    if (!stat.isDirectory()) break;
+    let real;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      break;
+    }
+    if (!isInside(claudeReal, real)) break;
+    if (readdirSync(dir).length > 0) break;
+    rmdirSync(dir);
+    removed.push(relative(absRoot, dir).split(sep).join('/'));
+    dir = dirname(dir);
+  }
+  return removed;
+}
+
 // ---------- CLI modes ----------
 
 function resolvePayload(args) {
   return resolve(args.payload ?? join(resolve(args.root), '.workspace-update'));
+}
+
+function pruneEmptyMode(args) {
+  if (args.files.length === 0) {
+    throw new Error('--prune-empty needs at least one path: the file or files you deleted, under .claude/, as the classification prints them');
+  }
+  // Every path is checked before any folder is removed, so one refused path
+  // leaves the workspace exactly as it was.
+  const paths = args.files.map(prunePathUnderClaude);
+  const removed = [];
+  for (const rel of paths) {
+    for (const folder of pruneEmptyFolders(args.root, rel)) {
+      if (!removed.includes(folder)) removed.push(folder);
+    }
+  }
+  process.stdout.write(JSON.stringify({ removed }, null, 2) + '\n');
 }
 
 function writeBaselineMode(args) {
@@ -1025,10 +1176,15 @@ function mergeClaudeMdMode(args) {
 
 function main() {
   const args = parseArgs(process.argv);
+  if (args.pruneEmpty && (args.writeBaseline || args.mergeClaudeMd)) {
+    throw new Error('--prune-empty is a mode of its own: it cannot be combined with --write-baseline or --merge-claude-md');
+  }
   if (args.writeBaseline) {
     writeBaselineMode(args);
   } else if (args.mergeClaudeMd) {
     mergeClaudeMdMode(args);
+  } else if (args.pruneEmpty) {
+    pruneEmptyMode(args);
   } else {
     const result = classifyUpdate({ root: args.root, payload: args.payload, baseline: args.baseline });
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
