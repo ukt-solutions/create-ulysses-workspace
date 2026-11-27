@@ -224,13 +224,13 @@ function checkRequiredFiles(files) {
     // Claude to price a placement before writing it. If this script does not
     // ship, that instruction silently becomes advice nobody can follow.
     'template/_claude/scripts/context-footprint.mjs',
-    // The chat record is the durable per-chat state in the post-inversion
-    // session model (gh:132). Without it the new lifecycle has nowhere to
-    // record scope, concerns, or open tasks.
+    // The chat record is the durable per-chat state (gh:132). Without it a
+    // task has nowhere to be recorded: scope, concerns and open tasks all
+    // live there.
     'template/_claude/scripts/chat-record.mjs',
     // Task worktrees are the task lifecycle's on-disk half (gh:132 stage 2).
     // Without this script /start-work cannot create them and /complete-work
-    // cannot tell the two lifecycles apart.
+    // cannot find the task from a chat at the launcher.
     'template/_claude/scripts/task-worktree.mjs',
     // The task lifecycle's PR half (gh:163): push + one PR per repo, then
     // ordered merge, launcher pull, and issue close. Without it task
@@ -247,8 +247,8 @@ function checkRequiredFiles(files) {
     // back to hand-walking seven sections of prose checks per run.
     'template/_claude/scripts/maintenance-audit.mjs',
     // The per-workspace session→task migration (gh:147). Without it
-    // /migrate-sessions cannot inventory, back up, or drain old sessions,
-    // and existing workspaces have no path onto the task model.
+    // /migrate-sessions cannot inventory, back up, or drain the sessions
+    // that earlier template versions left behind.
     'template/_claude/scripts/migrate-sessions.mjs',
     'LICENSE',
   ];

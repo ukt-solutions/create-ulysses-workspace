@@ -114,5 +114,5 @@ When you are ready to cut a version, run `/release` — it bumps the version, me
 ## Where to Go Next
 
 - [Chapter 1: What Is a Workspace](../chapters/01-what-is-a-workspace.md) — understand the workspace model and why it works this way
-- [Chapter 2: Work Sessions](../chapters/02-work-sessions.md) — the task model in depth, worktrees, multi-repo and parallel work, and the older session lifecycle
+- [Chapter 2: Tasks](../chapters/02-work-sessions.md) — the task model in depth, worktrees, the chat record and drawer, multi-repo and parallel work
 - [Chapter 10: Installation and Upgrades](../chapters/10-installation-and-upgrades.md) — template versioning and staying current
