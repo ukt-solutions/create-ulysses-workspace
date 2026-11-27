@@ -266,10 +266,10 @@ export async function runAudit({
       : [];
     const branches = git(['branch', '--all', '--format=%(refname:short)']);
     // A linked worktree (a task worktree of the workspace repo) has its own
-    // git dir under the repo's common dir, so the two rev-parse paths differ. Launcher-level state — cloned repos, the
-    // launcher's branch — lives at the launcher, the parent of the common
-    // dir; the worktree's own branch and dirty tree are expected mid-task,
-    // not drift (gh:183).
+    // git dir under the repo's common dir, so the two rev-parse paths differ.
+    // Launcher-level state — cloned repos, the launcher's branch — lives at
+    // the launcher, the parent of the common dir; the worktree's own branch
+    // and dirty tree are expected mid-task, not drift (gh:183).
     let launcherRoot = null;
     let launcherBranch = null;
     let launcherPorcelain = [];
